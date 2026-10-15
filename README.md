@@ -17,6 +17,7 @@ Everything is switched on and off from the **Styles** item in chess.com's left s
 - **Opening book** – the book from [Chess Coach](https://sketchdanylo.github.io/chess), with thicker arrows for more popular moves.
 - **Winning side** – a crown on the avatar of whoever is ahead, from chess.com's eval bar or, where there is none, a built-in Stockfish that keeps searching deeper.
 - **Take squares** – move dots turn red where your piece could be taken.
+  - **Show Blunders** – optional engine mode: large, translucent red crosses replace dots only for likely blunders. Ordinary dots remain while analysis is pending or the move is not a blunder. Hold or keep a piece selected for progressively deeper analysis; crosses disappear if deeper analysis clears a move. Supports normal and canvas boards.
 - **Ghosts** – each arrow moves a see-through copy of the piece, so you can plan lines.
 
 Works on both chess.com board types (the normal one and the Arcade / Natural canvas board).
@@ -24,6 +25,16 @@ Works on both chess.com board types (the normal one and the Arcade / Natural can
 ## Crown behavior
 
 The winning-side crown works on bot and live boards, using the visible evaluation bar when available and the bundled engine otherwise. An equal score shows no crown. Toggle it with **Styles → Winning side**. Version 5.5.3 supports both the current `player-top` / `player-bottom` avatar containers and the older board layout IDs.
+
+## Blunder estimates
+
+Enable **Styles → Take squares → Show Blunders** (off by default). It replaces the capture-risk coloring while enabled, and evaluates every legal root move so a bad move is compared against the best move in the whole position. Analysis stops when the hints disappear, the board is removed, the tab is hidden, or the option is disabled. Changing positions discards the old worker and its results.
+
+These are conservative Stockfish estimates, **not guaranteed Chess.com Game Review classifications**. [Chess.com's published blunder cutoff](https://support.chess.com/en/articles/8572705-how-are-moves-classified-what-is-a-blunder-or-brilliant-etc) is a loss of 0.20 expected points, using a rating-dependent model. This script instead uses Stockfish's win/draw/loss probabilities, with an additional 200-centipawn loss requirement unless forced mate is involved. A cross requires two completed MultiPV iterations at depth 10 or greater, comparing moves at the same depth. A promotion destination is marked only if all promotion choices are blunders. Deeper search can revise any estimate; this deliberately favors fewer false alarms over catching every blunder immediately.
+
+## Development checks
+
+Run `npm ci`, `npm run check`, and `npm test`. Tests cover the settings, both hint renderers, evaluation revisions, stale results, promotion choices, and the bundled Stockfish executable on mating blunders for both colors.
 
 ## License
 

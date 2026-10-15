@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.5.3
+// @version      5.6.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -24,7 +24,7 @@
     style: { on: true },
     marks: { on: true, c1: '#7fd6a0b8', c2: '#f0827ab8' },
     arrows: { on: true, color: '#ffaa00cc', aim: true },
-    danger: { on: true },
+    danger: { on: true, blunders: false },
     book: { on: true },
     crown: { on: true },
     ghosts: { on: true, opacity: 0.25 }
@@ -159,6 +159,10 @@
     wc-chess-board > [data-bs-danger], chess-board > [data-bs-danger] {
       --color-transparent-black-14: rgba(220, 45, 45, 0.42) !important;
     }
+    [data-bs-blunder] { visibility: hidden !important; }
+    .bs-blunder-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+    .bs-blunder-cross { position: absolute; width: 12.5%; height: 12.5%; color: rgba(220, 45, 45, .42); }
+    .bs-blunder-cross svg { display: block; width: 100%; height: 100%; }
   `;
   document.head.appendChild(style);
 
@@ -609,7 +613,7 @@
       let marks = false, hints = false, flip = false;
       for (const rec of records) {
         const t = rec.target;
-        if (this.layer.contains(t) || this.overlay.contains(t) || this.ghosts.el.contains(t)) continue;
+        if (this.layer.contains(t) || this.overlay.contains(t) || this.ghosts.el.contains(t) || t.closest?.('.bs-blunder-layer')) continue;
         // Chess.com recycles its highlight elements (class and style rewritten in place), so any
         // change among the board's children may be a highlight coming or going.
         if (rec.type === 'childList') {
@@ -891,11 +895,14 @@
       const leaving = el => !!el.querySelector('.removing');
       const hints = [...this.board.querySelectorAll(':scope > .hint, :scope > .capture-hint')].filter(el => !leaving(el));
       const targets = hints.map(squareClass);
-      const board = hints.length && settings.danger.on ? readBoard(this.board) : null;
+      const board = hints.length && settings.danger.on ? (settings.danger.blunders ? blunderPosition(this.board) : readBoard(this.board)) : null;
       const from = board && this.movingPiece(board, targets);
+      const blunders = blunderHints.sync(this, from, targets.filter(Boolean));
       hints.forEach((el, i) => {
         const to = targets[i];
-        if (from && to && canBeTaken(board, from, to)) {
+        if (to && blunders.has(sqName(to))) el.dataset.bsBlunder = '1';
+        else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
+        if (!settings.danger.blunders && from && to && canBeTaken(board, from, to)) {
           if (el.dataset.bsDanger !== '1') el.dataset.bsDanger = '1';
         } else if (el.dataset.bsDanger) {
           delete el.dataset.bsDanger;
@@ -904,6 +911,9 @@
       // Recycled elements that stopped being move dots get theirs back.
       this.board.querySelectorAll(':scope > [data-bs-danger]').forEach(el => {
         if (!el.classList.contains('hint') && !el.classList.contains('capture-hint')) delete el.dataset.bsDanger;
+      });
+      this.board.querySelectorAll(':scope > [data-bs-blunder]').forEach(el => {
+        if ((!el.classList.contains('hint') && !el.classList.contains('capture-hint')) || !settings.danger.on || !settings.danger.blunders) delete el.dataset.bsBlunder;
       });
     }
 
@@ -1058,7 +1068,7 @@
           caught.forEach(sprite => {
             const s = spots.get(`${Math.round(sprite.x)},${Math.round(sprite.y)}`);
             if (!s) return;
-            self.hintSprites.push({ sprite, square: s, danger: danger.has(s) });
+            self.hintSprites.push({ sprite, square: s, from, danger: danger.has(s) });
           });
           self.paintHints();
           return result;
@@ -1067,8 +1077,10 @@
       r.removeHints = function (squares, ...rest) {
         // These dots play their hide animation (still tinted) and destroy themselves.
         const going = new Set(Array.isArray(squares) ? squares : []);
-        self.hintSprites = self.hintSprites.filter(h => !going.has(h.square) && !h.sprite._destroyed);
-        return orig.removeHints.call(this, squares, ...rest);
+        self.hintSprites = self.hintSprites.filter(h => Array.isArray(squares) && !going.has(h.square) && !h.sprite._destroyed);
+        const result = orig.removeHints.call(this, squares, ...rest);
+        self.paintHints();
+        return result;
       };
     }
 
@@ -1097,9 +1109,19 @@
     // Tint is kept by the sprite through every texture swap (grow, hover, shrink), so the
     // dot animates exactly as chess.com made it, only red.
     paintHints() {
+      this.hintSprites = this.hintSprites.filter(h => !h.sprite._destroyed);
+      const from = this.hintSprites.find(h => h.from)?.from;
+      const blunders = blunderHints.sync(this, from ? sqOf(from) : null, this.hintSprites.map(h => sqOf(h.square)));
       this.hintSprites.forEach(h => {
         if (h.sprite._destroyed) return;
-        h.sprite.tint = h.danger && settings.danger.on ? DANGER_TINT : 0xffffff;
+        h.sprite.tint = h.danger && settings.danger.on && !settings.danger.blunders ? DANGER_TINT : 0xffffff;
+        if (blunders.has(h.square)) {
+          if (!Object.prototype.hasOwnProperty.call(h, 'bsRenderable')) h.bsRenderable = h.sprite.renderable;
+          h.sprite.renderable = false;
+        } else if (Object.prototype.hasOwnProperty.call(h, 'bsRenderable')) {
+          h.sprite.renderable = h.bsRenderable;
+          delete h.bsRenderable;
+        }
       });
     }
 
@@ -1676,6 +1698,7 @@
       <div class="item" data-group="crown">${row('crown', 'Winning side', 7)}</div>
       <div class="item" data-group="danger">${row('danger', 'Take squares', 6)}
         <div class="body flow" style="--i:7">
+          <div class="sub" data-key="blunders" title="Conservative Stockfish estimates; Chess.com review labels may differ. Keep a piece selected for deeper analysis."><span>Show Blunders</span><button class="sw" role="switch" type="button" aria-label="Show Blunders"></button></div>
           <div class="demo"><span><b></b></span><span><b class="red"></b></span><span><b></b></span><span><i class="cap"></i></span><span><b class="red"></b></span></div>
         </div>
       </div>
@@ -1828,6 +1851,236 @@
     link.addEventListener('pointerleave', hoverOut);
     pin.after(item);
   }
+
+  // ---------- progressive blunder hints ----------
+
+  function blunderFEN(board) {
+    try { return board.game?.getFEN() || null; } catch (e) { return null; }
+  }
+
+  // Dragging can temporarily remove a piece's DOM square; FEN still describes its origin.
+  function blunderPosition(board) {
+    const ranks = (blunderFEN(board) || '').split(' ')[0].split('/');
+    if (ranks.length !== 8) return readBoard(board);
+    const position = Array.from({ length: 8 }, () => Array(8).fill(null));
+    ranks.forEach((rank, i) => {
+      let f = 0;
+      for (const p of rank) {
+        if (/[1-8]/.test(p)) f += +p;
+        else if (f < 8 && /[prnbqk]/i.test(p)) position[f++][7 - i] = { c: p === p.toUpperCase() ? 'w' : 'b', t: p.toLowerCase() };
+      }
+    });
+    return position;
+  }
+
+  // Stockfish's WDL is from the ROOT side to move, including when Black is moving.
+  // This is deliberately an estimate, not Chess.com's rating-dependent proprietary model.
+  function blunderExpected(score) {
+    if (score.mate !== undefined) return score.mate > 0 ? 1 : 0;
+    return score.wdl ? (score.wdl[0] + score.wdl[1] / 2) / 1000 : null;
+  }
+
+  function isBlunderLoss(best, move) {
+    const a = blunderExpected(best), b = blunderExpected(move);
+    if (a === null || b === null || a - b < 0.20 - 1e-9) return false;
+    // A WDL swing alone can flag small errors in nearly equal engine positions.
+    // Require at least two pawns as well, unless the score includes a forced mate.
+    return best.cp === undefined || move.cp === undefined || best.cp - move.cp >= 200;
+  }
+
+  class BlunderSearch {
+    constructor(fen, onUpdate) {
+      this.fen = fen;
+      this.onUpdate = onUpdate;
+      this.worker = null;
+      this.urls = [];
+      this.stopped = false;
+      this.depth = 0;
+      this.publishedDepth = 0;
+      this.pvCount = 0;
+      this.batch = new Map();
+      this.previous = new Map();
+      this.moves = new Map();
+    }
+
+    start() {
+      if (this.worker || typeof SF_WASM !== 'string') return;
+      try {
+        const bytes = Uint8Array.from(atob(SF_WASM), c => c.charCodeAt(0));
+        const wasm = URL.createObjectURL(new Blob([bytes], { type: 'application/wasm' }));
+        this.urls.push(wasm);
+        const script = URL.createObjectURL(new Blob([SF_JS], { type: 'text/javascript' }));
+        this.urls.push(script);
+        this.worker = new Worker(`${script}#${encodeURIComponent(wasm)}`);
+        this.worker.onmessage = e => String(e.data).split(/\r?\n/).forEach(line => this.receive(line));
+        this.worker.onerror = e => this.fail(e.message || 'Engine worker failed');
+        this.watchdog = setTimeout(() => this.fail('Engine startup timed out'), 15000);
+        this.send('uci');
+      } catch (e) { this.fail(e.message); }
+    }
+
+    send(command) { this.worker?.postMessage(command); }
+
+    receive(line) {
+      if (this.stopped) return;
+      if (line === 'uciok') {
+        this.send('setoption name Hash value 32');
+        this.send('setoption name Threads value 1');
+        this.send('setoption name UCI_ShowWDL value true');
+        // Evaluate ALL legal moves, not just this piece: a quiet move can miss the only defense.
+        // Stockfish clamps MultiPV to the legal root-move count (at most 218 in standard chess).
+        this.send('setoption name MultiPV value 256');
+        this.send('isready');
+        return;
+      }
+      if (line === 'readyok') {
+        clearTimeout(this.watchdog);
+        this.send(`position fen ${this.fen}`);
+        this.send('go infinite');
+        return;
+      }
+      if (line.startsWith('bestmove')) { this.publish(); return; }
+      if (!line.startsWith('info ') || / (lower|upper)bound/.test(line)) return;
+      const depth = /\bdepth (\d+)/.exec(line);
+      const rank = /\bmultipv (\d+)/.exec(line);
+      const score = /\bscore (cp|mate) (-?\d+)/.exec(line);
+      const pv = /\bpv ([a-h][1-8][a-h][1-8][qrbn]?)\b/.exec(line);
+      if (!depth || !rank || !score || !pv) return;
+      const d = +depth[1], n = +rank[1];
+      if (d < this.depth) return; // Ignore the previous-depth lines in a partial UCI update.
+      if (d > this.depth) {
+        this.publish();
+        this.depth = d;
+        this.batch = new Map();
+      }
+      const wdl = /\bwdl (\d+) (\d+) (\d+)/.exec(line);
+      this.batch.set(n, { move: pv[1], [score[1]]: +score[2], wdl: wdl ? wdl.slice(1).map(Number) : null });
+    }
+
+    publish() {
+      if (this.stopped || this.depth <= this.publishedDepth || !this.batch.has(1)) return;
+      const count = Math.max(...this.batch.keys());
+      this.pvCount = Math.max(this.pvCount, count);
+      // Only completed, contiguous MultiPV iterations can affect the verdict.
+      if (this.batch.size !== this.pvCount || count !== this.pvCount) return;
+      for (let i = 1; i <= count; i++) if (!this.batch.has(i)) return;
+      if (new Set([...this.batch.values()].map(s => s.move)).size !== count) return;
+      if (this.depth < 10) return;
+      const best = this.batch.get(1);
+      const next = new Map();
+      this.moves = new Map();
+      for (const score of this.batch.values()) {
+        const bad = isBlunderLoss(best, score);
+        const prior = this.previous.get(score.move);
+        const streak = bad ? (prior?.bad ? prior.streak + 1 : 1) : 0;
+        next.set(score.move, { bad, streak });
+        this.moves.set(score.move, { ...score, blunder: bad && streak >= 2 });
+      }
+      this.previous = next;
+      this.publishedDepth = this.depth;
+      this.onUpdate();
+    }
+
+    fail(message) {
+      this.stop();
+      this.moves.clear();
+      console.warn('[Board Studio] Blunder analysis unavailable:', message);
+      this.onUpdate();
+    }
+
+    stop() {
+      this.stopped = true;
+      clearTimeout(this.watchdog);
+      this.worker?.terminate();
+      this.worker = null;
+      this.urls.forEach(url => URL.revokeObjectURL(url));
+      this.urls = [];
+    }
+  }
+
+  const blunderHints = {
+    ctl: null, search: null, layer: null,
+    sync(ctl, from, targets) {
+      const empty = new Set();
+      const fen = blunderFEN(ctl.board);
+      const position = blunderPosition(ctl.board);
+      const piece = from && position[from.f]?.[from.r];
+      if (!ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
+        if (this.ctl === ctl) this.clear();
+        return empty;
+      }
+      if (this.ctl !== ctl || this.search?.fen !== fen) {
+        this.clear();
+        this.ctl = ctl;
+        const search = new BlunderSearch(fen, () => {
+          if (this.search === search && ctl.board.isConnected) ctl.paintHints();
+        });
+        this.search = search;
+        search.start();
+      }
+      const source = sqName(from);
+      const bad = new Set();
+      for (const target of targets) {
+        const name = sqName(target);
+        // Standard castling may show a hint on the rook instead of the king's landing square.
+        const rook = position[target.f]?.[target.r];
+        const castle = piece.t === 'k' && from.r === target.r && rook?.c === piece.c && rook.t === 'r';
+        const destination = castle ? sqName({ f: target.f > from.f ? 6 : 2, r: from.r }) : name;
+        const choices = [...this.search.moves.values()].filter(s => s.move.slice(0, 4) === source + destination);
+        // Promotion squares are flagged only when ALL promotion choices blunder.
+        if (choices.length && choices.every(s => s.blunder)) bad.add(name);
+      }
+      this.paint(ctl, bad);
+      return bad;
+    },
+    paint(ctl, squares) {
+      if (!this.layer) {
+        this.layer = document.createElement('div');
+        this.layer.className = 'bs-blunder-layer';
+        this.layer.setAttribute('aria-hidden', 'true');
+        ctl.board.appendChild(this.layer);
+      }
+      const old = new Map([...this.layer.children].map(el => [el.dataset.square, el]));
+      for (const name of squares) {
+        let el = old.get(name);
+        old.delete(name);
+        if (!el) {
+          el = document.createElement('span');
+          el.className = 'bs-blunder-cross';
+          el.dataset.square = name;
+          el.innerHTML = '<svg viewBox="0 0 100 100"><path d="M12 12L88 88M88 12L12 88" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/></svg>';
+          this.layer.appendChild(el);
+        }
+        const s = sqOf(name), xy = squareXY(s.f + 1, s.r + 1, ctl.flipped);
+        const left = `${xy.x * 12.5}%`, top = `${xy.y * 12.5}%`;
+        if (el.style.left !== left) el.style.left = left;
+        if (el.style.top !== top) el.style.top = top;
+      }
+      old.forEach(el => el.remove());
+    },
+    clear() {
+      this.search?.stop();
+      this.search = null;
+      this.layer?.remove();
+      this.layer = null;
+      const ctl = this.ctl;
+      this.ctl = null;
+      ctl?.board.querySelectorAll('[data-bs-blunder]').forEach(el => delete el.dataset.bsBlunder);
+      ctl?.hintSprites?.forEach(h => {
+        if (Object.prototype.hasOwnProperty.call(h, 'bsRenderable') && !h.sprite._destroyed) h.sprite.renderable = h.bsRenderable;
+        delete h.bsRenderable;
+      });
+    }
+  };
+  setInterval(() => {
+    if (!blunderHints.ctl) return;
+    if (!blunderHints.ctl.board.isConnected || document.hidden) blunderHints.clear();
+    else blunderHints.ctl.paintHints(); // Also catches position changes and canvas board flips.
+  }, 150);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) blunderHints.clear();
+    else document.querySelectorAll('wc-chess-board, chess-board').forEach(b => b.__cc?.paintHints());
+  });
 
   // ---------- winning side ----------
 

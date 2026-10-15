@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.5.0
+// @version      5.5.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1846,7 +1846,7 @@
 
   const crownStyle = document.createElement('style');
   crownStyle.textContent = `
-    .player-avatar.bs-crowned { position: relative; overflow: visible !important; }
+    .bs-crowned { position: relative; overflow: visible !important; }
     .bs-crown {
       position: absolute; left: 50%; top: -16px; width: 28px; height: 21px; z-index: 5; pointer-events: none;
       transform: translateX(-50%) rotate(-14deg); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .45));
@@ -1973,9 +1973,10 @@
     }
     const board = document.querySelector('wc-chess-board, chess-board');
     const flipped = !!board && (board.__cc ? board.__cc.flipped : board.classList.contains('flipped'));
-    const avatar = side => document.querySelector(`#board-layout-player-${side} .player-avatar`);
+    // The avatar is .player-avatar on analysis and .player-row-avatar against bots; both are this.
+    const avatar = side => document.querySelector(`#board-layout-player-${side} .cc-avatar-component`);
     const winner = leader ? avatar((leader === 'w') !== flipped ? 'bottom' : 'top') : null;
-    document.querySelectorAll('.player-avatar .bs-crown:not(.bs-leave)').forEach(crown => {
+    document.querySelectorAll('.bs-crown:not(.bs-leave)').forEach(crown => {
       if (crown.parentElement === winner) return;
       crown.classList.add('bs-leave');
       setTimeout(() => crown.remove(), 300);

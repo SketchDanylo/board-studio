@@ -2,9 +2,9 @@
 
 A Tampermonkey userscript that restyles chess.com and adds a few training helpers.
 
-**[Install the small loader](https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio-loader.user.js)** — with Tampermonkey installed, open that link and press *Install*. The loader downloads the full script through `@require`, so you do not need to paste the bundled engine into the editor. Tampermonkey checks for loader updates on its normal update schedule.
+**[Install the small loader](https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio-loader.user.js)** — with Tampermonkey installed, open that link and press *Install*. The loader downloads the latest full script from GitHub on every page load, so anything pushed here is live after a refresh. If GitHub is unreachable it runs the last copy it downloaded.
 
-The [full script](https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio.user.js) is also available for direct installation. Use either the loader or the full script, not both. For each release, bump the version in both files and the loader's `@require` version query so it fetches the new dependency.
+The [full script](https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio.user.js) is also available for direct installation; it updates only when its `@version` is bumped. Use either the loader or the full script, not both.
 
 ## What it does
 

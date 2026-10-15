@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.6
+// @version      5.6.7
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -223,8 +223,27 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .bs-fallback-dot::before { content: ''; position: absolute; inset: 35%; border-radius: 50%; background: var(--bs-dot); }
     .bs-fallback-dot.bs-danger { --bs-dot: rgba(220, 45, 45, .42); }
     .bs-fallback-dot.bs-capture::before { inset: 5%; background: transparent; border: 6px solid var(--bs-dot); box-sizing: border-box; }
+    .bs-duplicate {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 100000;
+      max-width: min(520px, calc(100vw - 32px)); padding: 12px 16px; border-radius: 10px;
+      background: rgba(30, 28, 26, .94); color: #fff; font: 600 14px/1.4 system-ui, sans-serif;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .4); cursor: pointer;
+    }
   `;
   document.head.appendChild(style);
+
+  // Copies older than 5.6.6 lack the one-copy check above and keep painting their own dots
+  // (gray where this one paints red). They are found by the page styles they add.
+  const warnIfDuplicate = () => {
+    const others = [...document.querySelectorAll('style')].filter(s => s !== style && s.textContent.includes('.bs-blunder-layer'));
+    if (!others.length || document.querySelector('.bs-duplicate')) return;
+    const note = document.createElement('div');
+    note.className = 'bs-duplicate';
+    note.textContent = 'Two copies of Board Studio are running. Open Tampermonkey, delete every Board Studio script except the loader, then refresh.';
+    note.addEventListener('click', () => note.remove());
+    document.body.appendChild(note);
+  };
+  [3000, 10000].forEach(ms => setTimeout(warnIfDuplicate, ms));
 
   function applySettings() {
     document.documentElement.classList.toggle('bs-arrows', settings.arrows.on);

@@ -6,6 +6,8 @@
     "check": "node --check board-studio.user.js && node --check board-studio-loader.user.js"
   },
   "devDependencies": {
+    "chess.js": "^1.4.0",
+    "esbuild": "^0.28.2",
     "jsdom": "^29.1.1"
   }
 }

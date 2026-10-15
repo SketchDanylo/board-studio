@@ -34,21 +34,15 @@ test('filters small errors, insufficient WDL loss, and already-lost forced mates
   } finally { f.close(); }
 });
 
-test('requires two sufficiently deep iterations, removes a cross after recovery, ignores bounds', () => {
+test('publishes the first shallow estimate immediately, then revises it without waiting', () => {
   const f = setup();
   try {
     const s = new f.api.BlunderSearch(initialFEN, () => {});
-    iteration(s, 9, [best, bad]); s.publish();
-    assert.equal(s.moves.size, 0);
-    iteration(s, 10, [best, bad]); s.publish();
-    assert.equal(s.moves.get('d2d4').blunder, false);
-    s.publish(); // Repainting the same depth is not fresh evidence.
-    assert.equal(s.moves.get('d2d4').blunder, false);
-    iteration(s, 11, [best, bad]); s.publish();
+    iteration(s, 1, [best, bad]); // No explicit publish, next iteration, or minimum depth.
     assert.equal(s.moves.get('d2d4').blunder, true);
-    s.receive('info depth 12 multipv 1 score cp 999 lowerbound pv e2e4');
-    assert.equal(s.depth, 11);
-    iteration(s, 12, [best, recovered]); s.publish();
+    s.receive('info depth 2 multipv 1 score cp 999 lowerbound pv e2e4');
+    assert.equal(s.depth, 1);
+    iteration(s, 2, [best, recovered]);
     assert.equal(s.moves.get('d2d4').blunder, false);
   } finally { f.close(); }
 });
@@ -57,16 +51,33 @@ test('partial depth never combines a new best score with stale candidate scores'
   const f = setup();
   try {
     const s = new f.api.BlunderSearch(initialFEN, () => {});
-    iteration(s, 10, [best, bad]); s.publish();
-    iteration(s, 11, [best]); s.publish();
+    iteration(s, 10, [best, recovered]);
+    // A much higher best score must NOT be compared with the old candidate score.
+    iteration(s, 11, [{ ...best, cp: 600, wdl: [1000, 0, 0] }]);
     s.receive('info depth 10 multipv 2 score cp -300 wdl 0 150 850 pv d2d4');
     s.publish();
-    assert.equal(s.publishedDepth, 10);
+    assert.equal(s.moves.get('d2d4').depth, 10);
     assert.equal(s.moves.get('d2d4').blunder, false);
+    s.receive('info depth 11 multipv 2 score cp -300 wdl 0 150 850 pv d2d4');
+    assert.equal(s.moves.get('d2d4').blunder, true);
   } finally { f.close(); }
 });
 
-test('DOM dots are replaced, flip correctly, and return when deeper analysis changes its mind', () => {
+test('streamed rank changes cannot mark the new best move from an older duplicate row', () => {
+  const f = setup();
+  try {
+    const s = new f.api.BlunderSearch(initialFEN, () => {});
+    iteration(s, 1, [best, bad]);
+    assert.equal(s.moves.get('d2d4').blunder, true);
+    s.receive('info depth 1 multipv 1 score cp 600 wdl 1000 0 0 pv d2d4');
+    assert.equal(s.moves.get('d2d4').blunder, false);
+    s.receive('info depth 1 multipv 2 score cp 20 wdl 100 850 50 pv e2e4');
+    assert.equal(s.moves.get('d2d4').blunder, false);
+    assert.equal(s.moves.get('e2e4').blunder, true);
+  } finally { f.close(); }
+});
+
+test('DOM crosses appear immediately, flip, animate out, and can revive without duplicating', async () => {
   const f = setup();
   try {
     f.api.settings.danger.blunders = true;
@@ -75,9 +86,7 @@ test('DOM dots are replaced, flip correctly, and return when deeper analysis cha
     const ctl = new f.api.Controller(b.querySelector('svg'));
     ctl.selected = { f: 3, r: 1 }; ctl.paintHints();
     const s = f.api.blunderHints.search;
-    iteration(s, 10, [best, bad]); s.publish();
-    assert.equal(b.querySelector('.bs-blunder-cross'), null);
-    iteration(s, 11, [best, bad]); s.publish();
+    iteration(s, 1, [best, bad]);
     assert.equal(b.querySelector('.hint').dataset.bsBlunder, '1');
     let cross = b.querySelector('.bs-blunder-cross');
     assert.equal(cross.dataset.square, 'd4');
@@ -86,10 +95,20 @@ test('DOM dots are replaced, flip correctly, and return when deeper analysis cha
     b.classList.add('flipped'); ctl.paintHints();
     assert.equal(cross.style.left, '50%');
     assert.equal(cross.style.top, '37.5%');
-    iteration(s, 12, [best, recovered]); s.publish();
-    assert.equal(b.querySelector('.bs-blunder-cross'), null);
+    iteration(s, 2, [best, recovered]);
+    assert.equal(b.querySelector('.bs-blunder-cross:not(.bs-cross-leave)'), null);
+    assert.ok(cross.classList.contains('bs-cross-leave'));
     assert.equal(b.querySelector('.hint').dataset.bsBlunder, undefined);
     assert.equal(b.querySelector('.hint').dataset.bsDanger, undefined);
+    iteration(s, 3, [best, bad]);
+    assert.equal(b.querySelector('.bs-blunder-cross'), cross);
+    assert.equal(b.querySelectorAll('.bs-blunder-cross').length, 1);
+    assert.equal(cross.classList.contains('bs-cross-leave'), false);
+    await new Promise(resolve => setTimeout(resolve, 280));
+    assert.equal(cross.isConnected, true, 'revival cancels the pending removal');
+    iteration(s, 4, [best, recovered]);
+    await new Promise(resolve => setTimeout(resolve, 280));
+    assert.equal(cross.isConnected, false);
   } finally { f.close(); }
 });
 
@@ -144,6 +163,8 @@ test('a promotion square is not condemned when an underpromotion saves it', () =
     const ctl = { board: b, flipped: false, paintHints() {} };
     const h = f.api.blunderHints, from = { f: 0, r: 6 }, targets = [{ f: 0, r: 7 }];
     h.sync(ctl, from, targets);
+    h.search.moves.set('a7a8q', { move: 'a7a8q', blunder: true });
+    assert.equal(h.sync(ctl, from, targets).size, 0, 'waits for underpromotion choices, not just the first queen score');
     for (const type of 'qrbn') h.search.moves.set('a7a8' + type, { move: 'a7a8' + type, blunder: type !== 'n' });
     assert.equal(h.sync(ctl, from, targets).size, 0);
     h.search.moves.get('a7a8n').blunder = true;

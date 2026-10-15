@@ -24,12 +24,13 @@ for (const position of [
     await new Promise((resolve, reject) => {
       let buffer = '';
       const search = new f.api.BlunderSearch(fen, () => {
-        if (search.publishedDepth < 11) return;
+        if (!search.moves.get(move)?.blunder || search.moves.get(move)?.mate !== -1) return;
         try {
           assert.equal(search.moves.get(move)?.blunder, true);
           assert.equal(search.moves.get(move)?.mate, -1);
           assert.ok([...search.moves.values()].some(s => s.move !== move && !s.blunder));
           assert.ok(search.pvCount > 10, 'compares all legal moves, not just the selected pawn');
+          assert.ok(search.publishedDepth < 10, 'does not wait for the old depth-10 gate');
           console.log(`Real engine: depth ${search.publishedDepth}, ${search.pvCount} legal moves, ${move} marked as mate blunder.`);
           resolve();
         } catch (e) { reject(e); }

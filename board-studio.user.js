@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.0
+// @version      5.6.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -161,8 +161,14 @@
     }
     [data-bs-blunder] { visibility: hidden !important; }
     .bs-blunder-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
-    .bs-blunder-cross { position: absolute; width: 12.5%; height: 12.5%; color: rgba(220, 45, 45, .42); }
-    .bs-blunder-cross svg { display: block; width: 100%; height: 100%; }
+    .bs-blunder-cross {
+      position: absolute; width: 12.5%; height: 12.5%; color: rgba(220, 45, 45, .42);
+      opacity: 1; transform: scale(1);
+      transition: opacity 180ms ease, transform 240ms cubic-bezier(.34, 1.4, .64, 1);
+    }
+    .bs-blunder-cross svg { position: absolute; inset: 25%; display: block; width: 50%; height: 50%; }
+    .bs-blunder-cross.bs-cross-enter, .bs-blunder-cross.bs-cross-leave { opacity: 0; transform: scale(.45); }
+    @media (prefers-reduced-motion: reduce) { .bs-blunder-cross { transition: none; } }
   `;
   document.head.appendChild(style);
 
@@ -1899,7 +1905,6 @@
       this.publishedDepth = 0;
       this.pvCount = 0;
       this.batch = new Map();
-      this.previous = new Map();
       this.moves = new Map();
     }
 
@@ -1955,30 +1960,30 @@
       }
       const wdl = /\bwdl (\d+) (\d+) (\d+)/.exec(line);
       this.batch.set(n, { move: pv[1], [score[1]]: +score[2], wdl: wdl ? wdl.slice(1).map(Number) : null });
+      this.publish();
     }
 
     publish() {
-      if (this.stopped || this.depth <= this.publishedDepth || !this.batch.has(1)) return;
-      const count = Math.max(...this.batch.keys());
-      this.pvCount = Math.max(this.pvCount, count);
-      // Only completed, contiguous MultiPV iterations can affect the verdict.
-      if (this.batch.size !== this.pvCount || count !== this.pvCount) return;
-      for (let i = 1; i <= count; i++) if (!this.batch.has(i)) return;
-      if (new Set([...this.batch.values()].map(s => s.move)).size !== count) return;
-      if (this.depth < 10) return;
+      if (this.stopped || !this.batch.has(1)) return;
+      this.pvCount = Math.max(this.pvCount, ...this.batch.keys());
+      // Publish as each candidate arrives; never wait for a depth floor or a second verdict.
+      // Both scores in each comparison still come from THIS depth. Other destinations retain
+      // their last result until their own fresh score arrives, so the overlay does not flash.
       const best = this.batch.get(1);
-      const next = new Map();
-      this.moves = new Map();
-      for (const score of this.batch.values()) {
+      let changed = false;
+      const seen = new Set();
+      for (const [, score] of [...this.batch].sort((a, b) => a[0] - b[0])) {
+        // During a reordered MultiPV update the new best may still occupy an older rank.
+        // Do not let that older duplicate overwrite the best move's current verdict.
+        if (seen.has(score.move)) continue;
+        seen.add(score.move);
         const bad = isBlunderLoss(best, score);
-        const prior = this.previous.get(score.move);
-        const streak = bad ? (prior?.bad ? prior.streak + 1 : 1) : 0;
-        next.set(score.move, { bad, streak });
-        this.moves.set(score.move, { ...score, blunder: bad && streak >= 2 });
+        const prior = this.moves.get(score.move);
+        if (!prior || prior.blunder !== bad) changed = true;
+        this.moves.set(score.move, { ...score, depth: this.depth, blunder: bad });
       }
-      this.previous = next;
       this.publishedDepth = this.depth;
-      this.onUpdate();
+      if (changed) this.onUpdate();
     }
 
     fail(message) {
@@ -2028,7 +2033,8 @@
         const destination = castle ? sqName({ f: target.f > from.f ? 6 : 2, r: from.r }) : name;
         const choices = [...this.search.moves.values()].filter(s => s.move.slice(0, 4) === source + destination);
         // Promotion squares are flagged only when ALL promotion choices blunder.
-        if (choices.length && choices.every(s => s.blunder)) bad.add(name);
+        const promotion = piece.t === 'p' && (target.r === 0 || target.r === 7);
+        if ((!promotion || choices.length === 4) && choices.length && choices.every(s => s.blunder)) bad.add(name);
       }
       this.paint(ctl, bad);
       return bad;
@@ -2046,21 +2052,33 @@
         old.delete(name);
         if (!el) {
           el = document.createElement('span');
-          el.className = 'bs-blunder-cross';
+          el.className = 'bs-blunder-cross bs-cross-enter';
           el.dataset.square = name;
           el.innerHTML = '<svg viewBox="0 0 100 100"><path d="M12 12L88 88M88 12L12 88" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/></svg>';
           this.layer.appendChild(el);
+          // Establish the small/transparent state before transitioning on the next frame.
+          el.getBoundingClientRect();
+          nextFrame(() => el.classList.remove('bs-cross-enter'));
+        } else {
+          clearTimeout(el.bsRemoval);
+          el.bsRemoval = null;
+          el.classList.remove('bs-cross-leave');
         }
         const s = sqOf(name), xy = squareXY(s.f + 1, s.r + 1, ctl.flipped);
         const left = `${xy.x * 12.5}%`, top = `${xy.y * 12.5}%`;
         if (el.style.left !== left) el.style.left = left;
         if (el.style.top !== top) el.style.top = top;
       }
-      old.forEach(el => el.remove());
+      old.forEach(el => {
+        if (el.classList.contains('bs-cross-leave')) return;
+        el.classList.add('bs-cross-leave');
+        el.bsRemoval = setTimeout(() => el.remove(), 240);
+      });
     },
     clear() {
       this.search?.stop();
       this.search = null;
+      if (this.layer) [...this.layer.children].forEach(el => clearTimeout(el.bsRemoval));
       this.layer?.remove();
       this.layer = null;
       const ctl = this.ctl;

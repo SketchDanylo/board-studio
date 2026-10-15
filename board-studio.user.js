@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.5.1
+// @version      5.5.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1876,7 +1876,16 @@
   // Where chess.com shows no eval bar (bots at full strength), Stockfish 19 (the one Chess Coach
   // uses) runs here instead, searching deeper the longer the position stays on the board.
   // Only against bots, in analysis and in puzzles: an engine in a game against a person is cheating.
-  const engineAllowed = () => /^\/(play\/computer|game\/computer|analysis|puzzles|practice)(\/|$)/.test(location.pathname);
+  // Games against people get it only once the game is over, for looking back through it.
+  const engineAllowed = () => {
+    if (/^\/(play\/computer|game\/computer|analysis|puzzles|practice)(\/|$)/.test(location.pathname)) return true;
+    const board = document.querySelector('wc-chess-board, chess-board');
+    try {
+      return !!(board && board.game && typeof board.game.isGameOver === 'function' && board.game.isGameOver());
+    } catch (e) {
+      return false;
+    }
+  };
 
   const engine = {
     worker: null, ready: false, searching: false, fen: null, next: null, result: null,

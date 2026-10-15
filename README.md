@@ -2,7 +2,9 @@
 
 A Tampermonkey userscript that restyles chess.com and adds a few training helpers.
 
-**[Install](https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio.user.js)** — with Tampermonkey installed, open that link and press *Install*. Tampermonkey then updates it by itself whenever a new version is pushed here.
+**[Install the small loader](https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio-loader.user.js)** — with Tampermonkey installed, open that link and press *Install*. The loader downloads the full script through `@require`, so you do not need to paste the bundled engine into the editor. Tampermonkey checks for loader updates on its normal update schedule.
+
+The [full script](https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio.user.js) is also available for direct installation. Use either the loader or the full script, not both. For each release, bump the version in both files and the loader's `@require` version query so it fetches the new dependency.
 
 ## What it does
 
@@ -19,9 +21,9 @@ Everything is switched on and off from the **Styles** item in chess.com's left s
 
 Works on both chess.com board types (the normal one and the Arcade / Natural canvas board).
 
-## Fair play
+## Crown behavior
 
-The opening book and the engine never run in games against people; they work against bots, in analysis and in puzzles.
+The winning-side crown works on bot and live boards, using the visible evaluation bar when available and the bundled engine otherwise. An equal score shows no crown. Toggle it with **Styles → Winning side**. Version 5.5.3 supports both the current `player-top` / `player-bottom` avatar containers and the older board layout IDs.
 
 ## License
 

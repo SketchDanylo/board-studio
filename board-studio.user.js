@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.5.2
+// @version      5.5.3
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1831,8 +1831,8 @@
 
   // ---------- winning side ----------
 
-  // A crown on the avatar of whoever the eval bar favors, even by +0.1; none when it is dead
-  // equal or there is no eval bar on the page.
+  // A crown on the avatar of the favored side. Use the visible evaluation when available,
+  // otherwise evaluate the current position locally; an equal score shows no crown.
   const CROWN_SVG = `<svg viewBox="0 0 32 24" aria-hidden="true">
     <defs><linearGradient id="bs-crown-gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe58a"/><stop offset=".55" stop-color="#f5b52e"/><stop offset="1" stop-color="#c47d12"/></linearGradient></defs>
     <path d="M3 8.5l6.2 5.2L16 3l6.8 10.7L29 8.5l-2.6 12.3H5.6z" fill="url(#bs-crown-gold)" stroke="#8a5208" stroke-width="1.2" stroke-linejoin="round"/>
@@ -1873,18 +1873,10 @@
     return negative ? 'b' : 'w';
   }
 
-  // Where chess.com shows no eval bar (bots at full strength), Stockfish 19 (the one Chess Coach
-  // uses) runs here instead, searching deeper the longer the position stays on the board.
-  // Only against bots, in analysis and in puzzles: an engine in a game against a person is cheating.
-  // Games against people get it only once the game is over, for looking back through it.
+  // Bot and live boards both expose the position through the board's game API.
   const engineAllowed = () => {
-    if (/^\/(play\/computer|game\/computer|analysis|puzzles|practice)(\/|$)/.test(location.pathname)) return true;
     const board = document.querySelector('wc-chess-board, chess-board');
-    try {
-      return !!(board && board.game && typeof board.game.isGameOver === 'function' && board.game.isGameOver());
-    } catch (e) {
-      return false;
-    }
+    return !!(board && board.game && typeof board.game.getFEN === 'function');
   };
 
   const engine = {
@@ -1982,8 +1974,20 @@
     }
     const board = document.querySelector('wc-chess-board, chess-board');
     const flipped = !!board && (board.__cc ? board.__cc.flipped : board.classList.contains('flipped'));
-    // The avatar is .player-avatar on analysis and .player-row-avatar against bots; both are this.
-    const avatar = side => document.querySelector(`#board-layout-player-${side} .cc-avatar-component`);
+    // Current bot/live layouts use #player-top/bottom; older layouts use
+    // #board-layout-player-top/bottom. Pick a visible avatar during layout transitions.
+    const avatar = side => {
+      const rows = document.querySelectorAll(`#player-${side}, #board-layout-player-${side}`);
+      for (const row of rows) {
+        for (const element of row.querySelectorAll('.cc-avatar-component, .player-row-avatar, .player-avatar')) {
+          if (element.getClientRects().length) {
+            // An IMG cannot render children; attach the crown to its wrapper instead.
+            return element.tagName === 'IMG' ? element.parentElement : element;
+          }
+        }
+      }
+      return null;
+    };
     const winner = leader ? avatar((leader === 'w') !== flipped ? 'bottom' : 'top') : null;
     document.querySelectorAll('.bs-crown:not(.bs-leave)').forEach(crown => {
       if (crown.parentElement === winner) return;

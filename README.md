@@ -29,6 +29,8 @@ The winning-side crown works on bot and live boards, using the visible evaluatio
 
 ## Blunder estimates
 
+Version 5.6.4 also flags a loss of at least 250 centipawns when both moves have at most 0.01 expected points. This handles positions where Stockfish rounds every candidate to a loss: dropping a queen must not disappear merely because the position was already bad. This exception does not apply to positions that remain winning or to shortening an already-forced mate. A regression test reconstructs the reported board and checks that Qe2, Qf3 and Qxg4 receive crosses from the real engine at depth 13.
+
 Version 5.6.3 preserves the engine and its scores when native and fallback hint renderers hand off to each other, and restores overlay layers if the board redraw removes them. The status below Show Blunders now reports engine startup, actual analysis depth, and the number of blunder destinations for the selected piece. No cross is expected when that piece has no moves classified as blunders. Crosses describe destinations before moving, rather than annotating the last played move.
 
 Enable **Styles → Take squares → Show Blunders** (off by default). It replaces the capture-risk coloring while enabled, and evaluates every legal root move so a bad move is compared against the best move in the whole position. Analysis stops when selection is cleared, the board is removed, the tab is hidden, or the option is disabled. Changing positions discards the old worker and its results. In the absence of native hints, legal dots come from the bundled chess.js rules; engine startup or failure never removes those ordinary dots. The Take squares panel reports when the position or engine is unavailable.

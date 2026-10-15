@@ -47,6 +47,21 @@ test('publishes the first shallow estimate immediately, then revises it without 
   } finally { f.close(); }
 });
 
+test('large additional losses still count when losing WDL scores have saturated', () => {
+  const f = setup();
+  try {
+    const isBad = f.api.isBlunderLoss;
+    const losing = { cp: -437, wdl: [0, 0, 1000] };
+    for (const cp of [-702, -711, -763]) assert.equal(isBad(losing, { cp, wdl: [0, 0, 1000] }), true);
+    assert.equal(isBad(losing, { cp: -686, wdl: [0, 0, 1000] }), false, 'small additional losses stay unmarked');
+    assert.equal(isBad(losing, { cp: -687, wdl: [0, 0, 1000] }), true, '2.5-pawn boundary');
+    assert.equal(isBad({ cp: -400, wdl: [0, 20, 980] }, { cp: -700, wdl: [0, 0, 1000] }), true);
+    assert.equal(isBad({ cp: 900, wdl: [1000, 0, 0] }, { cp: 600, wdl: [1000, 0, 0] }), false, 'do not flag safe winning simplifications');
+    assert.equal(isBad({ mate: -6 }, { mate: -1 }), false);
+    assert.equal(isBad(losing, { cp: -900 }), false, 'missing WDL is not a verdict');
+  } finally { f.close(); }
+});
+
 test('partial depth never combines a new best score with stale candidate scores', () => {
   const f = setup();
   try {

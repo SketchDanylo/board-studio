@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.3
+// @version      5.6.4
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1938,10 +1938,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   function isBlunderLoss(best, move) {
     const a = blunderExpected(best), b = blunderExpected(move);
-    if (a === null || b === null || a - b < 0.20 - 1e-9) return false;
+    if (a === null || b === null) return false;
+    // WDL rounds to 0 expected points well before every move is equally bad.
+    // Still flag a large additional loss (2.5 pawns) in a near-certain loss.
+    // Do not treat shortening an already-forced mate as a new blunder, or apply
+    // this exception to winning positions where material can be safely returned.
+    const cpLoss = best.cp !== undefined && move.cp !== undefined ? best.cp - move.cp : null;
+    if (a <= 0.01 && b <= 0.01 && cpLoss !== null && cpLoss >= 250) return true;
+    if (a - b < 0.20 - 1e-9) return false;
     // A WDL swing alone can flag small errors in nearly equal engine positions.
     // Require at least two pawns as well, unless the score includes a forced mate.
-    return best.cp === undefined || move.cp === undefined || best.cp - move.cp >= 200;
+    return cpLoss === null || cpLoss >= 200;
   }
 
   class BlunderSearch {

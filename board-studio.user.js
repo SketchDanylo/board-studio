@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.2
+// @version      5.6.3
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1954,6 +1954,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.depth = 0;
       this.publishedDepth = 0;
       this.pvCount = 0;
+      this.ready = false;
+      this.error = null;
       this.batch = new Map();
       this.moves = new Map();
     }
@@ -1990,6 +1992,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       if (line === 'readyok') {
         clearTimeout(this.watchdog);
+        this.ready = true;
+        this.watchdog = setTimeout(() => this.fail('Engine returned no evaluations'), 15000);
         this.send(`position fen ${this.fen}`);
         this.send('go infinite');
         return;
@@ -2001,6 +2005,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const score = /\bscore (cp|mate) (-?\d+)/.exec(line);
       const pv = /\bpv ([a-h][1-8][a-h][1-8][qrbn]?)\b/.exec(line);
       if (!depth || !rank || !score || !pv) return;
+      clearTimeout(this.watchdog);
       const d = +depth[1], n = +rank[1];
       if (d < this.depth) return; // Ignore the previous-depth lines in a partial UCI update.
       if (d > this.depth) {
@@ -2037,6 +2042,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
 
     fail(message) {
+      this.error = message;
       this.stop();
       this.moves.clear();
       console.warn('[Board Studio] Blunder analysis unavailable:', message);
@@ -2065,15 +2071,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (this.ctl === ctl) this.clear();
         return empty;
       }
-      if (this.ctl !== ctl || this.search?.fen !== fen) {
+      if (this.ctl?.board !== ctl.board || this.search?.fen !== fen) {
         this.clear();
         this.ctl = ctl;
         const search = new BlunderSearch(fen, () => {
-          if (this.search === search && ctl.board.isConnected) ctl.paintHints();
+          if (this.search === search && this.ctl?.board.isConnected) this.ctl.paintHints();
         });
         this.search = search;
         search.start();
       }
+      // Native and fallback renderers share the same position search. Changing the
+      // renderer must never discard the scores or restart the worker.
+      this.ctl = ctl;
       const source = sqName(from);
       const bad = new Set();
       for (const target of targets) {
@@ -2088,6 +2097,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if ((!promotion || choices.length === 4) && choices.length && choices.every(s => s.blunder)) bad.add(name);
       }
       this.paint(ctl, bad);
+      const search = this.search;
+      const assessed = [...search.moves.values()].filter(s => s.move.startsWith(source));
+      if (search.stopped) showHintStatus(`Evaluation unavailable: ${search.error || 'engine stopped'}.`);
+      else if (!search.depth) showHintStatus(search.ready ? 'Engine ready; waiting for move scores…' : 'Starting evaluation engine…');
+      else if (!assessed.length) showHintStatus(`Depth ${search.depth}: evaluating this piece…`);
+      else if (assessed.some(s => !s.wdl && s.mate === undefined)) showHintStatus(`Depth ${search.depth}: engine scores received, waiting for win/draw/loss data…`);
+      else showHintStatus(`Depth ${search.depth} · ${bad.size ? `${bad.size} blunder square${bad.size === 1 ? '' : 's'}` : 'No blunders found for this piece yet'}.`);
       return bad;
     },
     paint(ctl, squares) {
@@ -2097,6 +2113,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         this.layer.setAttribute('aria-hidden', 'true');
         ctl.board.appendChild(this.layer);
       }
+      if (this.layer.parentElement !== ctl.board) ctl.board.appendChild(this.layer);
       const old = new Map([...this.layer.children].map(el => [el.dataset.square, el]));
       for (const name of squares) {
         let el = old.get(name);
@@ -2184,9 +2201,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     refresh() {
       if (!this.board) return;
       if (!this.board.isConnected || document.hidden || !settings.danger.on || blunderFEN(this.board) !== this.fen) { this.clear(); return; }
+      if (!this.moves.length) return;
       if (this.nativeHints() && this.board.__cc) {
         this.layer?.remove(); this.layer = null;
-        if (blunderHints.ctl === this.adapter) blunderHints.clear();
         this.board.__cc.paintHints();
         return;
       }
@@ -2202,6 +2219,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         }
         this.board.appendChild(this.layer);
       }
+      if (this.layer.parentElement !== this.board) this.board.appendChild(this.layer);
       const targets = this.moves.map(m => sqOf(m.to));
       const bad = blunderHints.sync(this.adapter, this.from, targets);
       const position = blunderPosition(this.board);
@@ -2215,8 +2233,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (bad.has(el.dataset.square)) el.dataset.bsBlunder = '1';
         else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
       });
-      if (settings.danger.blunders && blunderHints.search?.stopped) return;
-      showHintStatus(settings.danger.blunders ? 'Move hints active; evaluation improves while selected.' : 'Move hints active; red dots mark capture risk.');
+      if (!settings.danger.blunders) showHintStatus('Move hints active; red dots mark capture risk.');
     },
     clear() {
       if (this.adapter && blunderHints.ctl === this.adapter) blunderHints.clear();

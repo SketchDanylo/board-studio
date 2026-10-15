@@ -88,3 +88,60 @@ test('worker failure does not remove legal fallback dots', () => {
     assert.equal(b.querySelector('.bs-fallback-hints'), null);
   } finally { f.close(); }
 });
+
+test('native/fallback handoffs preserve the worker, scores, and callback destination', () => {
+  const f = setup();
+  try {
+    f.api.settings.danger.blunders = true;
+    const b = f.board('rnbqkbnr/pppp1ppp/8/4p3/8/5P2/PPPPP1PP/RNBQKBNR w KQkq - 0 2');
+    const h = f.api.fallbackHints;
+    const from = { f: 6, r: 1 }, targets = [{ f: 6, r: 3 }];
+    h.select(b, from);
+    const search = f.api.blunderHints.search;
+    iteration(search, 1, [{ move: 'e2e4', cp: 0 }, { move: 'g2g4', mate: -1 }]);
+    let paints = 0;
+    b.__cc = { board: b, flipped: false, paintHints() { paints++; f.api.blunderHints.sync(this, from, targets); } };
+    const native = f.w.document.createElement('div'); native.className = 'hint square-74'; b.appendChild(native);
+    h.refresh();
+    assert.equal(f.api.blunderHints.search, search);
+    assert.equal(search.stopped, false);
+    const before = paints;
+    iteration(search, 2, [{ move: 'e2e4', cp: 0 }, { move: 'g2g4', cp: -10 }]);
+    assert.ok(paints > before, 'engine updates follow the current renderer');
+    native.remove(); h.refresh();
+    assert.equal(f.api.blunderHints.search, search);
+    assert.equal(search.depth, 2);
+    assert.equal(f.api.blunderHints.ctl, h.adapter);
+  } finally { f.close(); }
+});
+
+test('status distinguishes startup, waiting, no blunders and actual blunders', () => {
+  const f = setup();
+  try {
+    f.api.settings.danger.blunders = true;
+    const b = f.board(); f.api.fallbackHints.select(b, { f: 4, r: 1 });
+    const status = () => f.w.document.querySelector('#board-studio').shadowRoot.querySelector('.hint-status').textContent;
+    const s = f.api.blunderHints.search;
+    assert.match(status(), /Starting evaluation/);
+    s.receive('readyok'); f.api.fallbackHints.refresh();
+    assert.match(status(), /waiting for move scores/);
+    iteration(s, 1, [{ move: 'e2e4', cp: 0 }]);
+    assert.match(status(), /Depth 1.*No blunders/);
+    iteration(s, 2, [{ move: 'd2d4', cp: 0 }, { move: 'e2e4', cp: -400, wdl: [0, 0, 1000] }]);
+    assert.match(status(), /Depth 2.*1 blunder square/);
+    s.receive('info depth 3 multipv 1 score cp 0 pv e2e4');
+    assert.match(status(), /waiting for win\/draw\/loss/);
+  } finally { f.close(); }
+});
+
+test('board redraw cannot leave hint and cross layers detached', () => {
+  const f = setup();
+  try {
+    f.api.settings.danger.blunders = true;
+    const b = f.board(); f.api.fallbackHints.select(b, { f: 4, r: 1 });
+    f.api.fallbackHints.layer.remove(); f.api.blunderHints.layer.remove();
+    f.api.fallbackHints.refresh();
+    assert.equal(f.api.fallbackHints.layer.parentElement, b);
+    assert.equal(f.api.blunderHints.layer.parentElement, b);
+  } finally { f.close(); }
+});

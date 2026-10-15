@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.5
+// @version      5.6.6
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -14,6 +14,11 @@
 
 (() => {
   'use strict';
+
+  // One copy only: two installs (say the loader and an older full script) would each draw
+  // their own dots and crosses on top of each other.
+  if (window.__boardStudioRunning) return;
+  window.__boardStudioRunning = true;
 
   // (the opening book data, BOOK_DATA, is at the very end of this file)
 

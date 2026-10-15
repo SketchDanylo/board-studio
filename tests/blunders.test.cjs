@@ -133,12 +133,15 @@ test('canvas dots restore their original renderability when mode is disabled', (
     f.api.settings.danger.blunders = true;
     const b = f.board();
     const sprite = { tint: 0xffffff, renderable: true };
+    const other = { tint: 0xffffff, renderable: true };
     const ctl = Object.create(f.api.CanvasController.prototype);
-    Object.assign(ctl, { board: b, hintSprites: [{ sprite, from: 'd2', square: 'd4', danger: true }], renderer: { getCoordsFromSquare: name => ({ x: name === 'a1' ? 0 : 700, y: 0 }) } });
+    Object.assign(ctl, { board: b, hintSprites: [{ sprite, from: 'd2', square: 'd4', danger: true }, { sprite: other, from: 'd2', square: 'd3', danger: true }], renderer: { getCoordsFromSquare: name => ({ x: name === 'a1' ? 0 : 700, y: 0 }) } });
     ctl.paintHints();
     const s = f.api.blunderHints.search;
     iteration(s, 10, [best, bad]); s.publish(); iteration(s, 11, [best, bad]); s.publish();
     assert.equal(sprite.renderable, false);
+    assert.equal(sprite.tint, 0xffffff, 'the cross wins over the red dot');
+    assert.equal(other.tint, 0xff4a42, 'non-blunder capture squares stay red');
     assert.ok(b.querySelector('.bs-blunder-cross'));
     f.api.settings.danger.blunders = false; ctl.paintHints();
     assert.equal(sprite.renderable, true);

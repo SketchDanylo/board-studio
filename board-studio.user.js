@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.4
+// @version      5.6.5
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -957,7 +957,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const to = targets[i];
         if (to && blunders.has(sqName(to))) el.dataset.bsBlunder = '1';
         else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
-        if (!settings.danger.blunders && from && to && canBeTaken(board, from, to)) {
+        // A blunder cross wins; every other square the piece could be taken on stays red.
+        if (from && to && !blunders.has(sqName(to)) && canBeTaken(board, from, to)) {
           if (el.dataset.bsDanger !== '1') el.dataset.bsDanger = '1';
         } else if (el.dataset.bsDanger) {
           delete el.dataset.bsDanger;
@@ -1169,7 +1170,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const blunders = blunderHints.sync(this, from ? sqOf(from) : null, this.hintSprites.map(h => sqOf(h.square)));
       this.hintSprites.forEach(h => {
         if (h.sprite._destroyed) return;
-        h.sprite.tint = h.danger && settings.danger.on && !settings.danger.blunders ? DANGER_TINT : 0xffffff;
+        h.sprite.tint = h.danger && settings.danger.on && !blunders.has(h.square) ? DANGER_TINT : 0xffffff;
         if (blunders.has(h.square)) {
           if (!Object.prototype.hasOwnProperty.call(h, 'bsRenderable')) h.bsRenderable = h.sprite.renderable;
           h.sprite.renderable = false;
@@ -2236,7 +2237,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const left = `${xy.x * 12.5}%`, top = `${xy.y * 12.5}%`;
         if (el.style.left !== left) el.style.left = left;
         if (el.style.top !== top) el.style.top = top;
-        el.classList.toggle('bs-danger', !settings.danger.blunders && canBeTaken(position, this.from, target));
+        el.classList.toggle('bs-danger', !bad.has(el.dataset.square) && canBeTaken(position, this.from, target));
         if (bad.has(el.dataset.square)) el.dataset.bsBlunder = '1';
         else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
       });

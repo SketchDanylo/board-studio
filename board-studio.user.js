@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.12.0
+// @version      5.12.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2597,11 +2597,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         checked.add(capture.to);
         const offered = exchangeGain(game, capture.to) - (PIECE_VALUE[move.captured] || 0);
         const alreadyOffered = capture.to === move.to ? 0 : exchangeGain(before, capture.to);
-        if (offered >= 200 && offered - alreadyOffered >= 200) return true;
+        // Newly offered, or a piece that was already en prise and is deliberately left there
+        // (Fischer's 17...Be6 leaves the queen hanging).
+        if (offered >= 200 && (offered - alreadyOffered >= 200 || alreadyOffered >= 200)) return true;
       }
     } catch (e) { /* Invalid or unsupported positions are never Brilliant. */ }
     return false;
   }
+
+  // "Completely winning even without the move": a forced mate or about eight pawns up. Being a piece
+  // or so ahead is not enough to rule a sacrifice out (Morphy's Qb8+ is Brilliant at +4 otherwise).
+  const completelyWinning = score => score.mate > 0 || (score.cp !== undefined && score.cp >= 800);
 
   function arrowGrade(best, score, { book = false, sacrifice = false, completed = null, held = false } = {}) {
     if (book) return 'book';
@@ -2617,13 +2623,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // so the badge does not flicker on and off around the threshold.
     const slack = held ? 1.6 : 1;
     const closeToBest = loss <= .065 * slack && (cpLoss === null || cpLoss <= 65 * slack);
-    if (closeToBest && b >= (held ? .4 : .45) && sacrifice && completed && completed.depth >= 12) {
+    if (closeToBest && b >= (held ? .38 : .42) && sacrifice && completed && completed.depth >= 12) {
       const candidate = completed.scores.find(s => s.move === score.move);
       const alternatives = completed.scores.filter(s => s.move !== score.move);
       const ca = blunderExpected(completed.best), cb = candidate && blunderExpected(candidate);
       const gap = candidate?.cp !== undefined && completed.best.cp !== undefined ? completed.best.cp - candidate.cp : 0;
-      if (candidate && cb !== null && cb >= (held ? .4 : .45) && ca - cb <= .065 * slack && gap <= 65 * slack && alternatives.length &&
-          alternatives.every(s => blunderExpected(s) !== null && blunderExpected(s) < .9)) return 'brilliant';
+      if (candidate && cb !== null && cb >= (held ? .38 : .42) && ca - cb <= .065 * slack && gap <= 65 * slack && alternatives.length &&
+          alternatives.every(s => !completelyWinning(s))) return 'brilliant';
     }
     if ((best.mate > 0 || a >= .85) && b <= .5 && loss >= .2) return 'missed';
     if (isBlunderLoss(best, score) || loss >= .2) return 'blunder';
@@ -2694,7 +2700,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         let sacrifice = false;
         if (!book && score && session.search.completed?.depth >= 12) {
           const a = blunderExpected(score.best), b = blunderExpected(score);
-          if (a !== null && b !== null && b >= (session.brilliant.has(uci) ? .4 : .45) && a - b <= (session.brilliant.has(uci) ? .104 : .065)) {
+          if (a !== null && b !== null && b >= (session.brilliant.has(uci) ? .38 : .42) && a - b <= (session.brilliant.has(uci) ? .104 : .065)) {
             if (!session.sacrifices.has(uci)) session.sacrifices.set(uci, isSoundSacrifice(fen, uci));
             sacrifice = session.sacrifices.get(uci);
           }

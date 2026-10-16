@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.16.2
+// @version      5.17.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -261,6 +261,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .cc-ghost.cc-ghost-leave { transform: scale(0.7); }
     .bs-ghost-ai { position: absolute; inset: 0; pointer-events: none; }
     .piece.bs-fallen { filter: url(#bs-fallen-filter) !important; }
+    [data-pin="board-studio"] a.bs-paused svg { opacity: .4; filter: grayscale(1); }
     .bs-badge { position: absolute; width: 12.5%; height: 12.5%; z-index: 1; pointer-events: none; }
     .bs-badge .bs-list {
       position: absolute; top: 3%; height: 27%; display: flex; align-items: center; gap: 3%;
@@ -550,11 +551,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }, e => console.warn('[Board Studio] Opening book unavailable:', e.message));
   }
 
+  const engineState = { text: 'Engine: not needed yet' }; // what the panel shows about Stockfish
+  const setEngineState = text => { if (engineState.text !== text) { engineState.text = text; listeners.forEach(fn => fn()); } };
   let engineFiles = null;   // { script, wasm } once downloaded
   let engineDownload = null;
   function loadEngineFiles() {
+    if (!engineDownload) setEngineState('Engine: downloading…');
     engineDownload = engineDownload || Promise.all([fetchAsset('stockfish.js', 'text'), fetchAsset('stockfish.wasm', 'buffer')])
-      .then(([script, wasm]) => (engineFiles = { script, wasm }), e => { engineDownload = null; throw e; }); // a failed download is tried again next time
+      .then(([script, wasm]) => { setEngineState('Engine: ready'); return (engineFiles = { script, wasm }); }, e => { engineDownload = null; setEngineState('Engine: download failed (' + e.message + '), retrying on next use'); throw e; }); // a failed download is tried again next time
     return engineDownload;
   }
 
@@ -1844,6 +1848,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     :host(.styled) .row:hover > svg { transform: scale(1.14) rotate(-7deg); }
     .row > span { flex: 1; margin-left: 12px; padding-right: 4px; }
     .item.off .row > span, .item.off .row > svg { opacity: .55; }
+    :host(.paused) .item:not([data-group="global"]) { opacity: .4; }
+    .status { padding: 8px 12px 4px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
+    .status.paused { color: #f7c045; }
     .body { padding: 2px 8px 8px 44px; }
     .item.off .body { display: none; }
 
@@ -2085,6 +2092,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   shadow.innerHTML = `<style>${PANEL_CSS}</style>
     <button class="fab" type="button" aria-label="Styles">${ICON('bs-grad-fab')}</button>
     <div class="panel" role="menu" aria-label="Styles">
+      <div class="item" data-group="global">${row('global', 'Global', 0)}</div>
       <div class="item" data-group="style">${row('style', 'Custom style', 0)}</div>
       <hr class="flow" style="--i:1">
       <div class="item" data-group="marks">${row('marks', 'Double square', 2)}
@@ -2119,9 +2127,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <div class="demo"><span><i class="live" style='background-image:${ghostPiece}'></i></span><span></span><span><i class="ghost" style='background-image:${ghostPiece}'></i></span></div>
           <div class="ghost-bar"></div>
           <div class="sub" data-key="ai" title="After your drawn move, wait for depth 18 to see the opponent's top four replies."><span>Ghost AI</span><button class="sw" role="switch" type="button" aria-label="Ghost AI"></button></div>
-          <div style="font-size:10px;line-height:1.7;opacity:.8"><span style="color:#81c45b">1 Green</span> · <span style="color:#f7c045">2 Yellow</span> · <span style="color:#ed8c32">3 Orange</span> · <span style="color:#fa5146">4 Red</span></div>
+          <div style="font-size:10px;line-height:1.7;opacity:.8">The top reply gets the arrow; every reply glows in the color of how good it is.</div>
         </div>
       </div>
+      <div class="status"></div>
     </div>`;
   document.body.appendChild(host);
 
@@ -2145,6 +2154,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   function renderPanel() {
     host.classList.toggle('styled', rawSettings.style.on);
+    // With Global off nothing runs, whatever the switches below say: say so, in the panel and on the tab.
+    const paused = !rawSettings.global.on;
+    host.classList.toggle('paused', paused);
+    document.querySelector('[data-pin="board-studio"] a')?.classList.toggle('bs-paused', paused);
+    fab.classList.toggle('bs-paused', paused);
+    const status = shadow.querySelector('.panel > .status');
+    if (status) { status.textContent = paused ? 'Paused: Global is off, so nothing below is running.' : engineState.text; status.classList.toggle('paused', paused); }
     shadow.querySelectorAll('.item').forEach(item => {
       const g = item.dataset.group;
       item.classList.toggle('off', !rawSettings[g].on);
@@ -2439,6 +2455,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.stop();
       this.moves.clear();
       console.warn('[Board Studio] Blunder analysis unavailable:', message);
+      setEngineState('Engine: ' + message);
       this.onUpdate();
     }
 

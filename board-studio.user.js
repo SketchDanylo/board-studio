@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.9.6
+// @version      5.10.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -77,10 +77,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     danger: { on: true, blunders: false },
     book: { on: true },
     crown: { on: true },
-    ghosts: { on: true, opacity: 0.25, ai: false }
+    ghosts: { on: true, opacity: 0.25, ai: false },
+    global: { on: true }
   };
 
-  const settings = (() => {
+  const rawSettings = (() => {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch (e) { /* private mode */ }
     const out = {};
@@ -90,6 +91,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (/^#[0-9a-f]{6}$/i.test(out.arrows.color)) out.arrows.color += 'cc';
     return out;
   })();
+
+  // What the script reads. With "Global" off every on/off switch reads as off, so the whole script
+  // goes quiet at once; rawSettings still holds what you picked, and the Styles panel shows that.
+  const settings = new Proxy(rawSettings, {
+    get(target, group) {
+      const value = target[group];
+      if (group === 'global' || !value || typeof value !== 'object') return value;
+      return new Proxy(value, {
+        get: (inner, key) => (typeof inner[key] === 'boolean' && !target.global.on ? false : inner[key])
+      });
+    }
+  });
 
   const listeners = new Set();
   const ARROW_GRADES = {
@@ -104,8 +117,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     missed: { label: 'Missed Win', color: '#dbac1d' }
   };
   function setSetting(group, key, value) {
-    settings[group][key] = value;
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ }
+    rawSettings[group][key] = value;
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(rawSettings)); } catch (e) { /* ignore */ }
     applySettings();
     listeners.forEach(fn => fn());
   }
@@ -1899,6 +1912,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // Flat, colorful 24px icons in the spirit of chess.com's menu icons.
   const ROW_ICONS = {
+    global: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><path d="M7.2 6.4a8 8 0 1 0 9.6 0" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" opacity=".85"/></svg>`,
     style: ICON('bs-grad-row'),
     marks: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="11" height="11" rx="3" fill="#7fd6a0"/><rect x="10.5" y="2.5" width="11" height="11" rx="3" fill="#f0827a" opacity=".92"/><rect x="10.5" y="6" width="3" height="7.5" fill="#c9a98a" opacity=".55"/></svg>`,
     arrows: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19.5V11a4 4 0 0 1 4-4h6.5" fill="none" stroke="#ffaa00" stroke-width="3.2" stroke-linecap="round"/><path d="M14.2 2.8L20.6 7l-6.4 4.2z" fill="#ffaa00" stroke="#ffaa00" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
@@ -1957,6 +1971,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   document.body.appendChild(host);
 
   const panel = shadow.querySelector('.panel');
+  // Right-clicking the Styles item opens this small menu with the master switch.
+  const gmenu = document.createElement('div');
+  gmenu.className = 'panel gmenu'; gmenu.setAttribute('role', 'menu'); gmenu.setAttribute('aria-label', 'Global');
+  gmenu.innerHTML = `<div class="item" data-group="global">${row('global', 'Global', 0)}</div>`;
+  gmenu.style.width = '200px';
+  shadow.appendChild(gmenu);
   const fab = shadow.querySelector('.fab');
   let openPicker = null; // { group, key }
 
@@ -1969,14 +1989,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   ghostDemo.style.opacity = String(settings.ghosts.opacity);
 
   function renderPanel() {
-    host.classList.toggle('styled', settings.style.on);
+    host.classList.toggle('styled', rawSettings.style.on);
     shadow.querySelectorAll('.item').forEach(item => {
       const g = item.dataset.group;
-      item.classList.toggle('off', !settings[g].on);
-      item.querySelector('.row .sw').setAttribute('aria-checked', String(settings[g].on));
-      item.querySelectorAll('.sub').forEach(sub => sub.querySelector('.sw').setAttribute('aria-checked', String(!!settings[g][sub.dataset.key])));
+      item.classList.toggle('off', !rawSettings[g].on);
+      item.querySelector('.row .sw').setAttribute('aria-checked', String(rawSettings[g].on));
+      item.querySelectorAll('.sub').forEach(sub => sub.querySelector('.sw').setAttribute('aria-checked', String(!!rawSettings[g][sub.dataset.key])));
       item.querySelectorAll('.chip').forEach(chip => {
-        chip.querySelector('i').style.setProperty('--c', settings[g][chip.dataset.key]);
+        chip.querySelector('i').style.setProperty('--c', rawSettings[g][chip.dataset.key]);
         chip.classList.toggle('active', !!openPicker && openPicker.group === g && openPicker.key === chip.dataset.key);
       });
     });
@@ -1985,9 +2005,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   shadow.querySelectorAll('.item').forEach(item => {
     const g = item.dataset.group;
     // The whole row toggles, like picking an item in chess.com's menus.
-    item.querySelector('.row').addEventListener('click', () => setSetting(g, 'on', !settings[g].on));
+    item.querySelector('.row').addEventListener('click', () => setSetting(g, 'on', !rawSettings[g].on));
     item.querySelectorAll('.sub').forEach(sub => sub.addEventListener('click', () => {
-      setSetting(g, sub.dataset.key, !settings[g][sub.dataset.key]);
+      setSetting(g, sub.dataset.key, !rawSettings[g][sub.dataset.key]);
     }));
     const slot = item.querySelector('.slot');
     item.querySelectorAll('.chip').forEach(chip => chip.addEventListener('click', () => {
@@ -1996,7 +2016,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       shadow.querySelectorAll('.slot.open').forEach(s => s.classList.remove('open'));
       openPicker = null;
       if (!same) {
-        slot.firstElementChild.replaceChildren(makePicker(settings[g][key], chip.dataset.label, hex => setSetting(g, key, hex)));
+        slot.firstElementChild.replaceChildren(makePicker(rawSettings[g][key], chip.dataset.label, hex => setSetting(g, key, hex)));
         slot.classList.add('open');
         openPicker = { group: g, key };
       }
@@ -2044,13 +2064,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   let closeTimer = 0;
   function hoverIn(from) {
     clearTimeout(closeTimer);
-    if (!settings.style.on || isOpen()) return;
+    if (!rawSettings.style.on || isOpen()) return;
     clearTimeout(openTimer);
     openTimer = setTimeout(() => openPanel(from), 60);
   }
   function hoverOut() {
     clearTimeout(openTimer);
-    if (!settings.style.on || pinned) return;
+    if (!rawSettings.style.on || pinned) return;
     clearTimeout(closeTimer);
     closeTimer = setTimeout(closePanel, 160);
   }
@@ -2065,6 +2085,23 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   fab.addEventListener('click', () => clickItem(fab));
+  function openGlobalMenu(from, e) {
+    e.preventDefault(); e.stopPropagation();
+    clearTimeout(openTimer); clearTimeout(closeTimer);
+    closePanel();
+    const nav = document.getElementById('sidebar-main-menu');
+    const r = from.getBoundingClientRect();
+    const navRight = nav && nav.getBoundingClientRect().width ? nav.getBoundingClientRect().right : r.right;
+    gmenu.style.left = `${Math.min(navRight, innerWidth - 210)}px`;
+    gmenu.classList.add('open');
+    gmenu.style.top = `${Math.max(8, Math.min(r.top - 8, innerHeight - gmenu.offsetHeight - 8))}px`;
+    renderPanel();
+  }
+  fab.addEventListener('contextmenu', e => openGlobalMenu(fab, e));
+  document.addEventListener('pointerdown', e => {
+    if (gmenu.classList.contains('open') && !e.composedPath().includes(gmenu)) gmenu.classList.remove('open');
+  }, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') gmenu.classList.remove('open'); }, true);
   document.addEventListener('pointerdown', e => {
     if (!isOpen()) return;
     const path = e.composedPath();
@@ -2094,6 +2131,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     link.addEventListener('click', e => { e.preventDefault(); clickItem(link); });
     link.addEventListener('pointerenter', () => hoverIn(link));
     link.addEventListener('pointerleave', hoverOut);
+    link.addEventListener('contextmenu', e => openGlobalMenu(link, e));
     pin.after(item);
   }
 

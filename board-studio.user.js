@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.13.1
+// @version      5.14.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -304,10 +304,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   taken.setAttribute('width', '0'); taken.setAttribute('height', '0');
   taken.setAttribute('aria-hidden', 'true');
   taken.style.cssText = 'position:absolute;width:0;height:0;pointer-events:none';
-  const hatch = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'><defs><pattern id='p' width='16' height='16' patternUnits='userSpaceOnUse' patternTransform='rotate(45)'><rect width='8' height='16' fill='#000' fill-opacity='.45'/><rect x='8' width='8' height='16' fill='#fff' fill-opacity='.45'/></pattern></defs><rect width='100' height='100' fill='url(#p)'/></svg>");
+  const hatch = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'><defs><pattern id='p' width='8' height='8' patternUnits='userSpaceOnUse'><rect width='8' height='8' fill='#fff' fill-opacity='.25'/><rect width='4' height='4' fill='#9a9a9a' fill-opacity='.25'/><rect x='4' y='4' width='4' height='4' fill='#9a9a9a' fill-opacity='.25'/></pattern></defs><rect width='100' height='100' fill='url(#p)'/></svg>");
   taken.innerHTML = `<defs>
-    <pattern id="bs-stripe-pat" width="22" height="22" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="11" height="22" fill="#fff"/></pattern>
-    <mask id="bs-stripe-mask" maskUnits="userSpaceOnUse" x="-100" y="-100" width="1000" height="1000"><rect x="-100" y="-100" width="1000" height="1000" fill="url(#bs-stripe-pat)"/></mask>
     <filter id="bs-fallen-filter" x="0" y="0" width="1" height="1" primitiveUnits="objectBoundingBox" color-interpolation-filters="sRGB">
       <feImage href="${hatch}" x="0" y="0" width="1" height="1" preserveAspectRatio="none" result="stripes"/>
       <feComposite in="stripes" in2="SourceAlpha" operator="in" result="onPiece"/>
@@ -656,9 +654,32 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const gone = this.fallenIds, hatched = this.fallenSquares;
     this.arrows.forEach(arrow => {
       const on = !!gone && gone.has(arrow.id);
-      if (arrow.striped === on) return;
+      if (on) {
+        // Thin slanted gaps cut across the shaft and the head, like a sliced arrow.
+        const t = arrow.target || arrow.cur;
+        const angle = Math.atan2(t.ty - t.fy, t.tx - t.fx) * 180 / Math.PI - 25;
+        if (!arrow.cut) {
+          const id = 'bs-cut-' + Math.random().toString(36).slice(2, 9);
+          const pat = document.createElementNS(NS, 'pattern');
+          pat.id = id + '-p';
+          pat.setAttribute('width', '17'); pat.setAttribute('height', '60'); pat.setAttribute('patternUnits', 'userSpaceOnUse');
+          pat.innerHTML = '<rect width="17" height="60" fill="#fff"/><rect x="13.5" width="3.5" height="60" fill="#000"/>';
+          const mask = document.createElementNS(NS, 'mask');
+          mask.id = id;
+          mask.setAttribute('maskUnits', 'userSpaceOnUse');
+          ['x', 'y'].forEach(k => mask.setAttribute(k, '-100'));
+          ['width', 'height'].forEach(k => mask.setAttribute(k, '1000'));
+          mask.innerHTML = `<rect x="-100" y="-100" width="1000" height="1000" fill="url(#${id}-p)"/>`;
+          this.defs.append(pat, mask);
+          arrow.cut = { id, pat, mask };
+          arrow.el.setAttribute('mask', `url(#${id})`);
+        }
+        arrow.cut.pat.setAttribute('patternTransform', `rotate(${angle.toFixed(1)})`);
+      } else if (arrow.cut) {
+        arrow.el.removeAttribute('mask');
+        arrow.cut.pat.remove(); arrow.cut.mask.remove(); arrow.cut = null;
+      }
       arrow.striped = on;
-      if (on) arrow.el.setAttribute('mask', 'url(#bs-stripe-mask)'); else arrow.el.removeAttribute('mask');
     });
     this.board.querySelectorAll(':scope > .piece').forEach(el => {
       const sq = squareClass(el);
@@ -1150,6 +1171,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     dropArrow(arrow) {
       arrow.el.remove();
       arrow.grad.remove();
+      if (arrow.cut) { arrow.cut.pat.remove(); arrow.cut.mask.remove(); }
       this.arrows.delete(arrow.id);
     }
 
@@ -2687,6 +2709,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!best || !score) return null;
     const a = blunderExpected(best), b = blunderExpected(score);
     if (a === null || b === null) return null;
+    // A real sacrifice that still forces mate is Brilliant, even when a shorter mate (or another
+    // winning move) exists: the mate score is a proven line, so a shallow depth is enough.
+    if (sacrifice && score.mate > 0 && (completed ? completed.depth : (score.depth ?? 99)) >= 8) return 'brilliant';
     const loss = Math.max(0, a - b);
     const cpLoss = best.cp !== undefined && score.cp !== undefined ? Math.max(0, best.cp - score.cp) : null;
     const nearBest = loss <= .02 && (cpLoss === null || cpLoss <= 40);
@@ -2771,7 +2796,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const uci = move.from + move.to + (move.promotion || '');
         const book = session.book.has(uci), score = session.search.moves.get(uci);
         let sacrifice = false;
-        if (!book && score && session.search.completed?.depth >= 12) {
+        if (!book && score && (session.search.completed?.depth >= 12 || (score.mate > 0 && score.depth >= 8))) {
           const a = blunderExpected(score.best), b = blunderExpected(score);
           if (a !== null && b !== null && b >= (session.brilliant.has(uci) ? .38 : .42) && a - b <= (session.brilliant.has(uci) ? .104 : .065)) {
             if (!session.sacrifices.has(uci)) session.sacrifices.set(uci, isSoundSacrifice(fen, uci));

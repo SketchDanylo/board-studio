@@ -42,8 +42,12 @@ test('all nine grades use expected-point loss; Brilliant requires deep, sound sa
     const completed = { depth: 12, best: candidate, scores: [candidate, top] };
     assert.equal(grade(candidate, candidate, { sacrifice: true, completed }), 'brilliant');
     assert.equal(grade(candidate, candidate, { sacrifice: false, completed }), 'best');
-    assert.equal(grade(candidate, candidate, { sacrifice: true, completed: { ...completed, depth: 11 } }), 'best');
-    assert.equal(grade(candidate, candidate, { sacrifice: true, completed: { ...completed, scores: [candidate, { ...top, mate: 5 }] } }), 'best');
+    // Feeding material into a forced mate is Brilliant however long the mate is and whatever else wins.
+    assert.equal(grade(candidate, candidate, { sacrifice: true, completed: { ...completed, depth: 11 } }), 'brilliant');
+    assert.equal(grade(candidate, candidate, { sacrifice: true, completed: { ...completed, depth: 7 } }), 'best');
+    assert.equal(grade(candidate, candidate, { sacrifice: true, completed: { ...completed, scores: [candidate, { ...top, mate: 5 }] } }), 'brilliant');
+    assert.equal(grade({ move: 'a1a2', mate: 2 }, { move: 'e6g8', mate: 7 }, { sacrifice: true, completed }), 'brilliant', 'a longer mate still counts');
+    assert.notEqual(grade({ move: 'a1a2', mate: 2 }, { move: 'e6g8', mate: 7 }, { sacrifice: false, completed }), 'brilliant', 'no sacrifice, no Brilliant');
   } finally { f.close(); }
 });
 

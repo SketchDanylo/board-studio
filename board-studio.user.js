@@ -2588,13 +2588,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const nearBest = loss <= .02 && (cpLoss === null || cpLoss <= 40);
     // A real sacrifice may give up a little against the engine's top move and still be Brilliant
     // (chess.com does the same), as long as it stays about level.
-    const closeToBest = loss <= .08 && (cpLoss === null || cpLoss <= 70);
+    const closeToBest = loss <= .065 && (cpLoss === null || cpLoss <= 65);
     if (closeToBest && b >= .45 && sacrifice && completed && completed.depth >= 12) {
       const candidate = completed.scores.find(s => s.move === score.move);
       const alternatives = completed.scores.filter(s => s.move !== score.move);
       const ca = blunderExpected(completed.best), cb = candidate && blunderExpected(candidate);
       const gap = candidate?.cp !== undefined && completed.best.cp !== undefined ? completed.best.cp - candidate.cp : 0;
-      if (candidate && cb !== null && cb >= .45 && ca - cb <= .08 && gap <= 70 && alternatives.length &&
+      if (candidate && cb !== null && cb >= .45 && ca - cb <= .065 && gap <= 65 && alternatives.length &&
           alternatives.every(s => blunderExpected(s) !== null && blunderExpected(s) < .9)) return 'brilliant';
     }
     if ((best.mate > 0 || a >= .85) && b <= .5 && loss >= .2) return 'missed';

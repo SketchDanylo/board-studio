@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.0.0
+// @version      6.0.1
 // @description  Runs the latest Board Studio straight from GitHub on every page load.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -9,6 +9,7 @@
 // @updateURL    https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio-loader.user.js
 // @downloadURL  https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio-loader.user.js
 // @connect      raw.githubusercontent.com
+// @connect      api.github.com
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
@@ -16,15 +17,19 @@
 // @grant        unsafeWindow
 // ==/UserScript==
 
-// Every page load fetches the current board-studio.user.js from GitHub, so a push is live
-// after a refresh: no version bumps, no Tampermonkey update checks. If GitHub cannot be
-// reached, the last copy that loaded runs instead.
+// Resolve main to a commit first. Raw GitHub can return an older main file even
+// with a timestamp query; a commit URL always identifies the requested revision.
 (function () {
   'use strict';
-  const SOURCE = 'https://raw.githubusercontent.com/SketchDanylo/board-studio/main/board-studio.user.js';
+  const BASE = 'https://raw.githubusercontent.com/SketchDanylo/board-studio/';
+  const REF = 'https://api.github.com/repos/SketchDanylo/board-studio/git/ref/heads/main';
+  const BASELINE = 'b6de7e74897f3888529cb6ea626c49732cf96d4d'; // includes the unclipped crown
+  let started = false;
 
   // In the page itself, like a @grant none script, so it can reach chess.com's board objects.
   const run = code => {
+    if (started) return;
+    started = true;
     try {
       unsafeWindow.eval(`${code}\n//# sourceURL=board-studio.user.js`);
     } catch (e) {
@@ -38,19 +43,41 @@
     else console.error('[Board Studio] could not download the script from GitHub');
   };
 
-  GM_xmlhttpRequest({
+  const version = code => (code.match(/@version\s+([\d.]+)/)?.[1] || '0').split('.').map(Number);
+  const newer = (a, b) => {
+    const av = version(a), bv = version(b);
+    for (let i = 0; i < Math.max(av.length, bv.length); i++) {
+      if ((av[i] || 0) !== (bv[i] || 0)) return (av[i] || 0) > (bv[i] || 0);
+    }
+    return false;
+  };
+  const download = sha => GM_xmlhttpRequest({
     method: 'GET',
-    // The query string skips GitHub's few-minute CDN cache.
-    url: `${SOURCE}?t=${Date.now()}`,
-    headers: { 'Cache-Control': 'no-cache' },
+    url: `${BASE}${sha}/board-studio.user.js`,
     timeout: 20000,
     onload: res => {
       const code = res.status === 200 ? res.responseText : '';
       if (!code.includes('==UserScript==')) return fallback();
-      if (GM_getValue('code', '') !== code) GM_setValue('code', code);
-      run(code);
+      const cached = GM_getValue('code', '');
+      const selected = newer(cached, code) ? cached : code;
+      if (selected !== cached) GM_setValue('code', selected);
+      run(selected);
     },
     onerror: fallback,
     ontimeout: fallback
+  });
+
+  GM_xmlhttpRequest({
+    method: 'GET',
+    url: `${REF}?t=${Date.now()}`,
+    headers: { 'Accept': 'application/vnd.github+json', 'Cache-Control': 'no-cache' },
+    timeout: 10000,
+    onload: res => {
+      let sha;
+      try { sha = res.status === 200 && JSON.parse(res.responseText).object?.sha; } catch (e) { /* use the known release */ }
+      download(typeof sha === 'string' && /^[a-f0-9]{40}$/.test(sha) ? sha : BASELINE);
+    },
+    onerror: () => download(BASELINE),
+    ontimeout: () => download(BASELINE)
   });
 })();

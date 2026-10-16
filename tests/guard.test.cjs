@@ -23,3 +23,16 @@ test('an older copy without the guard is reported on screen', async () => {
     assert.ok(f.w.document.querySelector('.bs-duplicate'), 'warning shown');
   } finally { f.close(); }
 });
+
+test('no engine in games against people', () => {
+  const f = setup();
+  try {
+    f.api.settings.danger.blunders = true;
+    f.dom.reconfigure({ url: 'https://www.chess.com/game/185390694268' });
+    const b = f.board();
+    b.innerHTML = '<svg class="arrows"></svg><div class="piece wp square-42"></div><div class="hint square-44"><div></div></div>';
+    const ctl = new f.api.Controller(b.querySelector('svg'));
+    ctl.selected = { f: 3, r: 1 }; ctl.paintHints();
+    assert.equal(f.api.blunderHints.search, null, 'no Stockfish search started');
+  } finally { f.close(); }
+});

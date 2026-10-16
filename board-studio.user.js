@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.7
+// @version      5.6.8
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1935,6 +1935,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // ---------- progressive blunder hints ----------
 
+  // Stockfish (blunder crosses and the crown) only runs against bots, in analysis, puzzles and
+  // practice: engine help in a game against a person breaks chess.com's fair-play rules.
+  const engineAllowed = () => /^\/(play\/computer|game\/computer|analysis|puzzles|practice)(\/|$)/.test(location.pathname);
+
+
   function blunderFEN(board) {
     try { return board.game?.getFEN() || board.getAttribute('fen') || board.getAttribute('data-fen') || null; } catch (e) { return null; }
   }
@@ -2099,7 +2104,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const fen = blunderFEN(ctl.board);
       const position = blunderPosition(ctl.board);
       const piece = from && position[from.f]?.[from.r];
-      if (!ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
+      if (!engineAllowed() && settings.danger.blunders) showHintStatus('Show Blunders is off in games against people (fair play).');
+      if (!engineAllowed() || !ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
         if (this.ctl === ctl) this.clear();
         return empty;
       }
@@ -2349,11 +2355,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return negative ? 'b' : 'w';
   }
 
-  // Bot and live boards both expose the position through the board's game API.
-  const engineAllowed = () => {
-    const board = document.querySelector('wc-chess-board, chess-board');
-    return !!(board && board.game && typeof board.game.getFEN === 'function');
-  };
 
   const engine = {
     worker: null, ready: false, searching: false, fen: null, next: null, result: null,

@@ -27,6 +27,10 @@ Works on both chess.com board types (the normal one and the Arcade / Natural can
 
 The winning-side crown works on bot and live boards, using the visible evaluation bar when available and the bundled engine otherwise. An equal score shows no crown. Toggle it with **Styles → Winning side**. Version 5.5.3 supports both the current `player-top` / `player-bottom` avatar containers and the older board layout IDs.
 
+## Fair play
+
+Stockfish (Show Blunders and the Winning side crown without an eval bar) only runs against bots, in analysis, in puzzles and in practice, and the opening book is off in live games. Engine help in a game against a person breaks chess.com's fair-play rules.
+
 ## Blunder estimates
 
 Version 5.6.4 also flags a loss of at least 250 centipawns when both moves have at most 0.01 expected points. This handles positions where Stockfish rounds every candidate to a loss: dropping a queen must not disappear merely because the position was already bad. This exception does not apply to positions that remain winning or to shortening an already-forced mate. A regression test reconstructs the reported board and checks that Qe2, Qf3 and Qxg4 receive crosses from the real engine at depth 13.

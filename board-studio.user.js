@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.16.0
+// @version      5.16.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2708,8 +2708,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         Object.assign(badge.el.style, spot(to));
         if (badge.key === key) return;
         badge.key = key;
-        const icons = (kinds, cls) => `<div class="bs-list ${cls}">${kinds.map(([kind, color]) => `<i style="background-image:${imageFor(kind)};--c:${color || 'transparent'}"></i>`).join('')}</div>`;
-        badge.el.innerHTML = icons(others.map(i => [i.kind, i.color]), 'bs-alt') + (taken.length ? icons(taken.map(k => [k, null]), 'bs-taken') : '');
+        const makeList = (kinds, cls) => {
+          const box = document.createElement('div');
+          box.className = 'bs-list ' + cls;
+          kinds.forEach(([kind, color]) => {
+            const icon = document.createElement('i');
+            icon.style.backgroundImage = imageFor(kind);
+            if (color) icon.style.setProperty('--c', color);
+            box.appendChild(icon);
+          });
+          return box;
+        };
+        badge.el.replaceChildren(makeList(others.map(i => [i.kind, i.color]), 'bs-alt'));
+        if (taken.length) badge.el.appendChild(makeList(taken.map(k => [k, null]), 'bs-taken'));
       });
       for (const [to, badge] of badges) if (!groups.has(to)) { badge.el.remove(); badges.delete(to); }
       // A ghost one of the replies captures goes away, like when you draw the capture yourself.

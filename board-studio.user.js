@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.11.1
+// @version      5.11.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2666,7 +2666,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         let sacrifice = false;
         if (!book && score && session.search.completed?.depth >= 12) {
           const a = blunderExpected(score.best), b = blunderExpected(score);
-          if (a !== null && b !== null && b >= .5 && a - b <= .02) {
+          if (a !== null && b !== null && b >= .45 && a - b <= .065) {
             if (!session.sacrifices.has(uci)) session.sacrifices.set(uci, isSoundSacrifice(fen, uci));
             sacrifice = session.sacrifices.get(uci);
           }

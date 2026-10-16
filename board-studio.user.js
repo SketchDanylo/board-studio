@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.15.0
+// @version      5.16.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -261,6 +261,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .cc-ghost.cc-ghost-leave { transform: scale(0.7); }
     .bs-ghost-ai { position: absolute; inset: 0; pointer-events: none; }
     .piece.bs-fallen { filter: url(#bs-fallen-filter) !important; }
+    .bs-badge { position: absolute; width: 12.5%; height: 12.5%; z-index: 1; pointer-events: none; }
+    .bs-badge .bs-list {
+      position: absolute; top: 3%; height: 27%; display: flex; align-items: center; gap: 3%;
+      padding: 0 4%; border-radius: 999px; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    }
+    .bs-badge .bs-alt { left: 3%; background: rgba(214, 69, 65, .78); }
+    .bs-badge .bs-taken { right: 3%; background: rgba(104, 104, 104, .82); }
+    .bs-badge .bs-list i {
+      display: block; height: 88%; aspect-ratio: 1; background-size: 100% 100%; background-repeat: no-repeat;
+      filter: drop-shadow(0 0 1.5px var(--c, transparent)) drop-shadow(0 0 2.5px var(--c, transparent));
+    }
+    .bs-badge .bs-taken i { filter: grayscale(1) brightness(.92); }
     .bs-ghost-ai svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
     .bs-ghost-ai .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)); }
     .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
@@ -2646,7 +2658,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           const parts = [{ from: move.from, to: move.to, kind: move.color + (move.promotion || move.piece) }];
           if (move.flags.includes('k')) parts.push({ from: `h${move.from[1]}`, to: `f${move.from[1]}`, kind: move.color + 'r' });
           if (move.flags.includes('q')) parts.push({ from: `a${move.from[1]}`, to: `d${move.from[1]}`, kind: move.color + 'r' });
-          item = { san: move.san, capture: move.captured ? move.to : null, pieces: [] };
+          item = { san: move.san, capture: move.captured ? move.to : null, pieces: [], kind: parts[0].kind, takenKind: move.captured ? (move.color === 'w' ? 'b' : 'w') + move.captured : null };
           for (const part of parts) {
             const el = document.createElement('div');
             el.className = 'cc-ghost'; el.dataset.square = part.to;
@@ -2657,22 +2669,52 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           }
           items.set(uci, item);
         }
+        item.rank = i; item.color = color; item.to = item.pieces[0].to;
         for (const { el, to } of item.pieces) {
           el.dataset.rank = String(i + 1);
           el.title = `Opponent reply ${i + 1}: ${item.san}`;
           el.style.setProperty('--reply-color', color);
           el.classList.remove('cc-ghost-leave');
-          Object.assign(el.style, spot(to), { opacity: String(settings.ghosts.opacity) });
+          Object.assign(el.style, spot(to));
         }
       });
-      // A ghost one of the replies captures goes away, like when you draw the capture yourself.
-      ctl.ghosts?.take(new Set([...items.values()].map(i => i.capture).filter(Boolean)));
       for (const [uci, item] of items) {
         if (keep.has(uci)) continue;
         items.delete(uci);
         item.pieces.forEach(({ el }) => { el.style.opacity = '0'; el.classList.add('cc-ghost-leave'); });
         setTimeout(() => item.pieces.forEach(({ el }) => el.remove()), 340);
       }
+      // Replies that land on the same square: only the best one's ghost stays on it, the others
+      // shrink into a red list in the top-left corner (glowing in the color of their move) and the
+      // pieces taken there go into a gray list in the top-right corner.
+      const groups = new Map();
+      items.forEach(item => { if (!groups.has(item.to)) groups.set(item.to, []); groups.get(item.to).push(item); });
+      const badges = session.badges || (session.badges = new Map());
+      groups.forEach((list, to) => {
+        list.sort((x, y) => x.rank - y.rank);
+        list.forEach((item, n) => item.pieces.forEach(({ el }) => { el.style.opacity = n === 0 ? String(settings.ghosts.opacity) : '0'; }));
+        const others = list.slice(1);
+        let badge = badges.get(to);
+        if (!others.length) { if (badge) { badge.el.remove(); badges.delete(to); } return; }
+        const taken = [...new Set(list.map(i => i.takenKind).filter(Boolean))];
+        const key = JSON.stringify([ctl.flipped, others.map(i => [i.kind, i.color]), taken]);
+        if (!badge) {
+          const el = document.createElement('div');
+          el.className = 'bs-badge';
+          layer.appendChild(el);
+          badge = { el, key: '' };
+          badges.set(to, badge);
+        }
+        Object.assign(badge.el.style, spot(to));
+        if (badge.key === key) return;
+        badge.key = key;
+        const icons = (kinds, cls) => `<div class="bs-list ${cls}">${kinds.map(([kind, color]) => `<i style="background-image:${imageFor(kind)};--c:${color || 'transparent'}"></i>`).join('')}</div>`;
+        badge.el.innerHTML = icons(others.map(i => [i.kind, i.color]), 'bs-alt') + (taken.length ? icons(taken.map(k => [k, null]), 'bs-taken') : '');
+      });
+      for (const [to, badge] of badges) if (!groups.has(to)) { badge.el.remove(); badges.delete(to); }
+      // A ghost one of the replies captures goes away, like when you draw the capture yourself.
+      // Counted from the replies still on show, so a reply that stopped capturing frees the piece.
+      ctl.ghosts?.take(new Set([...items.values()].map(i => i.capture).filter(Boolean)));
     }
   };
   setInterval(() => {

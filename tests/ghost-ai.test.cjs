@@ -171,3 +171,30 @@ test('real bundled engine completes depth-18 opponent search with four legal ran
     fs.unlinkSync(path.join(dir, 'stockfish.cjs')); fs.unlinkSync(path.join(dir, 'stockfish.wasm')); fs.rmdirSync(dir);
   }
 });
+
+test('replies landing on one square share it: best ghost on it, others and the taken piece in corner lists', () => {
+  const f = setup();
+  try {
+    Object.assign(f.api.settings.ghosts, { on: true, ai: true });
+    Object.assign(f.api.settings.arrows, { on: false, aim: false });
+    f.api.settings.book.on = false;
+    const board = f.board('rnbqkbnr/pppp1ppp/2n5/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 3');
+    f.rightClick();
+    board.innerHTML = '<svg class="arrows"><polygon class="arrow" data-arrow="d2d4"></polygon></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    const s = f.api.ghostAI.sessions.get(board).search;
+    const line = moves => moves.map((move, i) => ({ move, cp: -i * 10, wdl: [0, 1000, 0] }));
+    iteration(s, 12, line(['e5d4', 'c6d4', 'g8f6', 'd8e7']));
+    const opacity = rank => board.querySelector('.bs-ghost-ai .cc-ghost[data-rank="' + rank + '"]').style.opacity;
+    assert.equal(opacity(1), '0.25'); assert.equal(opacity(2), '0', 'the other piece on d4 is hidden');
+    assert.equal(opacity(3), '0.25');
+    const badge = board.querySelector('.bs-ghost-ai .bs-badge');
+    assert.equal(badge.querySelectorAll('.bs-alt i').length, 1);
+    assert.equal(badge.querySelectorAll('.bs-taken i').length, 1);
+    assert.ok(ctl.ghosts.taken.has('d4'), 'the d4 ghost is taken');
+    // The top move changes and no longer takes there: nothing stays marked as taken.
+    iteration(s, 13, line(['g8f6', 'd8e7', 'h7h6', 'a7a6']));
+    assert.equal(board.querySelectorAll('.bs-ghost-ai .bs-badge').length, 0);
+    assert.equal(ctl.ghosts.taken.size, 0, 'a reply that stopped taking frees the piece');
+  } finally { f.close(); }
+});

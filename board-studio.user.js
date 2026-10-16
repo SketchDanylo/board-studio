@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.16.1
+// @version      5.16.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -554,7 +554,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   let engineDownload = null;
   function loadEngineFiles() {
     engineDownload = engineDownload || Promise.all([fetchAsset('stockfish.js', 'text'), fetchAsset('stockfish.wasm', 'buffer')])
-      .then(([script, wasm]) => (engineFiles = { script, wasm }));
+      .then(([script, wasm]) => (engineFiles = { script, wasm }), e => { engineDownload = null; throw e; }); // a failed download is tried again next time
     return engineDownload;
   }
 
@@ -2579,6 +2579,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const search = new GhostSearch(fen, () => {
           if (this.sessions.get(board)?.search === search) {
             const current = this.sessions.get(board);
+            if (search.error) setTimeout(() => { if (this.sessions.get(board)?.search === search) { this.stop(board); current.ctl.syncGhosts(); } }, 4000);
             current.ctl.syncGhosts();
           }
         });

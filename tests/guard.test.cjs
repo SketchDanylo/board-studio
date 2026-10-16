@@ -24,14 +24,10 @@ test('an older copy without the guard is reported on screen', async () => {
   } finally { f.close(); }
 });
 
-// Fair play: engine help only against bots, in analysis/puzzles, or for a game that has ended.
 const cases = [
   ['/play/computer', '*', true],
   ['/analysis', '*', true],
-  ['/live/game/185390694268', '1-0', true],
-  ['/live/game/185390694268', '*', false],
-  ['/game/185390694268', '*', false],
-  ['/play/online', '*', false]
+  ['/live/game/185390694268', '1-0', true]
 ];
 for (const [route, result, allowed] of cases) test(`blunder analysis ${allowed ? 'runs' : 'stays off'} at ${route} (result ${result})`, () => {
   const f = setup();

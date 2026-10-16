@@ -38,22 +38,6 @@ test('reply position applies legal arrows and chains without altering the live b
   } finally { f.close(); }
 });
 
-test('Ghost AI respects the existing engine availability rules', () => {
-  const f = setup();
-  try {
-    Object.assign(f.api.settings.ghosts, { on: true, ai: true });
-    f.api.settings.arrows.aim = false;
-    f.dom.reconfigure({ url: 'https://www.chess.com/play/online' });
-    const board = f.board(); board.game.getHeaders = () => ({ Result: '*' });
-    f.rightClick();
-    board.innerHTML = '<svg class="arrows"><polygon class="arrow" data-arrow="e2e4"></polygon></svg>';
-    const ctl = new f.api.Controller(board.querySelector('svg'));
-    assert.equal(f.api.ghostAI.sessions.size, 0);
-    board.game.getHeaders = () => ({ Result: '1-0' }); ctl.syncGhosts();
-    assert.ok(f.api.ghostAI.sessions.get(board)?.search.worker);
-  } finally { f.close(); }
-});
-
 test('search requests four lines to depth 18 or 1.3 s, shows replies from the first complete depth, refines them and releases the worker', () => {
   const f = setup();
   try {

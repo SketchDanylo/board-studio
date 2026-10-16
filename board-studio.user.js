@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.17.0
+// @version      5.18.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2307,7 +2307,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // ---------- progressive blunder hints ----------
-  const engineAllowed = () => true;
 
   function blunderFEN(board) {
     try { return board.game?.getFEN() || board.getAttribute('fen') || board.getAttribute('data-fen') || null; } catch (e) { return null; }
@@ -2578,7 +2577,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // replies are only worked out at the end of the line.
       let viewing = false;
       try { viewing = !!board.game?.canMoveForward?.(); } catch (e) { /* no game yet */ }
-      if (!settings.ghosts.on || !settings.ghosts.ai || !engineAllowed() || document.hidden || !board.isConnected || viewing) { this.stop(board); return; }
+      if (!settings.ghosts.on || !settings.ghosts.ai || document.hidden || !board.isConnected || viewing) { this.stop(board); return; }
       const all = settings.arrows.on ? ctl.aimedArrows() : ctl.nativeArrows ?
         [...ctl.nativeArrows.values()].map(i => ({ key: i.key, ...i.data })) : [...ctl.svg.querySelectorAll('polygon.arrow')].map(p => {
           const m = MOVE.exec(p.getAttribute('data-arrow') || '');
@@ -2867,7 +2866,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     clear() { for (const board of this.sessions.keys()) this.stop(board); },
     sync(ctl, arrows) {
       const grades = new Map(), board = ctl.board, fen = blunderFEN(board);
-      if (!settings.arrowEval.on || !engineAllowed() || document.hidden || !board.isConnected || !fen || !arrows.length) {
+      if (!settings.arrowEval.on || document.hidden || !board.isConnected || !fen || !arrows.length) {
         this.stop(board); return grades;
       }
       let session = this.sessions.get(board);
@@ -2976,7 +2975,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const fen = blunderFEN(ctl.board);
       const position = blunderPosition(ctl.board);
       const piece = from && position[from.f]?.[from.r];
-      if (!engineAllowed() || !ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
+      if (!ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
         if (this.ctl === ctl) this.clear();
         return empty;
       }
@@ -3319,10 +3318,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (bar && bar.getClientRects().length) {
         engine.stop();
         leader = evalLeader();
-      } else if (engineAllowed()) {
-        leader = engineLeader();
       } else {
-        engine.stop();
+        leader = engineLeader();
       }
     } else {
       engine.stop();

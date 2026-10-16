@@ -25,7 +25,7 @@ test('fallback draws red capture-risk dots with the blunder option off', () => {
   } finally { f.close(); }
 });
 
-test('missing native hints still produce a cross and restore the ordinary dot on recovery', () => {
+test('missing native hints still produce a cross and restore the ordinary dot on recovery', async () => {
   const f = setup();
   try {
     f.api.settings.danger.blunders = true;
@@ -36,11 +36,14 @@ test('missing native hints still produce a cross and restore the ordinary dot on
     iteration(search, 1, [good, { move: 'g2g4', mate: -1 }]);
     assert.equal(b.querySelector('.bs-blunder-cross').dataset.square, 'g4');
     assert.equal(b.querySelector('.bs-fallback-dot[data-square="g4"]').dataset.bsBlunder, '1');
-    assert.equal(f.w.getComputedStyle(b.querySelector('.bs-fallback-dot[data-square="g4"]')).visibility, 'visible');
+    assert.equal(f.w.getComputedStyle(b.querySelector('.bs-fallback-dot[data-square="g4"]')).visibility, 'hidden');
     assert.equal(b.querySelector('.bs-fallback-dot[data-square="g3"]').dataset.bsBlunder, undefined);
     iteration(search, 2, [good, { move: 'g2g4', cp: -20, wdl: [0, 950, 50] }]);
     assert.equal(b.querySelector('.bs-blunder-cross:not(.bs-cross-leave)'), null);
+    assert.equal(b.querySelector('.bs-fallback-dot[data-square="g4"]').dataset.bsBlunder, '1');
+    await new Promise(resolve => setTimeout(resolve, 280));
     assert.equal(b.querySelector('.bs-fallback-dot[data-square="g4"]').dataset.bsBlunder, undefined);
+    assert.equal(f.w.getComputedStyle(b.querySelector('.bs-fallback-dot[data-square="g4"]')).visibility, 'visible');
   } finally { f.close(); }
 });
 

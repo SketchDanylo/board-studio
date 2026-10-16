@@ -103,7 +103,7 @@ test('DOM crosses appear immediately, flip, animate out, and can revive without 
     const s = f.api.blunderHints.search;
     iteration(s, 1, [best, bad]);
     assert.equal(b.querySelector('.hint').dataset.bsBlunder, '1');
-    assert.equal(f.w.getComputedStyle(b.querySelector('.hint')).visibility, 'visible');
+    assert.equal(f.w.getComputedStyle(b.querySelector('.hint')).visibility, 'hidden');
     let cross = b.querySelector('.bs-blunder-cross');
     assert.equal(cross.dataset.square, 'd4');
     assert.equal(cross.style.left, '37.5%');
@@ -114,7 +114,7 @@ test('DOM crosses appear immediately, flip, animate out, and can revive without 
     iteration(s, 2, [best, recovered]);
     assert.equal(b.querySelector('.bs-blunder-cross:not(.bs-cross-leave)'), null);
     assert.ok(cross.classList.contains('bs-cross-leave'));
-    assert.equal(b.querySelector('.hint').dataset.bsBlunder, undefined);
+    assert.equal(b.querySelector('.hint').dataset.bsBlunder, '1', 'native dot stays hidden until the reverse morph completes');
     assert.equal(b.querySelector('.hint').dataset.bsDanger, undefined);
     iteration(s, 3, [best, bad]);
     assert.equal(b.querySelector('.bs-blunder-cross'), cross);
@@ -125,10 +125,12 @@ test('DOM crosses appear immediately, flip, animate out, and can revive without 
     iteration(s, 4, [best, recovered]);
     await new Promise(resolve => setTimeout(resolve, 280));
     assert.equal(cross.isConnected, false);
+    assert.equal(b.querySelector('.hint').dataset.bsBlunder, undefined);
+    assert.equal(f.w.getComputedStyle(b.querySelector('.hint')).visibility, 'visible');
   } finally { f.close(); }
 });
 
-test('canvas red dots stay visible with blunder mode on and off', () => {
+test('canvas dots hand off during both morph directions and restore when mode turns off', async () => {
   const f = setup();
   try {
     f.api.settings.danger.blunders = true;
@@ -140,10 +142,17 @@ test('canvas red dots stay visible with blunder mode on and off', () => {
     ctl.paintHints();
     const s = f.api.blunderHints.search;
     iteration(s, 10, [best, bad]); s.publish(); iteration(s, 11, [best, bad]); s.publish();
-    assert.equal(sprite.renderable, true);
-    assert.equal(sprite.tint, 0xff4a42, 'the red dot remains under the cross');
+    assert.equal(sprite.renderable, false, 'one marker is drawn, not a dot beneath the cross');
+    assert.equal(sprite.tint, 0xff4a42, 'capture risk color is preserved for recovery');
+    assert.equal(other.renderable, true);
     assert.equal(other.tint, 0xff4a42, 'non-blunder capture squares stay red');
     assert.ok(b.querySelector('.bs-blunder-cross'));
+    iteration(s, 12, [best, recovered]);
+    assert.equal(sprite.renderable, false, 'the overlay owns the reverse morph');
+    await new Promise(resolve => setTimeout(resolve, 280));
+    assert.equal(sprite.renderable, true, 'the dot returns after the reverse morph');
+    iteration(s, 13, [best, bad]);
+    assert.equal(sprite.renderable, false);
     f.api.settings.danger.blunders = false; ctl.paintHints();
     assert.equal(sprite.renderable, true);
     assert.equal(sprite.tint, 0xff4a42);

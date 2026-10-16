@@ -37,6 +37,6 @@ for (const route of ['/game/185390694268', '/game/live/185390694268', '/play/onl
     assert.ok(search, 'the URL must not prevent a readable board from being evaluated');
     iteration(search, 1, [{ move: 'e2e4', cp: 20, wdl: [100, 850, 50] }, { move: 'd2d4', cp: -300, wdl: [0, 150, 850] }]);
     assert.equal(b.querySelector('.bs-blunder-cross').dataset.square, 'd4');
-    assert.equal(f.w.getComputedStyle(b.querySelector('.hint')).visibility, 'visible');
+    assert.equal(f.w.getComputedStyle(b.querySelector('.hint')).visibility, 'hidden');
   } finally { f.close(); }
 });

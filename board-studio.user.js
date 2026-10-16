@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.9
+// @version      5.6.10
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -170,6 +170,27 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // ---------- page styles ----------
 
+  // Matching path commands let the browser interpolate the actual outline in both
+  // directions. A second contour shrinks the capture ring's hole into the cross.
+  const hintCircle = radius => Array.from({ length: 12 }, (_, i) => {
+    const angle = (i * 30 - 60) * Math.PI / 180;
+    return [50 + Math.cos(angle) * radius, 50 + Math.sin(angle) * radius];
+  });
+  function roundedHintPath(points, round) {
+    const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+    const pair = p => p.map(v => v.toFixed(3)).join(' ');
+    let d = `M${pair(mix(points[points.length - 1], points[0], round))}`;
+    points.forEach((p, i) => {
+      const before = mix(p, points[(i + points.length - 1) % points.length], round);
+      const after = mix(p, points[(i + 1) % points.length], round);
+      d += ` L${pair(before)} Q${pair(p)} ${pair(after)}`;
+    });
+    return d + ' Z';
+  }
+  const hintHole = roundedHintPath(hintCircle(0), .5);
+  const hintDotPath = roundedHintPath(hintCircle(16), .5) + hintHole;
+  const hintCrossPath = roundedHintPath([[-5,-25],[5,-25],[5,-5],[25,-5],[25,5],[5,5],[5,25],[-5,25],[-5,5],[-25,5],[-25,-5],[-5,-5]].map(([x,y]) => [50 + (x-y)/Math.SQRT2, 50 + (x+y)/Math.SQRT2]), .18) + hintHole;
+
   const style = document.createElement('style');
   style.textContent = `
     html.bs-arrows svg.arrows polygon.arrow[data-cc] { display: none !important; }
@@ -208,15 +229,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     wc-chess-board > [data-bs-danger], chess-board > [data-bs-danger] {
       --color-transparent-black-14: rgba(220, 45, 45, 0.42) !important;
     }
+    [data-bs-blunder] { visibility: hidden !important; }
     .bs-blunder-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
     .bs-blunder-cross {
       position: absolute; width: 12.5%; height: 12.5%; color: rgba(220, 45, 45, .42);
-      opacity: 1; transform: scale(1);
-      transition: opacity 180ms ease, transform 240ms cubic-bezier(.34, 1.4, .64, 1);
+      transition: color 240ms ease;
     }
-    .bs-blunder-cross svg { position: absolute; inset: 25%; display: block; width: 50%; height: 50%; }
-    .bs-blunder-cross.bs-cross-enter, .bs-blunder-cross.bs-cross-leave { opacity: 0; transform: scale(.45); }
-    @media (prefers-reduced-motion: reduce) { .bs-blunder-cross { transition: none; } }
+    .bs-blunder-cross svg { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+    .bs-blunder-cross path { d: path('${hintCrossPath}'); transition: d 240ms cubic-bezier(.22, 1, .36, 1); }
+    .bs-blunder-cross.bs-cross-enter, .bs-blunder-cross.bs-cross-leave { color: var(--bs-dot-color); }
+    .bs-blunder-cross.bs-cross-enter path, .bs-blunder-cross.bs-cross-leave path { d: var(--bs-dot-shape); }
+    @media (prefers-reduced-motion: reduce) { .bs-blunder-cross, .bs-blunder-cross path { transition: none; } }
     .bs-fallback-hints { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
     .bs-fallback-dot { position: absolute; width: 12.5%; height: 12.5%; --bs-dot: rgba(0, 0, 0, .14); }
     .bs-fallback-dot::before { content: ''; position: absolute; inset: 35%; border-radius: 50%; background: var(--bs-dot); }
@@ -975,12 +998,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const targets = hints.map(squareClass);
       const board = hints.length && settings.danger.on ? (settings.danger.blunders ? blunderPosition(this.board) : readBoard(this.board)) : null;
       const from = board && this.movingPiece(board, targets);
-      const blunders = blunderHints.sync(this, from, targets.filter(Boolean));
+      blunderHints.sync(this, from, targets.filter(Boolean));
       hints.forEach((el, i) => {
         const to = targets[i];
-        if (to && blunders.has(sqName(to))) el.dataset.bsBlunder = '1';
+        if (to && blunderHints.covers(this, sqName(to))) el.dataset.bsBlunder = '1';
         else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
-        // Keep capture-risk dots visible underneath blunder crosses.
+        // Retain the dot's color for when the cross morphs back.
         if (from && to && canBeTaken(board, from, to)) {
           if (el.dataset.bsDanger !== '1') el.dataset.bsDanger = '1';
         } else if (el.dataset.bsDanger) {
@@ -1194,6 +1217,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.hintSprites.forEach(h => {
         if (h.sprite._destroyed) return;
         h.sprite.tint = h.danger && settings.danger.on ? DANGER_TINT : 0xffffff;
+        if (blunderHints.covers(this, h.square)) {
+          if (!Object.prototype.hasOwnProperty.call(h, 'bsRenderable')) h.bsRenderable = h.sprite.renderable;
+          h.sprite.renderable = false;
+        } else if (Object.prototype.hasOwnProperty.call(h, 'bsRenderable')) {
+          h.sprite.renderable = h.bsRenderable;
+          delete h.bsRenderable;
+        }
       });
     }
 
@@ -2124,7 +2154,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const promotion = piece.t === 'p' && (target.r === 0 || target.r === 7);
         if ((!promotion || choices.length === 4) && choices.length && choices.every(s => s.blunder)) bad.add(name);
       }
-      this.paint(ctl, bad);
+      this.paint(ctl, bad, from, position);
       const search = this.search;
       const assessed = [...search.moves.values()].filter(s => s.move.startsWith(source));
       if (search.stopped) showHintStatus(`Evaluation unavailable: ${search.error || 'engine stopped'}.`);
@@ -2134,7 +2164,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       else showHintStatus(`Depth ${search.depth} · ${bad.size ? `${bad.size} blunder square${bad.size === 1 ? '' : 's'}` : 'No blunders found for this piece yet'}.`);
       return bad;
     },
-    paint(ctl, squares) {
+    covers(ctl, square) {
+      return this.layer?.parentElement === ctl.board && !!this.layer.querySelector(`[data-square="${square}"]`);
+    },
+    paint(ctl, squares, from, position) {
       if (!this.layer) {
         this.layer = document.createElement('div');
         this.layer.className = 'bs-blunder-layer';
@@ -2150,9 +2183,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           el = document.createElement('span');
           el.className = 'bs-blunder-cross bs-cross-enter';
           el.dataset.square = name;
-          el.innerHTML = '<svg viewBox="0 0 100 100"><path d="M12 12L88 88M88 12L12 88" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/></svg>';
+          const target = sqOf(name);
+          const capture = !!position[target.f]?.[target.r];
+          const radius = ctl.board.querySelector(`:scope > .capture-hint.square-${target.f + 1}${target.r + 1}`) ? 50 : 45;
+          const ringWidth = Math.min(15, 500 / (ctl.board.getBoundingClientRect().width / 8 || 60));
+          const dotPath = capture ? roundedHintPath(hintCircle(radius / .966), .5) + roundedHintPath(hintCircle((radius - ringWidth) / .966), .5) : hintDotPath;
+          el.style.setProperty('--bs-dot-shape', `path('${dotPath}')`);
+          el.style.setProperty('--bs-dot-color', canBeTaken(position, from, target) ? 'rgba(220,45,45,.42)' : 'rgba(0,0,0,.14)');
+          el.innerHTML = '<svg viewBox="0 0 100 100"><path fill="currentColor" fill-rule="evenodd"/></svg>';
           this.layer.appendChild(el);
-          // Establish the small/transparent state before transitioning on the next frame.
+          // Start as the dot or capture ring, then interpolate its outline into an X.
           el.getBoundingClientRect();
           nextFrame(() => el.classList.remove('bs-cross-enter'));
         } else {
@@ -2168,7 +2208,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       old.forEach(el => {
         if (el.classList.contains('bs-cross-leave')) return;
         el.classList.add('bs-cross-leave');
-        el.bsRemoval = setTimeout(() => el.remove(), 240);
+        el.bsRemoval = setTimeout(() => {
+          el.remove();
+          // Hand back to the native dot only after the reverse morph finishes.
+          if (this.ctl?.board.isConnected) this.ctl.paintHints();
+        }, 240);
       });
     },
     clear() {
@@ -2180,6 +2224,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const ctl = this.ctl;
       this.ctl = null;
       ctl?.board.querySelectorAll('[data-bs-blunder]').forEach(el => delete el.dataset.bsBlunder);
+      ctl?.hintSprites?.forEach(h => {
+        if (Object.prototype.hasOwnProperty.call(h, 'bsRenderable') && !h.sprite._destroyed) h.sprite.renderable = h.bsRenderable;
+        delete h.bsRenderable;
+      });
     }
   };
 
@@ -2219,7 +2267,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     nativeHints() {
       if (!this.board) return false;
       const domHints = [...this.board.querySelectorAll(':scope > .hint, :scope > .capture-hint')];
-      return domHints.some(el => !el.querySelector('.removing') && el.getClientRects().length && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden') ||
+      return domHints.some(el => !el.querySelector('.removing') && el.getClientRects().length && getComputedStyle(el).display !== 'none' && (getComputedStyle(el).visibility !== 'hidden' || el.dataset.bsBlunder)) ||
         !!this.board.__cc?.hintSprites?.some(h => !h.sprite._destroyed && h.sprite.visible !== false);
     },
     refresh() {
@@ -2245,7 +2293,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       if (this.layer.parentElement !== this.board) this.board.appendChild(this.layer);
       const targets = this.moves.map(m => sqOf(m.to));
-      const bad = blunderHints.sync(this.adapter, this.from, targets);
+      blunderHints.sync(this.adapter, this.from, targets);
       const position = blunderPosition(this.board);
       [...this.layer.children].forEach(el => {
         const target = sqOf(el.dataset.square);
@@ -2254,7 +2302,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (el.style.left !== left) el.style.left = left;
         if (el.style.top !== top) el.style.top = top;
         el.classList.toggle('bs-danger', canBeTaken(position, this.from, target));
-        if (bad.has(el.dataset.square)) el.dataset.bsBlunder = '1';
+        if (blunderHints.covers(this.adapter, el.dataset.square)) el.dataset.bsBlunder = '1';
         else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
       });
       if (!settings.danger.blunders) showHintStatus('Move hints active; red dots mark capture risk.');

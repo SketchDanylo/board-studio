@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.12.1
+// @version      5.13.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -256,7 +256,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
                   opacity 260ms ease, transform 300ms cubic-bezier(.34, 1.4, .64, 1);
     }
     .cc-ghost.cc-ghost-leave { transform: scale(0.7); }
-    .bs-ghost-ai { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+    .bs-ghost-ai { position: absolute; inset: 0; pointer-events: none; }
+    .piece.bs-fallen { filter: url(#bs-fallen-filter) !important; }
     .bs-ghost-ai svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
     .bs-ghost-ai .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)); }
     .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
@@ -297,6 +298,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
   `;
   document.head.appendChild(style);
+  // Shared by every board: diagonal stripes for the arrow of a piece that was taken, and a
+  // hatch drawn only over the pixels of a taken piece (the filter keeps it inside the piece).
+  const taken = document.createElementNS(NS, 'svg');
+  taken.setAttribute('width', '0'); taken.setAttribute('height', '0');
+  taken.setAttribute('aria-hidden', 'true');
+  taken.style.cssText = 'position:absolute;width:0;height:0;pointer-events:none';
+  const hatch = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'><defs><pattern id='p' width='16' height='16' patternUnits='userSpaceOnUse' patternTransform='rotate(45)'><rect width='8' height='16' fill='#000' fill-opacity='.25'/><rect x='8' width='8' height='16' fill='#fff' fill-opacity='.25'/></pattern></defs><rect width='100' height='100' fill='url(#p)'/></svg>");
+  taken.innerHTML = `<defs>
+    <pattern id="bs-stripe-pat" width="22" height="22" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="11" height="22" fill="#fff"/></pattern>
+    <mask id="bs-stripe-mask" maskUnits="userSpaceOnUse" x="-100" y="-100" width="1000" height="1000"><rect x="-100" y="-100" width="1000" height="1000" fill="url(#bs-stripe-pat)"/></mask>
+    <filter id="bs-fallen-filter" x="0" y="0" width="1" height="1" primitiveUnits="objectBoundingBox" color-interpolation-filters="sRGB">
+      <feImage href="${hatch}" x="0" y="0" width="1" height="1" preserveAspectRatio="none" result="stripes"/>
+      <feComposite in="stripes" in2="SourceAlpha" operator="in" result="onPiece"/>
+      <feMerge><feMergeNode in="SourceGraphic"/><feMergeNode in="onPiece"/></feMerge>
+    </filter></defs>`;
+  document.documentElement.appendChild(taken);
 
   // Copies older than 5.6.6 lack the one-copy check above and keep painting their own dots
   // (gray where this one paints red). They are found by the page styles they add.
@@ -604,6 +621,51 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   const bookAllowed = () => true;
 
   // Draws the book arrows for this board's position into its arrow layer, under your own arrows.
+  // The Ghost AI's top reply (and the earlier assumed ones) are drawn by the same arrow system as
+  // your own custom arrows, so they look and move exactly like them.
+  const ENGINE_COLOR = '#f7c045';
+  function addEngineArrows(seen) {
+    (this.engineArrows || []).forEach(spec => {
+      const m = MOVE.exec(spec.uci.slice(0, 4));
+      if (!m) return;
+      seen.add(spec.id);
+      const target = this.arrowTarget(m, 0.8);
+      let arrow = this.arrows.get(spec.id);
+      if (!arrow) {
+        arrow = this.createArrow(spec.id);
+        arrow.el.classList.add('engine');
+        this.overlay.insertBefore(arrow.el, this.defs.nextSibling);
+        arrow.cur = { ...target, cx: target.fx, cy: target.fy, tx: target.fx, ty: target.fy, opacity: 0 };
+        arrow.vel = { fx: 0, fy: 0, cx: 0, cy: 0, tx: 0, ty: 0 };
+        this.arrows.set(spec.id, arrow);
+      }
+      arrow.target = target;
+      arrow.dying = false;
+      if (arrow.color !== ENGINE_COLOR) {
+        arrow.color = ENGINE_COLOR;
+        arrow.stops.forEach(st => st.setAttribute('stop-color', ENGINE_COLOR));
+        arrow.head.setAttribute('fill', ENGINE_COLOR);
+        arrow.head.setAttribute('stroke', ENGINE_COLOR);
+      }
+    });
+  }
+
+  // Arrows of taken pieces are striped; the pieces that are out of play carry a hatch.
+  function paintFallen(ids, squares) {
+    if (ids) { this.fallenIds = ids; this.fallenSquares = squares; }
+    const gone = this.fallenIds, hatched = this.fallenSquares;
+    this.arrows.forEach(arrow => {
+      const on = !!gone && gone.has(arrow.id);
+      if (arrow.striped === on) return;
+      arrow.striped = on;
+      if (on) arrow.el.setAttribute('mask', 'url(#bs-stripe-mask)'); else arrow.el.removeAttribute('mask');
+    });
+    this.board.querySelectorAll(':scope > .piece').forEach(el => {
+      const sq = squareClass(el);
+      el.classList.toggle('bs-fallen', !!(sq && hatched && hatched.has(sqName(sq))));
+    });
+  }
+
   function addBookArrows(seen) {
     if (!settings.book.on || !bookAllowed()) return;
     let fen = null;
@@ -700,32 +762,44 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   function planGhosts(arrows, position) {
-    const ghosts = new Map(); // square -> { id, kind, from }
-    arrows.forEach(({ from, to, assumed }) => {
+    const ghosts = new Map(); // square -> { id, kind, from, origin, ids }
+    const fallen = [];        // ghosts another ghost took
+    const liveTaken = new Set(); // squares of real pieces a ghost took
+    const vacated = new Set();   // real pieces that ghosts left from
+    const pieceAt = sq => position[sq.charCodeAt(0) - 97] && position[sq.charCodeAt(0) - 97][+sq[1] - 1];
+    arrows.forEach(({ from, to, assumed, id: arrowId }) => {
       if (!from || !to || from === to) return;
       let ghost = ghosts.get(from);
       if (ghost) {
         ghosts.delete(from);
-        ghost = { ...ghost, from };
+        ghost = { ...ghost, from, ids: [...ghost.ids, arrowId] };
       } else {
-        const s = { f: from.charCodeAt(0) - 97, r: +from[1] - 1 };
-        const p = position[s.f] && position[s.f][s.r];
+        const p = pieceAt(from);
         if (!p) return;
-        ghost = { id: from + to, kind: p.c + p.t, from, assumed: !!assumed };
+        ghost = { id: from + to, kind: p.c + p.t, from, origin: from, ids: [arrowId], assumed: !!assumed };
+        vacated.add(from);
       }
       // A king stepping two files from its home square castles, so its rook comes along.
       const castle = ghost.kind[1] === 'k' && from[0] === 'e' && from[1] === to[1] && from[1] === (ghost.kind[0] === 'w' ? '1' : '8') ? ({ g: 'h', h: 'h', c: 'a', a: 'a' })[to[0]] : null;
       // Dragging the king onto its rook is also castling; the king lands on g or c.
       if (castle) to = castle === 'h' ? 'g' + to[1] : 'c' + to[1];
+      const prev = ghosts.get(to);
+      if (prev) fallen.push(prev);
+      else {
+        const live = pieceAt(to);
+        if (live && !vacated.has(to) && live.c !== ghost.kind[0]) liveTaken.add(to);
+      }
       ghosts.set(to, ghost);
       if (castle) {
         const rookFrom = castle + from[1], rookTo = (castle === 'h' ? 'f' : 'd') + from[1];
         const rook = ghosts.get(rookFrom);
-        const live = position[castle.charCodeAt(0) - 97]?.[+from[1] - 1];
-        if (rook) { ghosts.delete(rookFrom); ghosts.set(rookTo, { ...rook, from: rookFrom }); }
-        else if (live && live.t === 'r' && live.c === ghost.kind[0]) ghosts.set(rookTo, { id: rookFrom + rookTo, kind: live.c + 'r', from: rookFrom });
+        const live = pieceAt(rookFrom);
+        if (rook) { ghosts.delete(rookFrom); ghosts.set(rookTo, { ...rook, from: rookFrom, ids: [...rook.ids, arrowId] }); }
+        else if (live && live.t === 'r' && live.c === ghost.kind[0]) { ghosts.set(rookTo, { id: rookFrom + rookTo, kind: live.c + 'r', from: rookFrom, origin: rookFrom, ids: [arrowId] }); vacated.add(rookFrom); }
       }
     });
+    ghosts.fallen = fallen;
+    ghosts.liveTaken = liveTaken;
     return ghosts;
   }
 
@@ -738,6 +812,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.el.className = 'cc-ghosts';
       this.items = new Map(); // ghost id -> { el, square, flipped }
       this.taken = new Set(); // squares a Ghost AI reply captures on: the ghost there goes away
+      this.plan = new Map();
+      this.reported = '';
+    }
+
+    // Tell the board what is no longer in play: the arrows that led taken ghosts (they turn
+    // striped) and the real pieces that were taken or whose ghost was taken (they get a hatch).
+    report() {
+      const ids = new Set(), squares = new Set();
+      const fall = g => { g.ids.forEach(i => i && ids.add(i)); squares.add(g.origin); };
+      (this.plan.fallen || []).forEach(fall);
+      this.plan.forEach((g, square) => { if (this.taken.has(square)) fall(g); });
+      (this.plan.liveTaken || []).forEach(sq => squares.add(sq));
+      const key = JSON.stringify([[...ids].sort(), [...squares].sort()]);
+      if (key === this.reported) return;
+      this.reported = key;
+      this.owner.paintFallen?.(ids, squares);
     }
 
     applyTaken(item) {
@@ -749,6 +839,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     take(squares) {
       this.taken = squares;
       this.items.forEach(item => this.applyTaken(item));
+      this.report();
     }
 
     spot(name) {
@@ -758,6 +849,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
     sync(arrows, position, imageFor) {
       const plan = settings.ghosts.on ? planGhosts(arrows, position) : new Map();
+      this.plan = plan;
       const flipped = this.owner.flipped;
       const seen = new Set();
       plan.forEach((ghost, square) => {
@@ -797,6 +889,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         item.el.style.opacity = '0';
         setTimeout(() => item.el.remove(), 320);
       });
+      this.report();
     }
   }
 
@@ -849,7 +942,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
     get flipped() { return this.board.classList.contains('flipped'); }
 
-    addBookArrows(seen) { addBookArrows.call(this, seen); }
+    addBookArrows(seen) { addBookArrows.call(this, seen); addEngineArrows.call(this, seen); }
+    paintFallen(ids, squares) { paintFallen.call(this, ids, squares); }
 
     onBoardChange(records) {
       let marks = false, hints = false, flip = false;
@@ -1001,6 +1095,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           arrow.target = { ...arrow.target, opacity: 0 };
         }
       });
+      this.paintFallen();
       if (this.arrows.size) this.kick();
       this.syncGhosts();
     }
@@ -1439,12 +1534,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       if (settings.book.on) this.place();
       addBookArrows.call(this, seen);
+      addEngineArrows.call(this, seen);
       this.arrows.forEach(arrow => {
         if (!seen.has(arrow.id) && !arrow.dying) {
           arrow.dying = true;
           arrow.target = { ...arrow.target, opacity: 0 };
         }
       });
+      this.paintFallen();
       if (this.arrows.size) this.kick();
       this.syncGhosts();
     }
@@ -1483,6 +1580,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (added.length) { this.orig.addHighlights.call(this.renderer, added, this.ctx); added.forEach(i => this.shownMarks.set(i.key, i)); }
     }
   }
+  CanvasController.prototype.paintFallen = function (ids, squares) { paintFallen.call(this, ids, squares); };
   ['arrowTarget', 'createArrow', 'renderArrow', 'kick', 'dropArrow', 'step'].forEach(k => {
     CanvasController.prototype[k] = Controller.prototype[k];
   });
@@ -2341,12 +2439,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // reply (asking for it to be worked out if it is not known) and try again.
       let line = []; // every move of the line in order, the assumed opponent replies included
       const play = arrow => {
-        if (ghostMove(game, arrow)) { line.push({ from: arrow.from, to: arrow.to }); return true; }
+        const id = arrow.id ?? arrow.key;
+        if (ghostMove(game, arrow)) { line.push({ from: arrow.from, to: arrow.to, id }); return true; }
         if (game.turn() === player) return false;
         const best = ghostBest.get(game.fen());
         if (!best) { need?.add(game.fen()); return false; }
         if (!game.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: best[4] }) || !ghostMove(game, arrow)) return false;
-        line.push({ from: best.slice(0, 2), to: best.slice(2, 4), assumed: true }, { from: arrow.from, to: arrow.to });
+        line.push({ from: best.slice(0, 2), to: best.slice(2, 4), assumed: true, id: 'ai:' + best.slice(0, 4) }, { from: arrow.from, to: arrow.to, id });
         return true;
       };
       // Follow a legal drawn line. A separate root arrow selects a new variation.
@@ -2398,6 +2497,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const session = this.sessions.get(board);
       session?.search.stop();
       session?.ctl.ghosts?.take(new Set());
+      if (session) this.setEngineArrows(session.ctl, []);
       if (!keepFeeder) this.feed({ board }, null);
       session?.layer?.remove();
       this.sessions.delete(board);
@@ -2451,62 +2551,41 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     },
     // Updates in place: replies that stay slide and recolor to their new rank, new ones grow out of
     // their square, dropped ones fade away. Nothing is rebuilt, so refinements never flicker.
+    // The engine arrows are drawn by the board's own arrow system.
+    setEngineArrows(ctl, specs) {
+      const key = JSON.stringify(specs);
+      if (ctl.engineKey === key) return;
+      ctl.engineKey = key;
+      ctl.engineArrows = specs;
+      ctl.scheduleArrows?.();
+    },
     paint(session, imageFor) {
       const { ctl, search, fen } = session;
       const results = search.results || [];
-      // The top replies already assumed on the way here stay behind as plain yellow arrows.
-      const history = (ctl.assumedLine || []).filter(m => m.assumed).map(m => m.from + m.to);
-      const signature = JSON.stringify([ctl.flipped, settings.ghosts.opacity, results, history]);
+      // The top replies already assumed on the way here stay behind as plain arrows.
+      const specs = new Map();
+      (ctl.assumedLine || []).filter(m => m.assumed).forEach(m => specs.set('ai:' + m.from + m.to, { id: 'ai:' + m.from + m.to, uci: m.from + m.to }));
+      if (results[0]) specs.set('ai:' + results[0].move.slice(0, 4), { id: 'ai:' + results[0].move.slice(0, 4), uci: results[0].move });
+      this.setEngineArrows(ctl, [...specs.values()]);
+      const signature = JSON.stringify([ctl.flipped, settings.ghosts.opacity, results]);
       if (session.signature === signature && session.layer?.isConnected) return;
-      if (!results.length && !history.length && !session.layer) return;
+      if (!results.length && !session.layer) return;
       session.signature = signature;
       if (!session.layer?.isConnected) {
         session.layer?.remove();
         const layer = document.createElement('div');
         layer.className = 'bs-ghost-ai';
         layer.setAttribute('aria-hidden', 'true');
-        const svg = document.createElementNS(NS, 'svg');
-        svg.setAttribute('viewBox', '0 0 800 800');
-        layer.appendChild(svg);
-        Object.assign(session, { layer, svg, items: new Map(), past: new Map() });
-        ctl.board.appendChild(layer);
+        Object.assign(session, { layer, items: new Map() });
+        // Under the arrows, so an arrow is never covered by a ghost.
+        const above = ctl.svg && ctl.svg.parentNode === ctl.board ? ctl.svg : ctl.overlay;
+        if (above && above.parentNode === ctl.board) ctl.board.insertBefore(layer, above); else ctl.board.appendChild(layer);
       }
-      const { layer, svg, items, past } = session;
+      const { layer, items } = session;
       const spot = square => {
         const s = squareXY(square.charCodeAt(0) - 96, +square[1], ctl.flipped);
         return { left: `${s.x * 12.5}%`, top: `${s.y * 12.5}%` };
       };
-      const arrowPath = uci => geometry(Controller.prototype.arrowTarget.call(ctl, MOVE.exec(uci.slice(0, 4)), .8, 17));
-      const makeArrow = (cls, uci) => {
-        const group = document.createElementNS(NS, 'g');
-        group.setAttribute('class', cls); group.dataset.move = uci;
-        const title = document.createElementNS(NS, 'title');
-        const shaft = document.createElementNS(NS, 'path');
-        shaft.setAttribute('class', 'reply-shaft'); shaft.setAttribute('stroke-width', '17');
-        const head = document.createElementNS(NS, 'path');
-        head.setAttribute('class', 'reply-head'); head.setAttribute('stroke-width', '7');
-        group.append(title, shaft, head); svg.appendChild(group);
-        return { group, title, shaft, head };
-      };
-      const paintArrow = (arrow, uci) => {
-        const g = arrowPath(uci);
-        if (g) { arrow.shaft.setAttribute('d', g.shaft); arrow.head.setAttribute('d', g.head); }
-        for (const [el, c] of [[arrow.shaft, 'stroke'], [arrow.head, 'fill'], [arrow.head, 'stroke']]) {
-          el.style[c] = GHOST_ARROW_COLOR; el.setAttribute(c, GHOST_ARROW_COLOR);
-        }
-      };
-      // History: already on show before, so these are drawn in place, never faded in.
-      const pastKeep = new Set(history);
-      history.forEach(uci => {
-        let arrow = past.get(uci);
-        if (!arrow) {
-          arrow = makeArrow('history-arrow', uci); arrow.group.style.opacity = '.8';
-          arrow.title.textContent = 'Assumed best reply';
-          past.set(uci, arrow);
-        }
-        paintArrow(arrow, uci);
-      });
-      for (const [uci, arrow] of past) if (!pastKeep.has(uci)) { arrow.group.remove(); past.delete(uci); }
       const keep = new Set();
       // Each reply is an alternative, not a four-move continuation. Only the top one gets an arrow.
       results.forEach((score, i) => {
@@ -2525,19 +2604,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
             el.className = 'cc-ghost'; el.dataset.square = part.to;
             el.style.backgroundImage = imageFor(part.kind);
             Object.assign(el.style, spot(part.from), { opacity: '0' });
-            layer.insertBefore(el, svg); el.getBoundingClientRect();
+            layer.appendChild(el); el.getBoundingClientRect();
             item.pieces.push({ el, to: part.to });
           }
-          Object.assign(item, makeArrow('reply-arrow', uci));
-          item.group.style.opacity = '0'; item.group.getBoundingClientRect?.();
           items.set(uci, item);
         }
-        item.title.textContent = `Opponent reply ${i + 1}: ${item.san}`;
-        item.group.dataset.rank = String(i + 1);
-        paintArrow(item, uci);
-        item.group.style.opacity = i === 0 ? '.8' : '0';
         for (const { el, to } of item.pieces) {
           el.dataset.rank = String(i + 1);
+          el.title = `Opponent reply ${i + 1}: ${item.san}`;
           el.style.setProperty('--reply-color', color);
           el.classList.remove('cc-ghost-leave');
           Object.assign(el.style, spot(to), { opacity: String(settings.ghosts.opacity) });
@@ -2548,9 +2622,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       for (const [uci, item] of items) {
         if (keep.has(uci)) continue;
         items.delete(uci);
-        item.group.style.opacity = '0';
         item.pieces.forEach(({ el }) => { el.style.opacity = '0'; el.classList.add('cc-ghost-leave'); });
-        setTimeout(() => { item.group.remove(); item.pieces.forEach(({ el }) => el.remove()); }, 340);
+        setTimeout(() => item.pieces.forEach(({ el }) => el.remove()), 340);
       }
     }
   };

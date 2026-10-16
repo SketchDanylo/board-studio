@@ -88,14 +88,11 @@ test('DOM preview renders ranked ghosts only after completion, follows flips and
     const ctl = new f.api.Controller(board.querySelector('svg'));
     const s = f.api.ghostAI.sessions.get(board).search;
     iteration(s, 17, replies);
-    assert.equal(board.querySelectorAll('.bs-ghost-ai .reply-arrow').length, 4);
     assert.equal(board.querySelectorAll('.bs-ghost-ai .cc-ghost').length, 4);
-    // One yellow arrow, to the top reply; the others only glow, in the color of how good they are.
-    [...board.querySelectorAll('.reply-arrow')].forEach((el, i) => {
-      assert.equal(el.dataset.rank, String(i + 1));
-      assert.equal(el.querySelector('.reply-head').getAttribute('fill'), '#f7c045');
-      assert.equal(el.style.opacity, i === 0 ? '0.8' : '0');
-    });
+    // One arrow, to the top reply, drawn by the board's own arrow system; the others only glow,
+    // in the color of how good they are. The ghosts sit under the arrows.
+    assert.equal(ctl.engineArrows.map(a => a.id).join(), 'ai:e7e5');
+    assert.ok(board.querySelector('.bs-ghost-ai').compareDocumentPosition(ctl.overlay) & 4, 'ghosts are below the arrows');
     const glow = rank => board.querySelector('.bs-ghost-ai .cc-ghost[data-rank="' + rank + '"]').style.getPropertyValue('--reply-color');
     assert.equal(glow(1), f.api.ARROW_GRADES.best.color);
     assert.ok(Object.values(f.api.ARROW_GRADES).some(g => g.color === glow(4)));
@@ -104,7 +101,7 @@ test('DOM preview renders ranked ghosts only after completion, follows flips and
     board.classList.add('flipped'); ctl.syncGhosts();
     assert.equal(ghost().style.left, '37.5%'); assert.equal(ghost().style.top, '50%');
     board.querySelector('.bs-ghost-ai').remove(); ctl.syncGhosts();
-    assert.equal(board.querySelectorAll('.reply-arrow').length, 4, 'restores detached layer');
+    assert.equal(board.querySelectorAll('.bs-ghost-ai .cc-ghost').length, 4, 'restores detached layer');
     const poly = board.querySelector('polygon'); poly.setAttribute('data-arrow', 'd2d4'); ctl.syncGhosts();
     assert.equal(board.querySelector('.bs-ghost-ai'), null);
     const next = f.api.ghostAI.sessions.get(board).search;
@@ -127,7 +124,7 @@ test('canvas hook supports native arrows, promotion ghosts and fewer than four l
     ctl.nativeArrows = new Map([['b', { key: 'b', data: { from: 'e2', to: 'e4' } }]]); f.rightClick();
     ctl.syncGhosts(); const s = f.api.ghostAI.sessions.get(board).search;
     iteration(s, 18, replies); s.receive('bestmove e7e5');
-    assert.equal(board.querySelectorAll('.reply-arrow').length, 4);
+    assert.equal(ctl.engineArrows.length, 1);
     f.api.settings.ghosts.on = false; ctl.syncGhosts();
     assert.equal(board.querySelector('.bs-ghost-ai'), null); assert.equal(f.api.ghostAI.sessions.size, 0);
     const forced = new f.api.GhostSearch('q4r1k/6Qp/7N/8/8/8/8/6K1 b - - 0 1', () => {});

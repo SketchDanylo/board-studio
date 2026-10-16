@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.8.1
+// @version      5.8.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2266,15 +2266,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     send(command) {
       super.send(command === 'setoption name MultiPV value 256' ? 'setoption name MultiPV value 4' :
-        command === 'go infinite' ? 'go depth 18' : command);
+        command === 'go infinite' ? 'go depth 18 movetime 1300' : command);
     }
-    publish() {} // Never display incomplete or shallower reply rankings.
+    publish() {} // Never display incomplete reply rankings (depth 18 or 1.3 s, whichever comes first).
     receive(line) {
       if (this.stopped) return;
-      if (!line.startsWith('bestmove')) { super.receive(line); return; }
-      const ranked = [...this.batch].sort((a, b) => a[0] - b[0]);
+      if (!line.startsWith('bestmove')) {
+        super.receive(line);
+        // A timed-out search can leave its last depth half-reported; keep the last complete one.
+        if (this.batch.size === this.count && [...this.batch.keys()].every(r => r >= 1 && r <= this.count)) this.done = { depth: this.depth, ranked: [...this.batch] };
+        return;
+      }
+      const ranked = (this.done ? [...this.done.ranked] : []).sort((a, b) => a[0] - b[0]);
       const legal = new BoardStudioRules.Chess(this.fen).moves({ verbose: true });
-      if (this.depth >= 18 && ranked.length === this.count &&
+      if (this.done && this.done.depth >= 10 && ranked.length === this.count &&
           ranked.every(([rank, score], i) => rank === i + 1 && legal.some(m => m.from + m.to + (m.promotion || '') === score.move)) &&
           new Set(ranked.map(([, s]) => s.move)).size === this.count) {
         this.results = ranked.map(([, score]) => score);

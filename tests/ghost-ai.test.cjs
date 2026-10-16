@@ -48,7 +48,7 @@ test('Ghost AI respects the existing engine availability rules', () => {
   } finally { f.close(); }
 });
 
-test('search requests four lines to depth 18, exposes nothing early and releases the worker', () => {
+test('search requests four lines to depth 18 or 1.3 s, exposes nothing early and releases the worker', () => {
   const f = setup();
   try {
     let updates = 0;
@@ -56,7 +56,7 @@ test('search requests four lines to depth 18, exposes nothing early and releases
     s.start(); const worker = s.worker;
     s.receive('uciok'); s.receive('readyok');
     assert.ok(worker.commands.includes('setoption name MultiPV value 4'));
-    assert.ok(worker.commands.includes('go depth 18'));
+    assert.ok(worker.commands.includes('go depth 18 movetime 1300'));
     iteration(s, 17, replies); assert.equal(s.results, null); assert.equal(updates, 0);
     iteration(s, 18, replies); assert.equal(s.results, null, 'waits for completion, not partial depth');
     s.receive('bestmove e7e5');
@@ -141,7 +141,7 @@ test('real bundled engine completes depth-18 opponent search with four legal ran
     await new Promise((resolve, reject) => {
       const search = new f.api.GhostSearch(afterE4.fen(), () => {
         try {
-          assert.equal(search.depth, 18); assert.equal(search.results.length, 4);
+          assert.ok(search.depth >= 10 && search.depth <= 18); assert.equal(search.results.length, 4);
           const legal = new Chess(afterE4.fen()).moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
           for (const reply of search.results) assert.ok(legal.includes(reply.move));
           console.log('Real Ghost AI depth 18: ' + search.results.map(r => r.move).join(', ')); resolve();

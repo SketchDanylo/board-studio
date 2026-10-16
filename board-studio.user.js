@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.9.1
+// @version      5.9.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -684,7 +684,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!p) return;
         ghost = { id: from + to, kind: p.c + p.t, from };
       }
+      // A king stepping two files from its home square castles, so its rook comes along.
+      const castle = ghost.kind[1] === 'k' && from[0] === 'e' && from[1] === to[1] && from[1] === (ghost.kind[0] === 'w' ? '1' : '8') ? ({ g: 'h', h: 'h', c: 'a', a: 'a' })[to[0]] : null;
+      // Dragging the king onto its rook is also castling; the king lands on g or c.
+      if (castle) to = castle === 'h' ? 'g' + to[1] : 'c' + to[1];
       ghosts.set(to, ghost);
+      if (castle) {
+        const rookFrom = castle + from[1], rookTo = (castle === 'h' ? 'f' : 'd') + from[1];
+        const rook = ghosts.get(rookFrom);
+        const live = position[castle.charCodeAt(0) - 97]?.[+from[1] - 1];
+        if (rook) { ghosts.delete(rookFrom); ghosts.set(rookTo, { ...rook, from: rookFrom }); }
+        else if (live && live.t === 'r' && live.c === ghost.kind[0]) ghosts.set(rookTo, { id: rookFrom + rookTo, kind: live.c + 'r', from: rookFrom });
+      }
     });
     return ghosts;
   }

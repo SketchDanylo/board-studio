@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.14.0
+// @version      5.15.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -105,6 +105,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   });
 
   const listeners = new Set();
+  const MATE_COLORS = { w: '#f4f4f4', b: '#1c1b19' };
   const ARROW_GRADES = {
     brilliant: { label: 'Brilliant', color: '#1baca6' },
     best: { label: 'Best Move', color: '#96bc4b' },
@@ -114,7 +115,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     inaccuracy: { label: 'Inaccuracy', color: '#f7c045' },
     mistake: { label: 'Mistake', color: '#e58f2a' },
     blunder: { label: 'Blunder', color: '#fa412d' },
-    missed: { label: 'Missed Win', color: '#dbac1d' }
+    missed: { label: 'Missed Win', color: '#dbac1d' },
+    mateWhite: { label: 'Forced mate, White', color: MATE_COLORS.w },
+    mateBlack: { label: 'Forced mate, Black', color: MATE_COLORS.b }
   };
   function setSetting(group, key, value) {
     rawSettings[group][key] = value;
@@ -239,14 +242,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       transition: left 420ms cubic-bezier(.34,1.4,.64,1), top 420ms cubic-bezier(.34,1.4,.64,1);
     }
     .cc-mark::before {
-      content: ''; position: absolute; inset: 7%; border-radius: 18%;
+      content: ''; position: absolute; inset: 0; border-radius: 0;
       background: var(--cc-mark);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--cc-mark) 55%, transparent) inset, 0 2px 10px rgba(0,0,0,0.18);
       transform: scale(1);
-      transition: transform 340ms cubic-bezier(.34,1.7,.64,1), opacity 200ms ease, background-color 220ms ease, box-shadow 220ms ease;
+      transition: transform 380ms cubic-bezier(.22,1,.36,1), border-radius 380ms cubic-bezier(.22,1,.36,1), opacity 220ms ease, background-color 220ms ease, filter 160ms ease;
     }
-    .cc-mark.cc-enter::before, .cc-mark.cc-leave::before { transform: scale(0.45); opacity: 0; }
-    .cc-mark.cc-bump::before { transform: scale(1.12); }
+    /* grows from a small rounded tile into the whole square, and shrinks back the same way */
+    .cc-mark.cc-enter::before, .cc-mark.cc-leave::before { transform: scale(0.3); border-radius: 30%; opacity: 0; }
+    .cc-mark.cc-bump::before { filter: brightness(1.18); }
     .bs-nav-icon { width: 24px; height: 24px; flex: none; }
     .cc-ghosts { position: absolute; inset: 0; pointer-events: none; }
     .cc-ghost {
@@ -639,11 +642,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       arrow.target = target;
       arrow.dying = false;
-      if (arrow.color !== ENGINE_COLOR) {
-        arrow.color = ENGINE_COLOR;
-        arrow.stops.forEach(st => st.setAttribute('stop-color', ENGINE_COLOR));
-        arrow.head.setAttribute('fill', ENGINE_COLOR);
-        arrow.head.setAttribute('stroke', ENGINE_COLOR);
+      const tint = spec.color || this.arrowTint?.get(spec.id) || ENGINE_COLOR;
+      if (arrow.color !== tint) {
+        arrow.color = tint;
+        arrow.stops.forEach(st => st.setAttribute('stop-color', tint));
+        arrow.head.setAttribute('fill', tint);
+        arrow.head.setAttribute('stroke', tint);
       }
     });
   }
@@ -657,13 +661,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (on) {
         // Thin slanted gaps cut across the shaft and the head, like a sliced arrow.
         const t = arrow.target || arrow.cur;
-        const angle = Math.atan2(t.ty - t.fy, t.tx - t.fx) * 180 / Math.PI - 25;
+        const angle = Math.atan2(t.ty - t.fy, t.tx - t.fx) * 180 / Math.PI - 22;
         if (!arrow.cut) {
           const id = 'bs-cut-' + Math.random().toString(36).slice(2, 9);
           const pat = document.createElementNS(NS, 'pattern');
           pat.id = id + '-p';
-          pat.setAttribute('width', '17'); pat.setAttribute('height', '60'); pat.setAttribute('patternUnits', 'userSpaceOnUse');
-          pat.innerHTML = '<rect width="17" height="60" fill="#fff"/><rect x="13.5" width="3.5" height="60" fill="#000"/>';
+          pat.setAttribute('width', '8'); pat.setAttribute('height', '60'); pat.setAttribute('patternUnits', 'userSpaceOnUse');
+          pat.innerHTML = '<rect width="8" height="60" fill="#fff"/><rect x="6.4" width="1.6" height="60" fill="#000"/>';
           const mask = document.createElementNS(NS, 'mask');
           mask.id = id;
           mask.setAttribute('maskUnits', 'userSpaceOnUse');
@@ -1088,6 +1092,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         // Your picked color replaces chess.com's plain orange; shift/ctrl/alt arrows keep theirs.
         if (color === SITE_ORANGE) ({ rgb: color, a: alpha } = splitColor(settings.arrows.color));
         if (grade) color = ARROW_GRADES[grade].color;
+        if (this.arrowTint?.has(id)) color = this.arrowTint.get(id);
         const to = aimed.get(id);
         if (to && to !== m[3] + m[4]) m = MOVE.exec(m[1] + m[2] + to);
         const target = this.arrowTarget(m, alpha);
@@ -1535,6 +1540,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           if (color === SITE_ORANGE) ({ rgb: color, a: alpha } = splitColor(settings.arrows.color));
           const grade = grades.get(item.key);
           if (grade) color = ARROW_GRADES[grade].color;
+          if (this.arrowTint?.has(id)) color = this.arrowTint.get(id);
           const target = this.arrowTarget(m, Math.min(1, alpha));
           let arrow = this.arrows.get(id);
           if (!arrow) {
@@ -2519,7 +2525,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const session = this.sessions.get(board);
       session?.search.stop();
       session?.ctl.ghosts?.take(new Set());
-      if (session) this.setEngineArrows(session.ctl, []);
+      if (session) { this.setEngineArrows(session.ctl, []); this.setTint(session.ctl, new Map()); }
       if (!keepFeeder) this.feed({ board }, null);
       session?.layer?.remove();
       this.sessions.delete(board);
@@ -2574,6 +2580,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Updates in place: replies that stay slide and recolor to their new rank, new ones grow out of
     // their square, dropped ones fade away. Nothing is rebuilt, so refinements never flicker.
     // The engine arrows are drawn by the board's own arrow system.
+    setTint(ctl, tints) {
+      const key = JSON.stringify([...tints]);
+      if (ctl.tintKey === key) return;
+      ctl.tintKey = key;
+      ctl.arrowTint = tints;
+      ctl.scheduleArrows?.();
+    },
     setEngineArrows(ctl, specs) {
       const key = JSON.stringify(specs);
       if (ctl.engineKey === key) return;
@@ -2587,7 +2600,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // The top replies already assumed on the way here stay behind as plain arrows.
       const specs = new Map();
       (ctl.assumedLine || []).filter(m => m.assumed).forEach(m => specs.set('ai:' + m.from + m.to, { id: 'ai:' + m.from + m.to, uci: m.from + m.to }));
-      if (results[0]) specs.set('ai:' + results[0].move.slice(0, 4), { id: 'ai:' + results[0].move.slice(0, 4), uci: results[0].move });
+      // A top reply that starts or delivers a forced mate paints its arrow, and the arrows that drew
+      // the piece, in the color of the side delivering the mate.
+      const top = results[0], turn = fen.split(' ')[1];
+      let tint = null;
+      const tints = new Map();
+      if (top && top.mate) {
+        tint = MATE_COLORS[(top.mate > 0 ? turn : turn === 'w' ? 'b' : 'w')];
+        try {
+          const plan = planGhosts(ctl.assumedLine || [], ctl.readPosition ? ctl.readPosition() : readBoard(ctl.board));
+          (plan.get(top.move.slice(0, 2))?.ids || []).forEach(id => id && tints.set(id, tint));
+        } catch (e) { /* no position yet */ }
+      }
+      if (top) specs.set('ai:' + top.move.slice(0, 4), { id: 'ai:' + top.move.slice(0, 4), uci: top.move, color: tint || undefined });
+      this.setTint(ctl, tints);
       this.setEngineArrows(ctl, [...specs.values()]);
       const signature = JSON.stringify([ctl.flipped, settings.ghosts.opacity, results]);
       if (session.signature === signature && session.layer?.isConnected) return;
@@ -2704,7 +2730,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // or so ahead is not enough to rule a sacrifice out (Morphy's Qb8+ is Brilliant at +4 otherwise).
   const completelyWinning = score => score.mate > 0 || (score.cp !== undefined && score.cp >= 800);
 
-  function arrowGrade(best, score, { book = false, sacrifice = false, completed = null, held = false } = {}) {
+  function arrowGrade(best, score, { book = false, sacrifice = false, completed = null, held = false, turn = null } = {}) {
     if (book) return 'book';
     if (!best || !score) return null;
     const a = blunderExpected(best), b = blunderExpected(score);
@@ -2712,6 +2738,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // A real sacrifice that still forces mate is Brilliant, even when a shorter mate (or another
     // winning move) exists: the mate score is a proven line, so a shallow depth is enough.
     if (sacrifice && score.mate > 0 && (completed ? completed.depth : (score.depth ?? 99)) >= 8) return 'brilliant';
+    // Any other forced mate takes the color of the side that delivers it.
+    if (turn && score.mate) return (score.mate > 0 ? turn : turn === 'w' ? 'b' : 'w') === 'w' ? 'mateWhite' : 'mateBlack';
     const loss = Math.max(0, a - b);
     const cpLoss = best.cp !== undefined && score.cp !== undefined ? Math.max(0, best.cp - score.cp) : null;
     const nearBest = loss <= .02 && (cpLoss === null || cpLoss <= 40);
@@ -2803,7 +2831,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
             sacrifice = session.sacrifices.get(uci);
           }
         }
-        const grade = arrowGrade(score?.best, score, { book, sacrifice, completed: session.search.completed, held: session.brilliant.has(uci) });
+        const grade = arrowGrade(score?.best, score, { book, sacrifice, completed: session.search.completed, held: session.brilliant.has(uci), turn: fen.split(' ')[1] });
         if (grade === 'brilliant') session.brilliant.add(uci);
         if (grade) grades.set(arrow.id, grade);
       }

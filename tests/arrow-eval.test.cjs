@@ -48,6 +48,11 @@ test('all nine grades use expected-point loss; Brilliant requires deep, sound sa
     assert.equal(grade(candidate, candidate, { sacrifice: true, completed: { ...completed, scores: [candidate, { ...top, mate: 5 }] } }), 'brilliant');
     assert.equal(grade({ move: 'a1a2', mate: 2 }, { move: 'e6g8', mate: 7 }, { sacrifice: true, completed }), 'brilliant', 'a longer mate still counts');
     assert.notEqual(grade({ move: 'a1a2', mate: 2 }, { move: 'e6g8', mate: 7 }, { sacrifice: false, completed }), 'brilliant', 'no sacrifice, no Brilliant');
+    // A forced mate that is not Brilliant takes the color of the side delivering it.
+    assert.equal(grade({ move: 'a1a2', mate: 2 }, { move: 'a1a2', mate: 2 }, { turn: 'w' }), 'mateWhite');
+    assert.equal(grade({ move: 'a1a2', mate: 2 }, { move: 'a1a2', mate: 2 }, { turn: 'b' }), 'mateBlack');
+    assert.equal(grade({ move: 'a1a2', mate: 2 }, { move: 'e6g8', mate: -3 }, { turn: 'w' }), 'mateBlack', 'a move that allows mate shows the mating side');
+    assert.equal(grade({ move: 'a1a2', mate: 2 }, { move: 'e6g8', mate: 7 }, { turn: 'w', sacrifice: true, completed }), 'brilliant', 'Brilliant keeps its own color');
   } finally { f.close(); }
 });
 

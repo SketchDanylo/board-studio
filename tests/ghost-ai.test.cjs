@@ -1,0 +1,162 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { Chess } = require('chess.js');
+const { setup, iteration, initialFEN, source } = require('./helpers.cjs');
+const afterE4 = new Chess(); afterE4.move('e4');
+const replies = ['e7e5', 'c7c5', 'e7e6', 'g8f6'].map((move, i) => ({ move, cp: -i * 20, wdl: [0, 1000, 0] }));
+
+test('Ghost AI is a persisted Ghosts suboption, initially off', () => {
+  const f = setup();
+  try {
+    const root = f.w.document.querySelector('#board-studio').shadowRoot;
+    const toggle = root.querySelector('[data-group="ghosts"] [aria-label="Ghost AI"]');
+    assert.equal(toggle.getAttribute('aria-checked'), 'false'); toggle.click();
+    assert.equal(f.api.settings.ghosts.ai, true);
+    assert.equal(JSON.parse(f.w.localStorage.getItem('board-studio-settings-v1')).ghosts.ai, true);
+    assert.equal(f.api.settings.arrowEval.on, false);
+  } finally { f.close(); }
+});
+
+test('reply position applies legal arrows and chains without altering the live board', () => {
+  const f = setup();
+  try {
+    const position = f.api.ghostReplyPosition;
+    assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }]), afterE4.fen());
+    assert.equal(position(initialFEN, [{ from: 'e2', to: 'e5' }]), null);
+    assert.equal(position(initialFEN, []), null);
+    assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'e7', to: 'e5' }]), null, 'only previews opponent replies');
+    const line = new Chess(); ['e4', 'e5', 'Nf3'].forEach(m => line.move(m));
+    assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'e7', to: 'e5' }, { from: 'g1', to: 'f3' }]), line.fen());
+    const d4 = new Chess(); d4.move('d4');
+    assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'd2', to: 'd4' }]), d4.fen(), 'new root arrow selects another variation');
+    assert.equal(position('q4r1k/6pp/4Q2N/8/8/8/8/6K1 w - - 0 1', [{ from: 'e6', to: 'g8' }]).split(' ')[1], 'b');
+  } finally { f.close(); }
+});
+
+test('Ghost AI respects the existing engine availability rules', () => {
+  const f = setup();
+  try {
+    Object.assign(f.api.settings.ghosts, { on: true, ai: true });
+    f.api.settings.arrows.aim = false;
+    f.dom.reconfigure({ url: 'https://www.chess.com/play/online' });
+    const board = f.board(); board.game.getHeaders = () => ({ Result: '*' });
+    board.innerHTML = '<svg class="arrows"><polygon class="arrow" data-arrow="e2e4"></polygon></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    assert.equal(f.api.ghostAI.sessions.size, 0);
+    board.game.getHeaders = () => ({ Result: '1-0' }); ctl.syncGhosts();
+    assert.ok(f.api.ghostAI.sessions.get(board)?.search.worker);
+  } finally { f.close(); }
+});
+
+test('search requests four lines to depth 18, exposes nothing early and releases the worker', () => {
+  const f = setup();
+  try {
+    let updates = 0;
+    const s = new f.api.GhostSearch(afterE4.fen(), () => updates++);
+    s.start(); const worker = s.worker;
+    s.receive('uciok'); s.receive('readyok');
+    assert.ok(worker.commands.includes('setoption name MultiPV value 4'));
+    assert.ok(worker.commands.includes('go depth 18'));
+    iteration(s, 17, replies); assert.equal(s.results, null); assert.equal(updates, 0);
+    iteration(s, 18, replies); assert.equal(s.results, null, 'waits for completion, not partial depth');
+    s.receive('bestmove e7e5');
+    assert.deepEqual(Array.from(s.results, r => r.move), replies.map(r => r.move));
+    assert.equal(updates, 1); assert.equal(worker.terminated, true);
+    const partial = new f.api.GhostSearch(afterE4.fen(), () => {});
+    iteration(partial, 18, replies.slice(0, 3)); partial.receive('bestmove e7e5');
+    assert.equal(partial.results, null, 'incomplete top four is not displayed');
+  } finally { f.close(); }
+});
+
+test('DOM preview renders ranked ghosts only after completion, follows flips and clears stale work', () => {
+  const f = setup();
+  try {
+    Object.assign(f.api.settings.ghosts, { on: true, ai: true });
+    Object.assign(f.api.settings.arrows, { on: false, aim: false });
+    f.api.settings.book.on = false;
+    const board = f.board();
+    board.innerHTML = '<svg class="arrows"><polygon class="arrow" data-arrow="e2e4"></polygon></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    const s = f.api.ghostAI.sessions.get(board).search;
+    iteration(s, 17, replies); assert.equal(board.querySelector('.bs-ghost-ai'), null);
+    iteration(s, 18, replies); s.receive('bestmove e7e5');
+    assert.equal(board.querySelectorAll('.bs-ghost-ai .reply-arrow').length, 4);
+    assert.equal(board.querySelectorAll('.bs-ghost-ai .cc-ghost').length, 4);
+    [...board.querySelectorAll('.reply-arrow')].forEach((el, i) => {
+      assert.equal(el.dataset.rank, String(i + 1));
+      assert.equal(el.querySelector('.reply-head').getAttribute('fill'), f.api.GHOST_AI_COLORS[i]);
+    });
+    const ghost = () => board.querySelector('.bs-ghost-ai .cc-ghost[data-rank="1"]');
+    assert.equal(ghost().style.left, '50%'); assert.equal(ghost().style.top, '37.5%');
+    board.classList.add('flipped'); ctl.syncGhosts();
+    assert.equal(ghost().style.left, '37.5%'); assert.equal(ghost().style.top, '50%');
+    board.querySelector('.bs-ghost-ai').remove(); ctl.syncGhosts();
+    assert.equal(board.querySelectorAll('.reply-arrow').length, 4, 'restores detached layer');
+    const poly = board.querySelector('polygon'); poly.setAttribute('data-arrow', 'd2d4'); ctl.syncGhosts();
+    assert.equal(board.querySelector('.bs-ghost-ai'), null);
+    const next = f.api.ghostAI.sessions.get(board).search;
+    assert.notEqual(next, s); s.onUpdate(); assert.equal(board.querySelector('.bs-ghost-ai'), null);
+    poly.remove(); ctl.syncGhosts();
+    assert.equal(next.stopped, true); assert.equal(f.api.ghostAI.sessions.size, 0);
+    assert.equal(board.game.getFEN(), initialFEN, 'never plays a real move');
+  } finally { f.close(); }
+});
+
+test('canvas hook supports native arrows, promotion ghosts and fewer than four legal replies', () => {
+  const f = setup();
+  try {
+    Object.assign(f.api.settings.ghosts, { on: true, ai: true });
+    f.api.settings.arrows.on = false;
+    const board = f.board(); board.game.getOptions = () => ({ pieceStyle: 'neo' });
+    const ctl = Object.create(f.api.CanvasController.prototype);
+    Object.assign(ctl, { board, ghosts: { sync() {} }, place() {}, readPosition: () => [], nativeArrows: new Map([['a', { data: { from: 'e2', to: 'e4' } }]]), renderer: { getCoordsFromSquare: sq => ({ x: sq === 'a1' ? 0 : 7 }) } });
+    ctl.syncGhosts(); const s = f.api.ghostAI.sessions.get(board).search;
+    iteration(s, 18, replies); s.receive('bestmove e7e5');
+    assert.equal(board.querySelectorAll('.reply-arrow').length, 4);
+    f.api.settings.ghosts.on = false; ctl.syncGhosts();
+    assert.equal(board.querySelector('.bs-ghost-ai'), null); assert.equal(f.api.ghostAI.sessions.size, 0);
+    const forced = new f.api.GhostSearch('q4r1k/6Qp/7N/8/8/8/8/6K1 b - - 0 1', () => {});
+    const legal = new Chess(forced.fen).moves({ verbose: true });
+    assert.ok(legal.length < 4);
+    const scores = legal.map(m => ({ move: m.from + m.to + (m.promotion || ''), cp: 0 }));
+    iteration(forced, 18, scores); forced.receive('bestmove ' + scores[0]?.move);
+    assert.equal(forced.results.length, legal.length);
+    const fen = '7k/8/8/8/8/8/p7/7K b - - 0 1';
+    const session = { ctl, fen, search: { results: [{ move: 'a2a1q' }] } };
+    f.api.ghostAI.paint(session, kind => 'url("' + kind + '.png")');
+    assert.match(board.querySelector('.bs-ghost-ai .cc-ghost').style.backgroundImage, /bq\.png/);
+  } finally { f.close(); }
+});
+
+test('real bundled engine completes depth-18 opponent search with four legal ranked replies', { timeout: 60000 }, async () => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), vm = require('node:vm');
+  const { spawn } = require('node:child_process');
+  const f = setup(), assets = {};
+  vm.runInNewContext(source.slice(source.indexOf('  var SF_JS ='), source.lastIndexOf('})();')), assets);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'board-studio-ghost-'));
+  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), assets.SF_JS);
+  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), Buffer.from(assets.SF_WASM, 'base64'));
+  const child = spawn(process.execPath, [path.join(dir, 'stockfish.cjs')], { windowsHide: true });
+  let timer;
+  try {
+    await new Promise((resolve, reject) => {
+      const search = new f.api.GhostSearch(afterE4.fen(), () => {
+        try {
+          assert.equal(search.depth, 18); assert.equal(search.results.length, 4);
+          const legal = new Chess(afterE4.fen()).moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
+          for (const reply of search.results) assert.ok(legal.includes(reply.move));
+          console.log('Real Ghost AI depth 18: ' + search.results.map(r => r.move).join(', ')); resolve();
+        } catch (e) { reject(e); }
+      });
+      search.worker = { postMessage: command => child.stdin.write(command + '\n'), terminate() {} };
+      let buffer = '';
+      child.stdout.on('data', chunk => { buffer += chunk; const lines = buffer.split(/\r?\n/); buffer = lines.pop(); lines.forEach(line => search.receive(line.trim())); });
+      child.on('error', reject); child.on('exit', code => { if (code) reject(new Error('Engine exit ' + code)); });
+      timer = setTimeout(() => reject(new Error('Depth-18 search timed out')), 55000);
+      search.send('uci');
+    });
+  } finally {
+    clearTimeout(timer); child.kill(); await new Promise(resolve => child.exitCode !== null ? resolve() : child.once('exit', resolve)); f.close();
+    fs.unlinkSync(path.join(dir, 'stockfish.cjs')); fs.unlinkSync(path.join(dir, 'stockfish.wasm')); fs.rmdirSync(dir);
+  }
+});

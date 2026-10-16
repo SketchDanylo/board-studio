@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.7.1
+// @version      5.8.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -77,7 +77,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     danger: { on: true, blunders: false },
     book: { on: true },
     crown: { on: true },
-    ghosts: { on: true, opacity: 0.25 }
+    ghosts: { on: true, opacity: 0.25, ai: false }
   };
 
   const settings = (() => {
@@ -243,6 +243,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
                   opacity 260ms ease, transform 300ms cubic-bezier(.34, 1.4, .64, 1);
     }
     .cc-ghost.cc-ghost-leave { transform: scale(0.7); }
+    .bs-ghost-ai { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+    .bs-ghost-ai svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+    .bs-ghost-ai .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)); }
+    .bs-ghost-ai .reply-arrow { opacity: .8; animation: bs-reply-in 460ms ease both; }
+    .bs-ghost-ai .reply-shaft { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .bs-ghost-ai .reply-head { stroke-linejoin: round; }
+    @keyframes bs-reply-in { from { opacity: 0; } to { opacity: .8; } }
+    @media (prefers-reduced-motion: reduce) {
+      .bs-ghost-ai .cc-ghost { transition: none; }
+      .bs-ghost-ai .reply-arrow { animation: none; }
+    }
     /* "can be taken" dots: only chess.com's dot color token is swapped for red, so its own
        dot (static or animated: grow in, shrink out) is drawn exactly as usual */
     wc-chess-board > [data-bs-danger], chess-board > [data-bs-danger] {
@@ -733,7 +744,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       let marks = false, hints = false, flip = false;
       for (const rec of records) {
         const t = rec.target;
-        if (this.layer.contains(t) || this.overlay.contains(t) || this.ghosts.el.contains(t) || t.closest?.('.bs-blunder-layer, .bs-fallback-hints')) continue;
+        if (this.layer.contains(t) || this.overlay.contains(t) || this.ghosts.el.contains(t) || t.closest?.('.bs-blunder-layer, .bs-fallback-hints, .bs-ghost-ai')) continue;
         // Chess.com recycles its highlight elements (class and style rewritten in place), so any
         // change among the board's children may be a highlight coming or going.
         if (rec.type === 'childList') {
@@ -888,6 +899,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!this.ghosts) return;
       if (this.ghosts.el.parentNode !== this.board || this.ghosts.el.nextSibling !== this.svg) this.svg.before(this.ghosts.el);
       this.ghosts.sync(this.aimedArrows(), readBoard(this.board), kind => this.imageFor(kind));
+      ghostAI.sync(this, kind => this.imageFor(kind));
     }
 
     // The exact piece image the board shows, so ghosts match the piece set.
@@ -1335,6 +1347,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const arrows = this.aimedArrows();
       const style = this.board.game.getOptions().pieceStyle;
       this.ghosts.sync(arrows, this.readPosition(), kind => pieceImageUrl(style, kind));
+      ghostAI.sync(this, kind => pieceImageUrl(style, kind));
     }
 
     // Your two square colors replace chess.com's green and red; the canvas draws them under
@@ -1853,6 +1866,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         <div class="body flow" style="--i:9">
           <div class="demo"><span><i class="live" style='background-image:${ghostPiece}'></i></span><span></span><span><i class="ghost" style='background-image:${ghostPiece}'></i></span></div>
           <div class="ghost-bar"></div>
+          <div class="sub" data-key="ai" title="After your drawn move, wait for depth 18 to see the opponent's top four replies."><span>Ghost AI</span><button class="sw" role="switch" type="button" aria-label="Ghost AI"></button></div>
+          <div style="font-size:10px;line-height:1.7;opacity:.8"><span style="color:#81c45b">1 Green</span> · <span style="color:#f7c045">2 Yellow</span> · <span style="color:#ed8c32">3 Orange</span> · <span style="color:#fa5146">4 Red</span></div>
         </div>
       </div>
     </div>`;
@@ -2170,6 +2185,152 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.urls = [];
     }
   }
+
+  // ---------- opponent ghost replies ----------
+
+  const GHOST_AI_COLORS = ['#81c45b', '#f7c045', '#ed8c32', '#fa5146'];
+
+  function ghostMove(game, arrow) {
+    const move = game.moves({ verbose: true }).find(m => m.from === arrow.from &&
+      (m.to === arrow.to || (m.piece === 'k' && ((m.flags.includes('k') && arrow.to === `h${m.from[1]}`) ||
+        (m.flags.includes('q') && arrow.to === `a${m.from[1]}`)))) && (!m.promotion || m.promotion === 'q'));
+    return move ? game.move(move) : null;
+  }
+
+  function ghostReplyPosition(fen, arrows) {
+    if (!fen || !arrows.length) return null;
+    try {
+      let game = new BoardStudioRules.Chess(fen);
+      const player = game.turn();
+      // Follow a legal drawn line. A separate root arrow selects a new variation.
+      // An invalid last arrow clears the preview instead of evaluating a made-up position.
+      for (const arrow of arrows) {
+        if (ghostMove(game, arrow)) continue;
+        game = new BoardStudioRules.Chess(fen);
+        if (!ghostMove(game, arrow)) return null;
+      }
+      return game.turn() !== player && !game.isGameOver() ? game.fen() : null;
+    } catch (e) { return null; }
+  }
+
+  class GhostSearch extends BlunderSearch {
+    constructor(fen, onUpdate) {
+      super(fen, onUpdate);
+      this.count = Math.min(4, new BoardStudioRules.Chess(fen).moves().length);
+      this.results = null;
+    }
+    send(command) {
+      super.send(command === 'setoption name MultiPV value 256' ? 'setoption name MultiPV value 4' :
+        command === 'go infinite' ? 'go depth 18' : command);
+    }
+    publish() {} // Never display incomplete or shallower reply rankings.
+    receive(line) {
+      if (this.stopped) return;
+      if (!line.startsWith('bestmove')) { super.receive(line); return; }
+      const ranked = [...this.batch].sort((a, b) => a[0] - b[0]);
+      const legal = new BoardStudioRules.Chess(this.fen).moves({ verbose: true });
+      if (this.depth >= 18 && ranked.length === this.count &&
+          ranked.every(([rank, score], i) => rank === i + 1 && legal.some(m => m.from + m.to + (m.promotion || '') === score.move)) &&
+          new Set(ranked.map(([, s]) => s.move)).size === this.count) {
+        this.results = ranked.map(([, score]) => score);
+      }
+      this.stop();
+      this.onUpdate();
+    }
+  }
+
+  const ghostAI = {
+    sessions: new Map(),
+    stop(board) {
+      const session = this.sessions.get(board);
+      session?.search.stop();
+      session?.layer?.remove();
+      this.sessions.delete(board);
+    },
+    clear() { for (const board of this.sessions.keys()) this.stop(board); },
+    sync(ctl, imageFor) {
+      const board = ctl.board;
+      if (!settings.ghosts.on || !settings.ghosts.ai || !engineAllowed() || document.hidden || !board.isConnected) { this.stop(board); return; }
+      const arrows = settings.arrows.on ? ctl.aimedArrows() : ctl.nativeArrows ?
+        [...ctl.nativeArrows.values()].map(i => i.data) : [...ctl.svg.querySelectorAll('polygon.arrow')].map(p => {
+          const m = MOVE.exec(p.getAttribute('data-arrow') || '');
+          return m && { from: m[1] + m[2], to: m[3] + m[4] };
+        }).filter(Boolean);
+      const base = blunderFEN(board), fen = ghostReplyPosition(base, arrows);
+      if (!fen) { this.stop(board); return; }
+      let session = this.sessions.get(board);
+      if (!session || session.fen !== fen || session.base !== base) {
+        this.stop(board);
+        const search = new GhostSearch(fen, () => {
+          if (this.sessions.get(board)?.search === search) {
+            const current = this.sessions.get(board);
+            current.ctl.syncGhosts();
+          }
+        });
+        session = { ctl, base, fen, search, layer: null, signature: null };
+        this.sessions.set(board, session);
+        search.start();
+      }
+      session.ctl = ctl;
+      if (!session.search.results) return;
+      this.paint(session, imageFor);
+    },
+    paint(session, imageFor) {
+      const { ctl, search, fen } = session;
+      const signature = JSON.stringify([ctl.flipped, settings.ghosts.opacity, search.results]);
+      if (session.signature === signature && session.layer?.isConnected) return;
+      session.layer?.remove();
+      const layer = document.createElement('div');
+      layer.className = 'bs-ghost-ai';
+      layer.setAttribute('aria-hidden', 'true');
+      const svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('viewBox', '0 0 800 800');
+      session.layer = layer; session.signature = signature;
+      ctl.board.appendChild(layer);
+      const spot = square => {
+        const s = squareXY(square.charCodeAt(0) - 96, +square[1], ctl.flipped);
+        return { left: `${s.x * 12.5}%`, top: `${s.y * 12.5}%` };
+      };
+      // Each reply is an alternative, not a four-move continuation.
+      search.results.forEach((score, i) => {
+        const game = new BoardStudioRules.Chess(fen), uci = score.move, color = GHOST_AI_COLORS[i];
+        const move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
+        const pieces = [{ from: move.from, to: move.to, kind: move.color + (move.promotion || move.piece) }];
+        if (move.flags.includes('k')) pieces.push({ from: `h${move.from[1]}`, to: `f${move.from[1]}`, kind: move.color + 'r' });
+        if (move.flags.includes('q')) pieces.push({ from: `a${move.from[1]}`, to: `d${move.from[1]}`, kind: move.color + 'r' });
+        for (const piece of pieces) {
+          const el = document.createElement('div');
+          el.className = 'cc-ghost'; el.dataset.rank = String(i + 1); el.dataset.square = piece.to;
+          el.style.backgroundImage = imageFor(piece.kind);
+          el.style.setProperty('--reply-color', color);
+          Object.assign(el.style, spot(piece.from), { opacity: '0' });
+          layer.appendChild(el); el.getBoundingClientRect();
+          Object.assign(el.style, spot(piece.to), { opacity: String(settings.ghosts.opacity) });
+        }
+        const g = geometry(Controller.prototype.arrowTarget.call(ctl, MOVE.exec(uci.slice(0, 4)), .8, 17));
+        if (!g) return;
+        const group = document.createElementNS(NS, 'g');
+        group.setAttribute('class', 'reply-arrow'); group.dataset.rank = String(i + 1); group.dataset.move = uci;
+        const title = document.createElementNS(NS, 'title'); title.textContent = `Opponent reply ${i + 1}: ${move.san}`;
+        const shaft = document.createElementNS(NS, 'path');
+        shaft.setAttribute('class', 'reply-shaft'); shaft.setAttribute('d', g.shaft); shaft.setAttribute('stroke', color); shaft.setAttribute('stroke-width', '17');
+        const head = document.createElementNS(NS, 'path');
+        head.setAttribute('class', 'reply-head'); head.setAttribute('d', g.head); head.setAttribute('fill', color); head.setAttribute('stroke', color); head.setAttribute('stroke-width', '7');
+        group.append(title, shaft, head); svg.appendChild(group);
+      });
+      layer.appendChild(svg);
+    }
+  };
+  setInterval(() => {
+    for (const [board, session] of ghostAI.sessions) {
+      if (!board.isConnected) ghostAI.stop(board);
+      else if (blunderFEN(board) !== session.base || (session.layer && !session.layer.isConnected)) session.ctl.syncGhosts();
+    }
+  }, 150);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) ghostAI.clear();
+    else document.querySelectorAll('wc-chess-board, chess-board').forEach(b => b.__cc?.syncGhosts());
+  });
 
   // ---------- arrow evaluation ----------
 

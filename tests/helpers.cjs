@@ -22,14 +22,14 @@ function setup() {
   };
   w.HTMLElement.prototype.getClientRects = function () { return this.hidden ? [] : [{}]; };
   const end = source.lastIndexOf('})();');
-  w.eval(source.slice(0, end) + '\nwindow.testAPI = { ArrowSearch, arrowEval, arrowGrade, isSoundSacrifice, ARROW_GRADES, BlunderSearch, blunderHints, fallbackHints, blunderPosition, isBlunderLoss, blunderExpected, Controller, CanvasController, settings, setSetting, syncCrown, engine };\n' + source.slice(end));
+  w.eval(source.slice(0, end) + '\nwindow.testAPI = { GhostSearch, ghostAI, ghostReplyPosition, GHOST_AI_COLORS, ArrowSearch, arrowEval, arrowGrade, isSoundSacrifice, ARROW_GRADES, BlunderSearch, blunderHints, fallbackHints, blunderPosition, isBlunderLoss, blunderExpected, Controller, CanvasController, settings, setSetting, syncCrown, engine };\n' + source.slice(end));
   function board(fen = initialFEN) {
     const b = w.document.createElement('wc-chess-board');
     b.game = { getFEN: () => fen };
     w.document.body.appendChild(b);
     return b;
   }
-  return { dom, w, api: w.testAPI, board, close: () => { observers.forEach(o => o.disconnect()); w.testAPI.arrowEval.clear(); w.testAPI.fallbackHints.clear(); w.testAPI.blunderHints.clear(); w.close(); } };
+  return { dom, w, api: w.testAPI, board, close: () => { observers.forEach(o => o.disconnect()); w.testAPI.ghostAI.clear(); w.testAPI.arrowEval.clear(); w.testAPI.fallbackHints.clear(); w.testAPI.blunderHints.clear(); w.close(); } };
 }
 
 function iteration(search, depth, scores) {

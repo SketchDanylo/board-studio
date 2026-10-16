@@ -21,8 +21,11 @@ Everything is switched on and off from the **Styles** item in chess.com's left s
   - If Chess.com's own move hints are absent or disabled, Board Studio draws legal move dots itself. This also works before an arrow controller or canvas sprite hook is available. Legal destinations appear without waiting for the engine.
   - **Show Blunders** – optional engine mode: move dots and capture rings morph into translucent red crosses for likely blunders, appearing from the first available engine scores and updating as analysis deepens. Crosses span about half a square. Their outlines morph back into dots or capture rings when a move is cleared, with only one marker visible at a time. Hold or keep a piece selected for deeper analysis. Supports normal and canvas boards.
 - **Ghosts** – each arrow moves a see-through copy of the piece, so you can plan lines.
+  - **Ghost AI** – after a legal drawn move, searches the opponent's replies to **depth 18**, then shows up to four alternative ghost moves. Green is the engine's top reply, yellow second, orange third, and red fourth. These colors indicate rank, not move grades. It works with native and custom arrows and uses the Ghosts opacity slider.
 
 Works on both chess.com board types (the normal one and the Arcade / Natural canvas board).
+
+Ghost AI is off by default; enable **Styles → Ghosts → Ghost AI**. It follows legal drawn continuations, or starts a new variation when you draw another legal move from the original position. It previews the opposing side after your move; it does not play moves on the real board. Promotions default to a queen for drawn moves, while engine replies retain their actual promotion choice. Castling replies include the rook ghost. No replies appear until the complete depth-18 ranking arrives; positions with fewer than four legal replies show fewer alternatives. Clearing arrows, switching off either Ghost AI or Ghosts, changing the position, or hiding the tab cancels the old preview. Mate and other terminal positions have no reply preview.
 
 ## Crown behavior
 

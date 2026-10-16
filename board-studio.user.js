@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.7.0
+// @version      5.7.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2001,8 +2001,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // ---------- progressive blunder hints ----------
 
-  // Board capability, rather than URL shape, determines whether evaluation can run.
-  const engineAllowed = () => !!blunderFEN(document.querySelector('wc-chess-board, chess-board'));
+  // Fair play: Stockfish runs against bots, in analysis, puzzles and practice, and on a game
+  // page only once that game has a result (reviewing it). Never while a game against a person
+  // is being played: that is engine help and breaks chess.com's rules.
+  const engineAllowed = () => {
+    const board = document.querySelector('wc-chess-board, chess-board');
+    if (!blunderFEN(board)) return false;
+    if (/^\/(play\/computer|game\/computer|analysis|puzzles|practice)(\/|$)/.test(location.pathname)) return true;
+    try {
+      const result = board.game.getHeaders?.()?.Result || board.game.getResult?.();
+      return !!result && result !== '*';
+    } catch (e) { return false; }
+  };
 
 
   function blunderFEN(board) {
@@ -2254,7 +2264,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     clear() { for (const board of this.sessions.keys()) this.stop(board); },
     sync(ctl, arrows) {
       const grades = new Map(), board = ctl.board, fen = blunderFEN(board);
-      if (!settings.arrowEval.on || document.hidden || !board.isConnected || !fen || !arrows.length) {
+      if (!settings.arrowEval.on || !engineAllowed() || document.hidden || !board.isConnected || !fen || !arrows.length) {
         this.stop(board); return grades;
       }
       let session = this.sessions.get(board);
@@ -2362,7 +2372,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const fen = blunderFEN(ctl.board);
       const position = blunderPosition(ctl.board);
       const piece = from && position[from.f]?.[from.r];
-      if (!ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
+      if (!engineAllowed() || !ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
         if (this.ctl === ctl) this.clear();
         return empty;
       }

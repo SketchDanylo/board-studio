@@ -30,7 +30,7 @@ The winning-side crown works on bot and live boards, using the visible evaluatio
 
 ## Board support
 
-Version 5.6.9 restores evaluation on game pages by checking for a readable board position instead of restricting it by URL. Version 5.6.10 morphs dots into crosses and back on DOM, canvas, and fallback boards. Non-blunder capture-risk dots stay red. The opening book retains its existing live-game restriction.
+Version 5.7.1: Stockfish (Show Blunders, Arrow Eval, the crown without an eval bar) runs against bots, in analysis, puzzles and practice, and on a game page once the game has a result, so finished games can be reviewed. It never runs while a game against a person is being played: that is engine help and breaks chess.com's fair-play rules. Version 5.6.10 morphs dots into crosses and back on DOM, canvas, and fallback boards. Non-blunder capture-risk dots stay red. The opening book retains its existing live-game restriction.
 
 ## Arrow Eval estimates
 

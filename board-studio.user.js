@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.10.0
+// @version      5.11.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -737,6 +737,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.el = document.createElement('div');
       this.el.className = 'cc-ghosts';
       this.items = new Map(); // ghost id -> { el, square, flipped }
+      this.taken = new Set(); // squares a Ghost AI reply captures on: the ghost there goes away
+    }
+
+    applyTaken(item) {
+      const gone = !!item.square && this.taken.has(item.square);
+      item.el.classList.toggle('cc-ghost-leave', gone);
+      item.el.style.opacity = gone ? '0' : String(settings.ghosts.opacity);
+    }
+
+    take(squares) {
+      this.taken = squares;
+      this.items.forEach(item => this.applyTaken(item));
     }
 
     spot(name) {
@@ -772,8 +784,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           item.square = square;
           item.flipped = flipped;
         }
-        item.el.classList.remove('cc-ghost-leave');
-        item.el.style.opacity = String(settings.ghosts.opacity);
+        this.applyTaken(item);
       });
       this.items.forEach((item, id) => {
         if (seen.has(id)) return;
@@ -994,8 +1005,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     syncGhosts() {
       if (!this.ghosts) return;
       if (this.ghosts.el.parentNode !== this.board || this.ghosts.el.nextSibling !== this.svg) this.svg.before(this.ghosts.el);
-      this.ghosts.sync(drawnByYou(this, this.aimedArrows()), readBoard(this.board), kind => this.imageFor(kind));
+      const drawn = drawnByYou(this, this.aimedArrows());
       ghostAI.sync(this, kind => this.imageFor(kind));
+      // With the Ghost AI on, the ghosts follow the whole line, the opponent's assumed moves too.
+      this.ghosts.sync(this.assumedLine || drawn, readBoard(this.board), kind => this.imageFor(kind));
     }
 
     // The exact piece image the board shows, so ghosts match the piece set.
@@ -1442,8 +1455,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.place();
       const arrows = drawnByYou(this, this.aimedArrows());
       const style = this.board.game.getOptions().pieceStyle;
-      this.ghosts.sync(arrows, this.readPosition(), kind => pieceImageUrl(style, kind));
       ghostAI.sync(this, kind => pieceImageUrl(style, kind));
+      this.ghosts.sync(this.assumedLine || arrows, this.readPosition(), kind => pieceImageUrl(style, kind));
     }
 
     // Your two square colors replace chess.com's green and red; the canvas draws them under
@@ -2311,7 +2324,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Best reply found so far for each position the opponent was to move in, so a drawn line can assume it.
   const ghostBest = new Map();
 
-  function ghostReplyPosition(fen, arrows, need) {
+  function ghostReplyPosition(fen, arrows, need, out) {
     if (!fen || !arrows.length) return null;
     try {
       let game = new BoardStudioRules.Chess(fen);
@@ -2321,20 +2334,25 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!player) return null;
       // Play one arrow. If it is not legal yet and it is the opponent's move, assume their best
       // reply (asking for it to be worked out if it is not known) and try again.
+      let line = []; // every move of the line in order, the assumed opponent replies included
       const play = arrow => {
-        if (ghostMove(game, arrow)) return true;
+        if (ghostMove(game, arrow)) { line.push({ from: arrow.from, to: arrow.to }); return true; }
         if (game.turn() === player) return false;
         const best = ghostBest.get(game.fen());
         if (!best) { need?.add(game.fen()); return false; }
-        return !!game.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: best[4] }) && !!ghostMove(game, arrow);
+        if (!game.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: best[4] }) || !ghostMove(game, arrow)) return false;
+        line.push({ from: best.slice(0, 2), to: best.slice(2, 4), assumed: true }, { from: arrow.from, to: arrow.to });
+        return true;
       };
       // Follow a legal drawn line. A separate root arrow selects a new variation.
       // An invalid last arrow clears the preview instead of evaluating a made-up position.
       for (const arrow of arrows) {
         if (play(arrow)) continue;
         game = new BoardStudioRules.Chess(fen);
+        line = [];
         if (!play(arrow)) return null;
       }
+      if (out) out.line = line;
       return game.turn() !== player && !game.isGameOver() ? game.fen() : null;
     } catch (e) { return null; }
   }
@@ -2374,6 +2392,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     stop(board, keepFeeder) {
       const session = this.sessions.get(board);
       session?.search.stop();
+      session?.ctl.ghosts?.take(new Set());
       if (!keepFeeder) this.feed({ board }, null);
       session?.layer?.remove();
       this.sessions.delete(board);
@@ -2392,6 +2411,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     },
     sync(ctl, imageFor) {
       const board = ctl.board;
+      ctl.assumedLine = null;
       // Stepping back through earlier moves (analysis, game review, a running game) is just viewing:
       // replies are only worked out at the end of the line.
       let viewing = false;
@@ -2403,7 +2423,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           return m && { id: m[0], from: m[1] + m[2], to: m[3] + m[4] };
         }).filter(Boolean);
       const arrows = drawnByYou(ctl, all);
-      const base = blunderFEN(board), need = new Set(), fen = ghostReplyPosition(base, arrows, need);
+      const base = blunderFEN(board), need = new Set(), out = {}, fen = ghostReplyPosition(base, arrows, need, out);
+      ctl.assumedLine = fen ? out.line : null;
       // Playing on before the opponent's best reply is known: work it out first, then carry on.
       this.feed(ctl, need.values().next().value);
       if (!fen) { if (!need.size) this.stop(board); return; }
@@ -2461,7 +2482,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           const parts = [{ from: move.from, to: move.to, kind: move.color + (move.promotion || move.piece) }];
           if (move.flags.includes('k')) parts.push({ from: `h${move.from[1]}`, to: `f${move.from[1]}`, kind: move.color + 'r' });
           if (move.flags.includes('q')) parts.push({ from: `a${move.from[1]}`, to: `d${move.from[1]}`, kind: move.color + 'r' });
-          item = { san: move.san, pieces: [], group: null };
+          item = { san: move.san, capture: move.captured ? move.to : null, pieces: [], group: null };
           for (const part of parts) {
             const el = document.createElement('div');
             el.className = 'cc-ghost'; el.dataset.square = part.to;
@@ -2497,6 +2518,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           Object.assign(el.style, spot(to), { opacity: String(settings.ghosts.opacity) });
         }
       });
+      // A ghost one of the replies captures goes away, like when you draw the capture yourself.
+      ctl.ghosts?.take(new Set([...items.values()].map(i => i.capture).filter(Boolean)));
       for (const [uci, item] of items) {
         if (keep.has(uci)) continue;
         items.delete(uci);

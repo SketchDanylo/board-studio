@@ -117,7 +117,7 @@ test('canvas hook supports native arrows, promotion ghosts and fewer than four l
     f.api.settings.arrows.on = false;
     const board = f.board(); board.game.getOptions = () => ({ pieceStyle: 'neo' });
     const ctl = Object.create(f.api.CanvasController.prototype);
-    Object.assign(ctl, { board, ghosts: { sync() {} }, place() {}, readPosition: () => [], nativeArrows: new Map([['a', { key: 'a', data: { from: 'e2', to: 'e4' } }]]), renderer: { getCoordsFromSquare: sq => ({ x: sq === 'a1' ? 0 : 7 }) } });
+    Object.assign(ctl, { board, ghosts: { sync() {}, take() {} }, place() {}, readPosition: () => [], nativeArrows: new Map([['a', { key: 'a', data: { from: 'e2', to: 'e4' } }]]), renderer: { getCoordsFromSquare: sq => ({ x: sq === 'a1' ? 0 : 7 }) } });
     ctl.syncGhosts(); assert.equal(f.api.ghostAI.sessions.size, 0, 'an arrow chess.com drew itself is not yours');
     ctl.nativeArrows = new Map([['b', { key: 'b', data: { from: 'e2', to: 'e4' } }]]); f.rightClick();
     ctl.syncGhosts(); const s = f.api.ghostAI.sessions.get(board).search;

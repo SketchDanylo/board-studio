@@ -87,7 +87,7 @@ test('worker failure does not remove legal fallback dots', () => {
     f.w.console.warn = () => {};
     const b = f.board(); f.api.fallbackHints.select(b, { f: 4, r: 1 });
     assert.equal(b.querySelectorAll('.bs-fallback-dot').length, 2);
-    assert.match(f.w.document.querySelector('#board-studio').shadowRoot.querySelector('.hint-status').textContent, /unavailable/);
+    assert.equal(f.api.blunderHints.search.stopped, true);
     f.api.settings.danger.on = false; f.api.fallbackHints.refresh();
     assert.equal(b.querySelector('.bs-fallback-hints'), null);
   } finally { f.close(); }
@@ -116,25 +116,6 @@ test('native/fallback handoffs preserve the worker, scores, and callback destina
     assert.equal(f.api.blunderHints.search, search);
     assert.equal(search.depth, 2);
     assert.equal(f.api.blunderHints.ctl, h.adapter);
-  } finally { f.close(); }
-});
-
-test('status distinguishes startup, waiting, no blunders and actual blunders', () => {
-  const f = setup();
-  try {
-    f.api.settings.danger.blunders = true;
-    const b = f.board(); f.api.fallbackHints.select(b, { f: 4, r: 1 });
-    const status = () => f.w.document.querySelector('#board-studio').shadowRoot.querySelector('.hint-status').textContent;
-    const s = f.api.blunderHints.search;
-    assert.match(status(), /Starting evaluation/);
-    s.receive('readyok'); f.api.fallbackHints.refresh();
-    assert.match(status(), /waiting for move scores/);
-    iteration(s, 1, [{ move: 'e2e4', cp: 0 }]);
-    assert.match(status(), /Depth 1.*No blunders/);
-    iteration(s, 2, [{ move: 'd2d4', cp: 0 }, { move: 'e2e4', cp: -400, wdl: [0, 0, 1000] }]);
-    assert.match(status(), /Depth 2.*1 blunder square/);
-    s.receive('info depth 3 multipv 1 score cp 0 pv e2e4');
-    assert.match(status(), /waiting for win\/draw\/loss/);
   } finally { f.close(); }
 });
 

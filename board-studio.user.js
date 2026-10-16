@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.10
+// @version      5.6.11
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1801,7 +1801,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       <div class="item" data-group="danger">${row('danger', 'Take squares', 6)}
         <div class="body flow" style="--i:7">
           <div class="sub" data-key="blunders" title="Conservative Stockfish estimates; Chess.com review labels may differ. Keep a piece selected for deeper analysis."><span>Show Blunders</span><button class="sw" role="switch" type="button" aria-label="Show Blunders"></button></div>
-          <small class="hint-status" role="status" style="display:block;opacity:.7;padding:4px 0 8px">Select a piece to show move hints.</small>
           <div class="demo"><span><b></b></span><span><b class="red"></b></span><span><b></b></span><span><i class="cap"></i></span><span><b class="red"></b></span></div>
         </div>
       </div>
@@ -2104,7 +2103,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.stop();
       this.moves.clear();
       console.warn('[Board Studio] Blunder analysis unavailable:', message);
-      showHintStatus('Evaluation unavailable; ordinary move dots still work.');
       this.onUpdate();
     }
 
@@ -2155,13 +2153,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if ((!promotion || choices.length === 4) && choices.length && choices.every(s => s.blunder)) bad.add(name);
       }
       this.paint(ctl, bad, from, position);
-      const search = this.search;
-      const assessed = [...search.moves.values()].filter(s => s.move.startsWith(source));
-      if (search.stopped) showHintStatus(`Evaluation unavailable: ${search.error || 'engine stopped'}.`);
-      else if (!search.depth) showHintStatus(search.ready ? 'Engine ready; waiting for move scores…' : 'Starting evaluation engine…');
-      else if (!assessed.length) showHintStatus(`Depth ${search.depth}: evaluating this piece…`);
-      else if (assessed.some(s => !s.wdl && s.mate === undefined)) showHintStatus(`Depth ${search.depth}: engine scores received, waiting for win/draw/loss data…`);
-      else showHintStatus(`Depth ${search.depth} · ${bad.size ? `${bad.size} blunder square${bad.size === 1 ? '' : 's'}` : 'No blunders found for this piece yet'}.`);
       return bad;
     },
     covers(ctl, square) {
@@ -2231,11 +2222,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
   };
 
-  function showHintStatus(text) {
-    const el = shadow.querySelector('.hint-status');
-    if (el && el.textContent !== text) el.textContent = text;
-  }
-
   // Selecting a piece must not depend on native move dots or the canvas sprite hooks.
   // The local rules library supplies legal destinations immediately, even with site hints off.
   const fallbackHints = {
@@ -2244,10 +2230,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.clear();
       if (!settings.danger.on || !from) return;
       const fen = blunderFEN(board);
-      if (!fen) { showHintStatus('Cannot read this board yet. Try refreshing the game page.'); return; }
+      if (!fen) return;
       let game;
       try { game = new BoardStudioRules.Chess(fen); } catch (e) {
-        showHintStatus('This position could not be read.'); return;
+        return;
       }
       const name = sqName(from);
       if (game.get(name)?.color !== game.turn()) return;
@@ -2261,7 +2247,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         get flipped() { return board.__cc ? board.__cc.flipped : board.classList.contains('flipped'); },
         paintHints() { if (self.board === board) self.refresh(); }
       };
-      if (!this.moves.length) { showHintStatus('This piece has no legal moves.'); return; }
+      if (!this.moves.length) return;
       this.refresh();
     },
     nativeHints() {
@@ -2305,7 +2291,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (blunderHints.covers(this.adapter, el.dataset.square)) el.dataset.bsBlunder = '1';
         else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
       });
-      if (!settings.danger.blunders) showHintStatus('Move hints active; red dots mark capture risk.');
     },
     clear() {
       if (this.adapter && blunderHints.ctl === this.adapter) blunderHints.clear();

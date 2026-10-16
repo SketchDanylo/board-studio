@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.11.0
+// @version      5.11.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2586,12 +2586,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const loss = Math.max(0, a - b);
     const cpLoss = best.cp !== undefined && score.cp !== undefined ? Math.max(0, best.cp - score.cp) : null;
     const nearBest = loss <= .02 && (cpLoss === null || cpLoss <= 40);
-    if (nearBest && b >= .5 && sacrifice && completed && completed.depth >= 12) {
+    // A real sacrifice may give up a little against the engine's top move and still be Brilliant
+    // (chess.com does the same), as long as it stays about level.
+    const closeToBest = loss <= .08 && (cpLoss === null || cpLoss <= 70);
+    if (closeToBest && b >= .45 && sacrifice && completed && completed.depth >= 12) {
       const candidate = completed.scores.find(s => s.move === score.move);
       const alternatives = completed.scores.filter(s => s.move !== score.move);
       const ca = blunderExpected(completed.best), cb = candidate && blunderExpected(candidate);
       const gap = candidate?.cp !== undefined && completed.best.cp !== undefined ? completed.best.cp - candidate.cp : 0;
-      if (candidate && cb !== null && cb >= .5 && ca - cb <= .02 && gap <= 40 && alternatives.length &&
+      if (candidate && cb !== null && cb >= .45 && ca - cb <= .08 && gap <= 70 && alternatives.length &&
           alternatives.every(s => blunderExpected(s) !== null && blunderExpected(s) < .9)) return 'brilliant';
     }
     if ((best.mate > 0 || a >= .85) && b <= .5 && loss >= .2) return 'missed';

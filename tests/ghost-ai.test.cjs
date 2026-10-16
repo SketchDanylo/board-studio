@@ -48,7 +48,7 @@ test('Ghost AI respects the existing engine availability rules', () => {
   } finally { f.close(); }
 });
 
-test('search requests four lines to depth 18 or 1.3 s, exposes nothing early and releases the worker', () => {
+test('search requests four lines to depth 18 or 1.3 s, shows replies from the first complete depth, refines them and releases the worker', () => {
   const f = setup();
   try {
     let updates = 0;
@@ -57,11 +57,13 @@ test('search requests four lines to depth 18 or 1.3 s, exposes nothing early and
     s.receive('uciok'); s.receive('readyok');
     assert.ok(worker.commands.includes('setoption name MultiPV value 4'));
     assert.ok(worker.commands.includes('go depth 18 movetime 1300'));
-    iteration(s, 17, replies); assert.equal(s.results, null); assert.equal(updates, 0);
-    iteration(s, 18, replies); assert.equal(s.results, null, 'waits for completion, not partial depth');
+    iteration(s, 17, replies.slice(0, 3)); assert.equal(s.results, null, 'a partial depth is never shown');
+    iteration(s, 17, replies); assert.deepEqual(Array.from(s.results, r => r.move), replies.map(r => r.move)); assert.equal(updates, 1);
+    iteration(s, 18, replies); assert.equal(updates, 1, 'unchanged ranking does not repaint');
     s.receive('bestmove e7e5');
-    assert.deepEqual(Array.from(s.results, r => r.move), replies.map(r => r.move));
-    assert.equal(updates, 1); assert.equal(worker.terminated, true);
+    assert.equal(worker.terminated, true);
+    const chain = new Chess(); ['e4', 'e5', 'd4'].forEach(m => chain.move(m));
+    assert.equal(f.api.ghostReplyPosition(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'd2', to: 'd4' }]), chain.fen(), 'next move assumes the best reply');
     const partial = new f.api.GhostSearch(afterE4.fen(), () => {});
     iteration(partial, 18, replies.slice(0, 3)); partial.receive('bestmove e7e5');
     assert.equal(partial.results, null, 'incomplete top four is not displayed');
@@ -78,8 +80,7 @@ test('DOM preview renders ranked ghosts only after completion, follows flips and
     board.innerHTML = '<svg class="arrows"><polygon class="arrow" data-arrow="e2e4"></polygon></svg>';
     const ctl = new f.api.Controller(board.querySelector('svg'));
     const s = f.api.ghostAI.sessions.get(board).search;
-    iteration(s, 17, replies); assert.equal(board.querySelector('.bs-ghost-ai'), null);
-    iteration(s, 18, replies); s.receive('bestmove e7e5');
+    iteration(s, 17, replies);
     assert.equal(board.querySelectorAll('.bs-ghost-ai .reply-arrow').length, 4);
     assert.equal(board.querySelectorAll('.bs-ghost-ai .cc-ghost').length, 4);
     [...board.querySelectorAll('.reply-arrow')].forEach((el, i) => {
@@ -141,7 +142,7 @@ test('real bundled engine completes depth-18 opponent search with four legal ran
     await new Promise((resolve, reject) => {
       const search = new f.api.GhostSearch(afterE4.fen(), () => {
         try {
-          assert.ok(search.depth >= 10 && search.depth <= 18); assert.equal(search.results.length, 4);
+          assert.ok(search.depth <= 18); assert.equal(search.results.length, 4);
           const legal = new Chess(afterE4.fen()).moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
           for (const reply of search.results) assert.ok(legal.includes(reply.move));
           console.log('Real Ghost AI depth 18: ' + search.results.map(r => r.move).join(', ')); resolve();

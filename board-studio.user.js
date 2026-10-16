@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.8.2
+// @version      5.9.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2242,6 +2242,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return move ? game.move(move) : null;
   }
 
+  // Best reply found so far for each position the opponent was to move in, so a drawn line can assume it.
+  const ghostBest = new Map();
+
   function ghostReplyPosition(fen, arrows) {
     if (!fen || !arrows.length) return null;
     try {
@@ -2251,6 +2254,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // An invalid last arrow clears the preview instead of evaluating a made-up position.
       for (const arrow of arrows) {
         if (ghostMove(game, arrow)) continue;
+        // Drawing your next move assumes the opponent's best reply to the last one, then carries on.
+        const best = game.turn() !== player && ghostBest.get(game.fen());
+        if (best && game.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: best[4] }) && ghostMove(game, arrow)) continue;
         game = new BoardStudioRules.Chess(fen);
         if (!ghostMove(game, arrow)) return null;
       }
@@ -2268,23 +2274,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       super.send(command === 'setoption name MultiPV value 256' ? 'setoption name MultiPV value 4' :
         command === 'go infinite' ? 'go depth 18 movetime 1300' : command);
     }
-    publish() {} // Never display incomplete reply rankings (depth 18 or 1.3 s, whichever comes first).
+    publish() {}
+    // Replies show from the first depth and are re-ranked as the search deepens; replies that
+    // fall clearly behind the best one are dropped.
     receive(line) {
       if (this.stopped) return;
-      if (!line.startsWith('bestmove')) {
-        super.receive(line);
-        // A timed-out search can leave its last depth half-reported; keep the last complete one.
-        if (this.batch.size === this.count && [...this.batch.keys()].every(r => r >= 1 && r <= this.count)) this.done = { depth: this.depth, ranked: [...this.batch] };
-        return;
-      }
-      const ranked = (this.done ? [...this.done.ranked] : []).sort((a, b) => a[0] - b[0]);
-      const legal = new BoardStudioRules.Chess(this.fen).moves({ verbose: true });
-      if (this.done && this.done.depth >= 10 && ranked.length === this.count &&
-          ranked.every(([rank, score], i) => rank === i + 1 && legal.some(m => m.from + m.to + (m.promotion || '') === score.move)) &&
-          new Set(ranked.map(([, s]) => s.move)).size === this.count) {
-        this.results = ranked.map(([, score]) => score);
-      }
-      this.stop();
+      if (line.startsWith('bestmove')) { this.stop(); return; }
+      super.receive(line);
+      if (this.batch.size !== this.count || ![...this.batch.keys()].every(r => r >= 1 && r <= this.count)) return;
+      const legal = new BoardStudioRules.Chess(this.fen).moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
+      const ranked = [...this.batch].sort((a, b) => a[0] - b[0]).map(([, score]) => score);
+      if (new Set(ranked.map(m => m.move)).size !== this.count || !ranked.every(m => legal.includes(m.move))) return;
+      const value = m => m.mate !== undefined ? Math.sign(m.mate || -1) * (10000 - Math.abs(m.mate)) : m.cp;
+      const results = ranked.filter(m => value(ranked[0]) - value(m) <= 80);
+      if (this.results && this.results.map(m => m.move).join() === results.map(m => m.move).join()) return;
+      this.results = results;
+      ghostBest.set(this.fen, results[0].move);
       this.onUpdate();
     }
   }

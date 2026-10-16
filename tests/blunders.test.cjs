@@ -200,14 +200,27 @@ test('a promotion square is not condemned when an underpromotion saves it', () =
   } finally { f.close(); }
 });
 
-test('crown still attaches to current avatar IDs without blunder mode', () => {
+test('crown escapes clipped avatar wrappers and follows its avatar on scroll', () => {
   const f = setup();
   try {
     f.board();
-    f.w.document.body.insertAdjacentHTML('beforeend', '<div id="player-bottom"><div class="cc-avatar-component"></div></div>');
+    f.w.document.body.insertAdjacentHTML('beforeend', '<div id="player-bottom" style="overflow:hidden;isolation:isolate"><img class="cc-avatar-component"></div>');
+    const avatar = f.w.document.querySelector('.cc-avatar-component');
+    let top = 300;
+    avatar.getBoundingClientRect = () => ({ left: 100, top, width: 40, height: 40 });
     f.api.syncCrown(); f.api.engine.receive('uciok'); f.api.engine.receive('readyok');
     f.api.engine.receive('info depth 12 score cp 45');
-    assert.ok(f.w.document.querySelector('#player-bottom .bs-crown'));
+    const crown = f.w.document.querySelector('.bs-crown');
+    assert.equal(crown.parentElement, f.w.document.body);
+    assert.equal(crown.bsAvatar, avatar);
+    assert.equal(crown.style.left, '120px');
+    assert.equal(crown.style.top, '284px');
+    top = 200; f.w.dispatchEvent(new f.w.Event('scroll'));
+    assert.equal(crown.style.top, '184px');
+    f.api.syncCrown();
+    assert.equal(f.w.document.querySelectorAll('.bs-crown').length, 1);
+    avatar.remove(); f.w.dispatchEvent(new f.w.Event('resize'));
+    assert.equal(crown.isConnected, false);
   } finally { f.close(); }
 });
 

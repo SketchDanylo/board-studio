@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.11
+// @version      5.6.12
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2347,9 +2347,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   const crownStyle = document.createElement('style');
   crownStyle.textContent = `
-    .bs-crowned { position: relative; overflow: visible !important; }
     .bs-crown {
-      position: absolute; left: 50%; top: -16px; width: 28px; height: 21px; z-index: 5; pointer-events: none;
+      position: fixed; width: 28px; height: 21px; z-index: 2147482999; pointer-events: none;
       transform: translateX(-50%) rotate(-14deg); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .45));
       animation: bs-crown-in 560ms cubic-bezier(.34, 1.6, .64, 1) both;
     }
@@ -2359,6 +2358,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     @keyframes bs-crown-out { to { opacity: 0; transform: translate(-50%, -14px) rotate(12deg) scale(.6); } }
   `;
   document.head.appendChild(crownStyle);
+
+  // Render outside the player row: avatar wrappers can clip overflow and sit
+  // beneath the board's stacking context, regardless of the crown's own z-index.
+  function positionCrowns() {
+    document.querySelectorAll('.bs-crown').forEach(crown => {
+      const avatar = crown.bsAvatar;
+      if (!avatar?.isConnected || !avatar.getClientRects().length) { crown.remove(); return; }
+      const rect = avatar.getBoundingClientRect();
+      crown.style.left = `${rect.left + rect.width / 2}px`;
+      crown.style.top = `${Math.max(4, rect.top - 16)}px`;
+    });
+  }
+  window.addEventListener('scroll', positionCrowns, true);
+  window.addEventListener('resize', positionCrowns);
 
   // 'w', 'b' or null, from the eval bar's score (always from white's side: "+0.3", "-1.2", "M3", "1-0").
   function evalLeader() {
@@ -2477,8 +2490,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       for (const row of rows) {
         for (const element of row.querySelectorAll('.cc-avatar-component, .player-row-avatar, .player-avatar')) {
           if (element.getClientRects().length) {
-            // An IMG cannot render children; attach the crown to its wrapper instead.
-            return element.tagName === 'IMG' ? element.parentElement : element;
+            return element;
           }
         }
       }
@@ -2486,17 +2498,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     };
     const winner = leader ? avatar((leader === 'w') !== flipped ? 'bottom' : 'top') : null;
     document.querySelectorAll('.bs-crown:not(.bs-leave)').forEach(crown => {
-      if (crown.parentElement === winner) return;
+      if (crown.bsAvatar === winner) return;
       crown.classList.add('bs-leave');
       setTimeout(() => crown.remove(), 300);
     });
-    if (winner && !winner.querySelector('.bs-crown:not(.bs-leave)')) {
-      winner.classList.add('bs-crowned');
+    if (winner && ![...document.querySelectorAll('.bs-crown:not(.bs-leave)')].some(c => c.bsAvatar === winner)) {
       const crown = document.createElement('span');
       crown.className = 'bs-crown';
+      crown.bsAvatar = winner;
       crown.innerHTML = CROWN_SVG;
-      winner.appendChild(crown);
+      document.body.appendChild(crown);
     }
+    positionCrowns();
   }
   listeners.add(syncCrown);
   setInterval(syncCrown, 150);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.13.0
+// @version      5.13.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -304,7 +304,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   taken.setAttribute('width', '0'); taken.setAttribute('height', '0');
   taken.setAttribute('aria-hidden', 'true');
   taken.style.cssText = 'position:absolute;width:0;height:0;pointer-events:none';
-  const hatch = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'><defs><pattern id='p' width='16' height='16' patternUnits='userSpaceOnUse' patternTransform='rotate(45)'><rect width='8' height='16' fill='#000' fill-opacity='.25'/><rect x='8' width='8' height='16' fill='#fff' fill-opacity='.25'/></pattern></defs><rect width='100' height='100' fill='url(#p)'/></svg>");
+  const hatch = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'><defs><pattern id='p' width='16' height='16' patternUnits='userSpaceOnUse' patternTransform='rotate(45)'><rect width='8' height='16' fill='#000' fill-opacity='.45'/><rect x='8' width='8' height='16' fill='#fff' fill-opacity='.45'/></pattern></defs><rect width='100' height='100' fill='url(#p)'/></svg>");
   taken.innerHTML = `<defs>
     <pattern id="bs-stripe-pat" width="22" height="22" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="11" height="22" fill="#fff"/></pattern>
     <mask id="bs-stripe-mask" maskUnits="userSpaceOnUse" x="-100" y="-100" width="1000" height="1000"><rect x="-100" y="-100" width="1000" height="1000" fill="url(#bs-stripe-pat)"/></mask>

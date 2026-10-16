@@ -6,6 +6,54 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { setup, source } = require('./helpers.cjs');
+const { Chess } = require('chess.js');
+
+test('Arrow Eval recognizes the queen sacrifice for smothered mate using the real engine', { timeout: 60000 }, async () => {
+  const f = setup();
+  const assets = {};
+  vm.runInNewContext(source.slice(source.indexOf('  var SF_JS ='), source.lastIndexOf('})();')), assets);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'board-studio-arrow-'));
+  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), assets.SF_JS);
+  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), Buffer.from(assets.SF_WASM, 'base64'));
+  const child = spawn(process.execPath, [path.join(dir, 'stockfish.cjs')], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const fen = 'q4r1k/6pp/4Q2N/8/8/8/8/6K1 w - - 0 1';
+  let timer, stderr = '';
+  try {
+    const search = new f.api.ArrowSearch(fen, () => {});
+    search.legalCount = new Chess(fen).moves().length;
+    search.send = command => child.stdin.write((command === 'go infinite' ? 'go depth 13' : command) + '\n');
+    await new Promise((resolve, reject) => {
+      let buffer = '';
+      timer = setTimeout(() => reject(new Error(`Arrow engine timed out: ${stderr.slice(-800)}`)), 55000);
+      child.on('error', reject);
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.stdout.on('data', chunk => {
+        buffer += chunk;
+        const lines = buffer.split(/\r?\n/); buffer = lines.pop();
+        for (const raw of lines) {
+          const line = raw.trim(); search.receive(line);
+          if (!line.startsWith('bestmove')) continue;
+          try {
+            const candidate = search.moves.get('e6g8');
+            assert.equal(candidate.mate, 2);
+            assert.equal(search.completed.depth, 13);
+            assert.equal(f.api.arrowGrade(candidate.best, candidate, {
+              sacrifice: f.api.isSoundSacrifice(fen, 'e6g8'), completed: search.completed
+            }), 'brilliant');
+            console.log('Real Arrow Eval: Qg8+! Rxg8 Nf7# is Brilliant at depth 13.');
+            resolve();
+          } catch (e) { reject(e); }
+        }
+      });
+      search.send('uci');
+    });
+  } finally {
+    clearTimeout(timer); child.kill();
+    await new Promise(resolve => child.exitCode !== null ? resolve() : child.once('exit', resolve));
+    f.close();
+    fs.unlinkSync(path.join(dir, 'stockfish.cjs')); fs.unlinkSync(path.join(dir, 'stockfish.wasm')); fs.rmdirSync(dir);
+  }
+});
 
 for (const position of [
   { side: 'White', fen: 'rnbqkbnr/pppp1ppp/8/4p3/8/5P2/PPPPP1PP/RNBQKBNR w KQkq - 0 2', move: 'g2g4' },

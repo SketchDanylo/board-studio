@@ -14,6 +14,7 @@ Everything is switched on and off from the **Styles** item in chess.com's left s
 - **Double square** – right-click a square for your first color, again for your second, a third time to clear.
 - **Custom arrows** – soft spring-animated arrows, L-shaped for knights, in your color.
   - **Aim assist** – an arrow drawn from a piece snaps to the nearest square that piece can reach.
+- **Arrow Eval** – independently colors native and custom arrows by estimated move grade, with smooth transitions as the engine refines its search. Enable it directly below **Custom arrows**.
 - **Opening book** – the book from [Chess Coach](https://sketchdanylo.github.io/chess), with thicker arrows for more popular moves.
 - **Winning side** – a crown on the avatar of whoever is ahead, from chess.com's eval bar or, where there is none, a built-in Stockfish that keeps searching deeper.
 - **Take squares** – move dots turn red where your piece could be taken.
@@ -30,6 +31,14 @@ The winning-side crown works on bot and live boards, using the visible evaluatio
 ## Board support
 
 Version 5.6.9 restores evaluation on game pages by checking for a readable board position instead of restricting it by URL. Version 5.6.10 morphs dots into crosses and back on DOM, canvas, and fallback boards. Non-blunder capture-risk dots stay red. The opening book retains its existing live-game restriction.
+
+## Arrow Eval estimates
+
+Version 5.7.0 adds **Styles → Arrow Eval**, off by default. Draw an arrow for a legal move by the side to move. Both native and custom arrows receive colors for Brilliant, Best Move, Excellent, Good, Book Move, Inaccuracy, Mistake, Blunder, and Missed Win. Disabling the option restores the original colors. Arrows without a legal move remain unchanged; promotion arrows assume a queen.
+
+Colors transition over 460 ms and respect reduced-motion preferences. All legal moves are evaluated, so the comparison includes alternatives outside the drawn arrows. Results update from the first engine scores; Brilliant additionally requires a complete search iteration of at least depth 12, a sound position, and a legal material sacrifice rather than an equal trade. A conservative check excludes positions where another move is already clearly winning. The bundled opening book identifies Book Move; Missed Win estimates a missed winning continuation that leads to equality or worse. Analysis stops when arrows are cleared, the option is disabled, or the tab is hidden, and restarts for a changed position.
+
+These are **local Stockfish estimates, not exact Chess.com Game Review labels**. Chess.com's rating-dependent expected-points model and special-move rules are not fully public. Brilliant detection may miss sacrifices, and deeper analysis can change any grade. [Chess.com's classification explanation](https://support.chess.com/en/articles/8572705-how-are-moves-classified-what-is-a-blunder-or-brilliant-etc) describes the differences.
 
 ## Blunder estimates
 

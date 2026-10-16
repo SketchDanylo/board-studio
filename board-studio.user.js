@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.12
+// @version      5.7.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -73,6 +73,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     style: { on: true },
     marks: { on: true, c1: '#7fd6a0b8', c2: '#f0827ab8' },
     arrows: { on: true, color: '#ffaa00cc', aim: true },
+    arrowEval: { on: false },
     danger: { on: true, blunders: false },
     book: { on: true },
     crown: { on: true },
@@ -91,6 +92,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   })();
 
   const listeners = new Set();
+  const ARROW_GRADES = {
+    brilliant: { label: 'Brilliant', color: '#1baca6' },
+    best: { label: 'Best Move', color: '#96bc4b' },
+    excellent: { label: 'Excellent', color: '#96bc4b' },
+    good: { label: 'Good', color: '#96af8b' },
+    book: { label: 'Book Move', color: '#a88865' },
+    inaccuracy: { label: 'Inaccuracy', color: '#f7c045' },
+    mistake: { label: 'Mistake', color: '#e58f2a' },
+    blunder: { label: 'Blunder', color: '#fa412d' },
+    missed: { label: 'Missed Win', color: '#dbac1d' }
+  };
   function setSetting(group, key, value) {
     settings[group][key] = value;
     try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ }
@@ -201,6 +213,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     svg.cc-arrows .cc-arrow.book { filter: drop-shadow(0 1px 3px rgba(0,0,0,0.18)); }
     svg.cc-arrows .shaft { fill: none; stroke-linecap: round; stroke-linejoin: round; }
     svg.cc-arrows .head { stroke-linejoin: round; }
+    svg.cc-arrows stop { transition: stop-color 460ms ease; }
+    svg.cc-arrows .head { transition: fill 460ms ease, stroke 460ms ease; }
+    svg.arrows polygon.arrow { transition: fill 460ms ease; }
+    svg.arrows polygon.arrow[data-bs-grade] { fill: var(--bs-eval-color) !important; }
+    @media (prefers-reduced-motion: reduce) {
+      svg.cc-arrows stop, svg.cc-arrows .head, svg.arrows polygon.arrow { transition: none; }
+    }
     .cc-marks { position: absolute; inset: 0; pointer-events: none; }
     .cc-mark {
       position: absolute; width: 12.5%; height: 12.5%;
@@ -812,17 +831,26 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     syncArrows() {
       const seen = new Set();
       const aimed = new Map(this.aimedArrows().map(a => [a.id, a.to]));
+      const inputs = [...this.svg.querySelectorAll('polygon.arrow')].map(p => {
+        const m = MOVE.exec(p.getAttribute('data-arrow') || '');
+        return m && { id: m[0], from: m[1] + m[2], to: settings.arrows.on ? aimed.get(m[0]) || m[3] + m[4] : m[3] + m[4] };
+      }).filter(Boolean);
+      const grades = arrowEval.sync(this, inputs);
       this.svg.querySelectorAll('polygon.arrow').forEach(poly => {
         let m = MOVE.exec(poly.getAttribute('data-arrow') || '');
+        const base = arrowEval.nativeColor(poly);
+        const grade = m && grades.get(m[0]);
+        arrowEval.paintNative(poly, !settings.arrows.on ? grade : null);
         if (!settings.arrows.on) { poly.removeAttribute('data-cc'); return; }
         if (!m || (m[1] === m[3] && m[2] === m[4])) return;
         poly.setAttribute('data-cc', '1');
         const id = m[0];
         if (seen.has(id)) return;
         seen.add(id);
-        let { color, alpha } = readColor(poly);
+        let { color, alpha } = base;
         // Your picked color replaces chess.com's plain orange; shift/ctrl/alt arrows keep theirs.
         if (color === SITE_ORANGE) ({ rgb: color, a: alpha } = splitColor(settings.arrows.color));
+        if (grade) color = ARROW_GRADES[grade].color;
         const to = aimed.get(id);
         if (to && to !== m[3] + m[4]) m = MOVE.exec(m[1] + m[2] + to);
         const target = this.arrowTarget(m, alpha);
@@ -836,6 +864,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         }
         arrow.target = target;
         arrow.dying = false;
+        arrowEval.label(arrow.el, grade);
         if (arrow.color !== color) {
           arrow.color = color;
           arrow.stops.forEach(s => s.setAttribute('stop-color', color));
@@ -1229,16 +1258,25 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
     // What the canvas should draw: nothing while ours are on, chess.com's own otherwise.
     syncArrows() {
-      const want = settings.arrows.on ? new Map() : this.nativeArrows;
-      const gone = [...this.shownArrows.values()].filter(i => !want.has(i.key));
-      const added = [...want.values()].filter(i => !this.shownArrows.has(i.key));
+      const aimed = new Map(this.aimedArrows().map(a => [a.key, a.to]));
+      const inputs = [...this.nativeArrows.values()].map(i => ({ id: i.key, from: i.data?.from, to: settings.arrows.on ? aimed.get(i.key) || i.data?.to : i.data?.to }));
+      const grades = arrowEval.sync(this, inputs);
+      const colors = arrowEval.canvasColors.get(this);
+      if (colors) for (const key of colors.keys()) if (!this.nativeArrows.has(key)) colors.delete(key);
+      const want = new Map();
+      if (!settings.arrows.on) this.nativeArrows.forEach((item, key) => {
+        const color = arrowEval.canvasColor(this, key, item.data?.color || SITE_ORANGE, grades.get(key));
+        want.set(key, color ? { ...item, data: { ...item.data, color } } : item);
+      });
+      const same = (a, b) => a?.data?.color === b?.data?.color && a?.data?.opacity === b?.data?.opacity;
+      const gone = [...this.shownArrows.values()].filter(i => !want.has(i.key) || !same(i, want.get(i.key)));
+      const added = [...want.values()].filter(i => !this.shownArrows.has(i.key) || !same(i, this.shownArrows.get(i.key)));
       if (gone.length) { this.orig.removeArrows.call(this.renderer, gone, this.ctx); gone.forEach(i => this.shownArrows.delete(i.key)); }
       if (added.length) { this.orig.addArrows.call(this.renderer, added, this.ctx); added.forEach(i => this.shownArrows.set(i.key, i)); }
 
       const seen = new Set();
       if (settings.arrows.on) {
         this.place();
-        const aimed = new Map(this.aimedArrows().map(a => [a.key, a.to]));
         this.nativeArrows.forEach(item => {
           const d = item.data || {};
           const m = MOVE.exec(`${d.from}${aimed.get(item.key) || d.to}`);
@@ -1253,6 +1291,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
             color = `rgb(${p[0]}, ${p[1]}, ${p[2]})`;
           }
           if (color === SITE_ORANGE) ({ rgb: color, a: alpha } = splitColor(settings.arrows.color));
+          const grade = grades.get(item.key);
+          if (grade) color = ARROW_GRADES[grade].color;
           const target = this.arrowTarget(m, Math.min(1, alpha));
           let arrow = this.arrows.get(id);
           if (!arrow) {
@@ -1263,6 +1303,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           }
           arrow.target = target;
           arrow.dying = false;
+          arrowEval.label(arrow.el, grade);
           if (arrow.color !== color) {
             arrow.color = color;
             arrow.stops.forEach(s => s.setAttribute('stop-color', color));
@@ -1765,6 +1806,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     style: ICON('bs-grad-row'),
     marks: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="11" height="11" rx="3" fill="#7fd6a0"/><rect x="10.5" y="2.5" width="11" height="11" rx="3" fill="#f0827a" opacity=".92"/><rect x="10.5" y="6" width="3" height="7.5" fill="#c9a98a" opacity=".55"/></svg>`,
     arrows: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19.5V11a4 4 0 0 1 4-4h6.5" fill="none" stroke="#ffaa00" stroke-width="3.2" stroke-linecap="round"/><path d="M14.2 2.8L20.6 7l-6.4 4.2z" fill="#ffaa00" stroke="#ffaa00" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
+    arrowEval: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19L18 5M9 5h10v10" fill="none" stroke="#1baca6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="7" r="3" fill="#96bc4b"/></svg>`,
     danger: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="#739552"/><circle cx="12" cy="12" r="7.2" fill="none" stroke="#e5534b" stroke-width="2.4" opacity=".9"/><circle cx="12" cy="12" r="3" fill="#e5534b"/></svg>`,
     book: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.2c3-.9 6-.6 8.6 1v13.4c-2.6-1.6-5.6-1.9-8.6-1z" fill="#c4955f"/><path d="M21 5.2c-3-.9-6-.6-8.6 1v13.4c2.6-1.6 5.6-1.9 8.6-1z" fill="#e0b47f"/><path d="M14.5 10.5h4M14.5 13.5h4" stroke="#8f6338" stroke-width="1.4" stroke-linecap="round"/></svg>`,
     crown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 8l4.6 3.9L12 4l4.9 7.9L21.5 8l-1.9 9.2H4.4z" fill="#f5b52e" stroke="#c47d12" stroke-width="1" stroke-linejoin="round"/><rect x="4.2" y="16.8" width="15.6" height="2.7" rx="1" fill="#e09a1f"/><circle cx="12" cy="13" r="1.6" fill="#e5534b"/></svg>`,
@@ -1795,6 +1837,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <div class="sub" data-key="aim"><span>Aim assist</span><button class="sw" role="switch" type="button" aria-label="Aim assist"></button></div>
           <div class="slot"><div></div></div>
         </div>
+      </div>
+      <div class="item" data-group="arrowEval" title="Local engine estimates; Chess.com Game Review labels can differ. Draw a legal move for the side to move.">${row('arrowEval', 'Arrow Eval', 6)}
+        <div class="body flow" style="--i:7"><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px 10px;padding:4px 0;font-size:11px">${Object.values(ARROW_GRADES).map(g => `<span><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${g.color};margin-right:6px"></i>${g.label}</span>`).join('')}</div></div>
       </div>
       <div class="item" data-group="book">${row('book', 'Opening book', 6)}</div>
       <div class="item" data-group="crown">${row('crown', 'Winning side', 7)}</div>
@@ -2115,6 +2160,200 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.urls = [];
     }
   }
+
+  // ---------- arrow evaluation ----------
+
+  const PIECE_VALUE = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+
+  // Legal static exchanges distinguish a genuine material offer from an equal
+  // trade, a pinned defender, or a capture that already wins more material.
+  function exchangeGain(game, square, remaining = 5) {
+    if (!remaining) return 0;
+    let best = 0;
+    for (const move of game.moves({ verbose: true }).filter(m => m.to === square && m.captured)) {
+      game.move(move);
+      const gain = PIECE_VALUE[move.captured] - exchangeGain(game, square, remaining - 1);
+      game.undo();
+      best = Math.max(best, gain);
+    }
+    return best;
+  }
+
+  function isSoundSacrifice(fen, uci) {
+    try {
+      const game = new BoardStudioRules.Chess(fen);
+      const move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
+      if (!move || move.promotion) return false;
+      const captures = game.moves({ verbose: true }).filter(m => m.captured && m.captured !== 'p' && m.captured !== 'k');
+      const previous = fen.split(' '); previous[1] = game.turn(); previous[3] = '-';
+      const before = new BoardStudioRules.Chess(previous.join(' '));
+      const checked = new Set();
+      for (const capture of captures) {
+        if (checked.has(capture.to)) continue;
+        checked.add(capture.to);
+        const offered = exchangeGain(game, capture.to) - (PIECE_VALUE[move.captured] || 0);
+        const alreadyOffered = capture.to === move.to ? 0 : exchangeGain(before, capture.to);
+        if (offered >= 200 && offered - alreadyOffered >= 200) return true;
+      }
+    } catch (e) { /* Invalid or unsupported positions are never Brilliant. */ }
+    return false;
+  }
+
+  function arrowGrade(best, score, { book = false, sacrifice = false, completed = null } = {}) {
+    if (book) return 'book';
+    if (!best || !score) return null;
+    const a = blunderExpected(best), b = blunderExpected(score);
+    if (a === null || b === null) return null;
+    const loss = Math.max(0, a - b);
+    const cpLoss = best.cp !== undefined && score.cp !== undefined ? Math.max(0, best.cp - score.cp) : null;
+    const nearBest = loss <= .02 && (cpLoss === null || cpLoss <= 40);
+    if (nearBest && b >= .5 && sacrifice && completed && completed.depth >= 12) {
+      const candidate = completed.scores.find(s => s.move === score.move);
+      const alternatives = completed.scores.filter(s => s.move !== score.move);
+      const ca = blunderExpected(completed.best), cb = candidate && blunderExpected(candidate);
+      const gap = candidate?.cp !== undefined && completed.best.cp !== undefined ? completed.best.cp - candidate.cp : 0;
+      if (candidate && cb !== null && cb >= .5 && ca - cb <= .02 && gap <= 40 && alternatives.length &&
+          alternatives.every(s => blunderExpected(s) !== null && blunderExpected(s) < .9)) return 'brilliant';
+    }
+    if ((best.mate > 0 || a >= .85) && b <= .5 && loss >= .2) return 'missed';
+    if (isBlunderLoss(best, score) || loss >= .2) return 'blunder';
+    if (loss >= .1) return 'mistake';
+    if (loss >= .05) return 'inaccuracy';
+    if (loss >= .02) return 'good';
+    if (score.move === best.move || (cpLoss === 0 && best.cp !== undefined) ||
+        (best.mate !== undefined && score.mate === best.mate)) return 'best';
+    return 'excellent';
+  }
+
+  class ArrowSearch extends BlunderSearch {
+    publish() {
+      if (this.stopped || !this.batch.has(1)) return;
+      const best = this.batch.get(1), seen = new Set(), scores = [];
+      for (const [, score] of [...this.batch].sort((a, b) => a[0] - b[0])) {
+        if (seen.has(score.move)) continue;
+        seen.add(score.move); scores.push(score);
+        this.moves.set(score.move, { ...score, best, depth: this.depth });
+      }
+      if (scores.length === this.legalCount) this.completed = { best, scores, depth: this.depth };
+      this.publishedDepth = this.depth;
+      this.onUpdate();
+    }
+  }
+
+  const arrowEval = {
+    sessions: new Map(), nativeColors: new WeakMap(), canvasColors: new WeakMap(), queued: new WeakSet(),
+    queue(ctl) {
+      if (this.queued.has(ctl)) return;
+      this.queued.add(ctl);
+      nextFrame(() => { this.queued.delete(ctl); if (ctl.board.isConnected) ctl.syncArrows(); });
+    },
+    stop(board) {
+      this.sessions.get(board)?.search.stop();
+      this.sessions.delete(board);
+    },
+    clear() { for (const board of this.sessions.keys()) this.stop(board); },
+    sync(ctl, arrows) {
+      const grades = new Map(), board = ctl.board, fen = blunderFEN(board);
+      if (!settings.arrowEval.on || document.hidden || !board.isConnected || !fen || !arrows.length) {
+        this.stop(board); return grades;
+      }
+      let session = this.sessions.get(board);
+      if (session?.fen !== fen) {
+        this.stop(board);
+        let game;
+        try { game = new BoardStudioRules.Chess(fen); } catch (e) { return grades; }
+        const legal = game.moves({ verbose: true });
+        const search = new ArrowSearch(fen, () => {
+          if (this.sessions.get(board)?.search === search) this.queue(this.sessions.get(board).ctl);
+        });
+        search.legalCount = legal.length;
+        session = { fen, search, ctl, legal, book: new Set(bookMoves(fen).map(m => m.uci)), sacrifices: new Map() };
+        this.sessions.set(board, session);
+      }
+      session.ctl = ctl;
+      let usable = 0;
+      for (const arrow of arrows) {
+        // An arrow has no promotion selector; evaluate queen promotion by default.
+        const move = session.legal.find(m => m.from === arrow.from &&
+          (m.to === arrow.to || (m.piece === 'k' && ((m.flags.includes('k') && arrow.to === `h${m.from[1]}`) || (m.flags.includes('q') && arrow.to === `a${m.from[1]}`)))) &&
+          (!m.promotion || m.promotion === 'q'));
+        if (!move) continue;
+        usable++;
+        const uci = move.from + move.to + (move.promotion || '');
+        const book = session.book.has(uci), score = session.search.moves.get(uci);
+        let sacrifice = false;
+        if (!book && score && session.search.completed?.depth >= 12) {
+          const a = blunderExpected(score.best), b = blunderExpected(score);
+          if (a !== null && b !== null && b >= .5 && a - b <= .02) {
+            if (!session.sacrifices.has(uci)) session.sacrifices.set(uci, isSoundSacrifice(fen, uci));
+            sacrifice = session.sacrifices.get(uci);
+          }
+        }
+        const grade = arrowGrade(score?.best, score, { book, sacrifice, completed: session.search.completed });
+        if (grade) grades.set(arrow.id, grade);
+      }
+      if (!usable) this.stop(board);
+      else if (!session.search.worker && !session.search.stopped) session.search.start();
+      return grades;
+    },
+    nativeColor(poly) {
+      let record = this.nativeColors.get(poly);
+      if (!record || record.inline !== poly.style.fill) {
+        record = { ...readColor(poly), inline: poly.style.fill };
+        this.nativeColors.set(poly, record);
+      }
+      return record;
+    },
+    label(el, grade) {
+      if (grade) {
+        if (el.dataset.bsGrade !== grade) el.dataset.bsGrade = grade;
+        let title = el.querySelector(':scope > title.bs-arrow-grade');
+        if (!title) { title = document.createElementNS(NS, 'title'); title.setAttribute('class', 'bs-arrow-grade'); el.appendChild(title); }
+        const text = `${ARROW_GRADES[grade].label} — local estimate`;
+        if (title.textContent !== text) title.textContent = text;
+      } else {
+        if (el.dataset.bsGrade) delete el.dataset.bsGrade;
+        el.querySelector(':scope > title.bs-arrow-grade')?.remove();
+      }
+    },
+    paintNative(poly, grade) {
+      const color = grade && ARROW_GRADES[grade].color;
+      if (color && poly.style.getPropertyValue('--bs-eval-color') !== color) poly.style.setProperty('--bs-eval-color', color);
+      if (!color && poly.style.getPropertyValue('--bs-eval-color')) poly.style.removeProperty('--bs-eval-color');
+      this.label(poly, grade);
+    },
+    canvasColor(ctl, key, base, grade) {
+      let colors = this.canvasColors.get(ctl);
+      if (!colors) this.canvasColors.set(ctl, colors = new Map());
+      const rgb = value => {
+        if (/^#[\da-f]{6,8}$/i.test(value)) return hexToRgb(value.slice(0, 7));
+        const m = String(value).match(/rgba?\(([^)]+)\)/);
+        return m ? m[1].split(',').slice(0, 3).map(Number) : [255, 170, 0];
+      };
+      const target = rgb(grade ? ARROW_GRADES[grade].color : base), now = performance.now();
+      let state = colors.get(key);
+      if (!state) colors.set(key, state = { from: rgb(base), to: rgb(base), current: rgb(base), start: now });
+      if (state.to.some((c, i) => c !== target[i])) {
+        state.from = state.current.slice(); state.to = target; state.start = now;
+      }
+      const t = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 1 : Math.min(1, (now - state.start) / 460);
+      const ease = 1 - (1 - t) ** 3;
+      state.current = state.from.map((c, i) => c + (state.to[i] - c) * ease);
+      if (t < 1) this.queue(ctl);
+      if (!grade && t === 1) { colors.delete(key); return null; }
+      return rgbToHex(...state.current.map(Math.round));
+    }
+  };
+  setInterval(() => {
+    for (const [board, session] of arrowEval.sessions) {
+      if (!board.isConnected) arrowEval.stop(board);
+      else if (blunderFEN(board) !== session.fen) session.ctl.syncArrows();
+    }
+  }, 150);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) arrowEval.clear();
+    document.querySelectorAll('wc-chess-board, chess-board').forEach(b => b.__cc?.syncArrows());
+  });
 
   const blunderHints = {
     ctl: null, search: null, layer: null,

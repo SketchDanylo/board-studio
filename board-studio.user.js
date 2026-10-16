@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.11.3
+// @version      5.12.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -701,7 +701,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   function planGhosts(arrows, position) {
     const ghosts = new Map(); // square -> { id, kind, from }
-    arrows.forEach(({ from, to }) => {
+    arrows.forEach(({ from, to, assumed }) => {
       if (!from || !to || from === to) return;
       let ghost = ghosts.get(from);
       if (ghost) {
@@ -711,7 +711,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const s = { f: from.charCodeAt(0) - 97, r: +from[1] - 1 };
         const p = position[s.f] && position[s.f][s.r];
         if (!p) return;
-        ghost = { id: from + to, kind: p.c + p.t, from };
+        ghost = { id: from + to, kind: p.c + p.t, from, assumed: !!assumed };
       }
       // A king stepping two files from its home square castles, so its rook comes along.
       const castle = ghost.kind[1] === 'k' && from[0] === 'e' && from[1] === to[1] && from[1] === (ghost.kind[0] === 'w' ? '1' : '8') ? ({ g: 'h', h: 'h', c: 'a', a: 'a' })[to[0]] : null;
@@ -768,12 +768,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           const el = document.createElement('div');
           el.className = 'cc-ghost';
           el.style.backgroundImage = imageFor(ghost.kind);
-          const start = this.spot(ghost.from);
+          // The opponent's assumed moves were already on show as the Ghost AI's top reply, so they
+          // appear where they land instead of replaying the slide.
+          const start = this.spot(ghost.assumed ? square : ghost.from);
           el.style.left = start.left;
           el.style.top = start.top;
           el.style.opacity = '0';
+          if (ghost.assumed) el.style.transition = 'none';
           this.el.appendChild(el);
           el.getBoundingClientRect();
+          if (ghost.assumed) setTimeout(() => { el.style.transition = ''; }, 60);
           item = { el, square: null, flipped };
           this.items.set(ghost.id, item);
         }
@@ -2313,6 +2317,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // ---------- opponent ghost replies ----------
 
   const GHOST_AI_COLORS = ['#81c45b', '#f7c045', '#ed8c32', '#fa5146'];
+  const GHOST_ARROW_COLOR = '#f7c045'; // the one arrow, to the engine's top reply
 
   function ghostMove(game, arrow) {
     const move = game.moves({ verbose: true }).find(m => m.from === arrow.from &&
@@ -2378,9 +2383,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const legal = new BoardStudioRules.Chess(this.fen).moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
       const ranked = [...this.batch].sort((a, b) => a[0] - b[0]).map(([, score]) => score);
       if (new Set(ranked.map(m => m.move)).size !== this.count || !ranked.every(m => legal.includes(m.move))) return;
-      const value = m => m.mate !== undefined ? Math.sign(m.mate || -1) * (10000 - Math.abs(m.mate)) : m.cp;
-      const results = ranked.filter(m => value(ranked[0]) - value(m) <= 80);
-      if (this.results && this.results.map(m => m.move).join() === results.map(m => m.move).join()) return;
+      // Every reply stays, glowing in the color of how good it is next to the best one.
+      const results = ranked.map(m => ({ ...m, grade: arrowGrade(ranked[0], m) || 'good' }));
+      if (this.results && this.results.map(m => m.move + m.grade).join() === results.map(m => m.move + m.grade).join()) return;
       this.results = results;
       ghostBest.set(this.fen, results[0].move);
       this.onUpdate();
@@ -2442,15 +2447,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         search.start();
       }
       session.ctl = ctl;
-      if (!session.search.results) return;
       this.paint(session, imageFor);
     },
     // Updates in place: replies that stay slide and recolor to their new rank, new ones grow out of
     // their square, dropped ones fade away. Nothing is rebuilt, so refinements never flicker.
     paint(session, imageFor) {
       const { ctl, search, fen } = session;
-      const signature = JSON.stringify([ctl.flipped, settings.ghosts.opacity, search.results]);
+      const results = search.results || [];
+      // The top replies already assumed on the way here stay behind as plain yellow arrows.
+      const history = (ctl.assumedLine || []).filter(m => m.assumed).map(m => m.from + m.to);
+      const signature = JSON.stringify([ctl.flipped, settings.ghosts.opacity, results, history]);
       if (session.signature === signature && session.layer?.isConnected) return;
+      if (!results.length && !history.length && !session.layer) return;
       session.signature = signature;
       if (!session.layer?.isConnected) {
         session.layer?.remove();
@@ -2460,29 +2468,58 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const svg = document.createElementNS(NS, 'svg');
         svg.setAttribute('viewBox', '0 0 800 800');
         layer.appendChild(svg);
-        Object.assign(session, { layer, svg, items: new Map() });
+        Object.assign(session, { layer, svg, items: new Map(), past: new Map() });
         ctl.board.appendChild(layer);
       }
-      const { layer, svg, items } = session;
+      const { layer, svg, items, past } = session;
       const spot = square => {
         const s = squareXY(square.charCodeAt(0) - 96, +square[1], ctl.flipped);
         return { left: `${s.x * 12.5}%`, top: `${s.y * 12.5}%` };
       };
       const arrowPath = uci => geometry(Controller.prototype.arrowTarget.call(ctl, MOVE.exec(uci.slice(0, 4)), .8, 17));
+      const makeArrow = (cls, uci) => {
+        const group = document.createElementNS(NS, 'g');
+        group.setAttribute('class', cls); group.dataset.move = uci;
+        const title = document.createElementNS(NS, 'title');
+        const shaft = document.createElementNS(NS, 'path');
+        shaft.setAttribute('class', 'reply-shaft'); shaft.setAttribute('stroke-width', '17');
+        const head = document.createElementNS(NS, 'path');
+        head.setAttribute('class', 'reply-head'); head.setAttribute('stroke-width', '7');
+        group.append(title, shaft, head); svg.appendChild(group);
+        return { group, title, shaft, head };
+      };
+      const paintArrow = (arrow, uci) => {
+        const g = arrowPath(uci);
+        if (g) { arrow.shaft.setAttribute('d', g.shaft); arrow.head.setAttribute('d', g.head); }
+        for (const [el, c] of [[arrow.shaft, 'stroke'], [arrow.head, 'fill'], [arrow.head, 'stroke']]) {
+          el.style[c] = GHOST_ARROW_COLOR; el.setAttribute(c, GHOST_ARROW_COLOR);
+        }
+      };
+      // History: already on show before, so these are drawn in place, never faded in.
+      const pastKeep = new Set(history);
+      history.forEach(uci => {
+        let arrow = past.get(uci);
+        if (!arrow) {
+          arrow = makeArrow('history-arrow', uci); arrow.group.style.opacity = '.8';
+          arrow.title.textContent = 'Assumed best reply';
+          past.set(uci, arrow);
+        }
+        paintArrow(arrow, uci);
+      });
+      for (const [uci, arrow] of past) if (!pastKeep.has(uci)) { arrow.group.remove(); past.delete(uci); }
       const keep = new Set();
-      // Each reply is an alternative, not a four-move continuation.
-      search.results.forEach((score, i) => {
-        const uci = score.move, color = GHOST_AI_COLORS[i];
+      // Each reply is an alternative, not a four-move continuation. Only the top one gets an arrow.
+      results.forEach((score, i) => {
+        const uci = score.move, color = (ARROW_GRADES[score.grade] || ARROW_GRADES.good).color;
         keep.add(uci);
         let item = items.get(uci);
-        const fresh = !item;
-        if (fresh) {
+        if (!item) {
           const game = new BoardStudioRules.Chess(fen);
           const move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
           const parts = [{ from: move.from, to: move.to, kind: move.color + (move.promotion || move.piece) }];
           if (move.flags.includes('k')) parts.push({ from: `h${move.from[1]}`, to: `f${move.from[1]}`, kind: move.color + 'r' });
           if (move.flags.includes('q')) parts.push({ from: `a${move.from[1]}`, to: `d${move.from[1]}`, kind: move.color + 'r' });
-          item = { san: move.san, capture: move.captured ? move.to : null, pieces: [], group: null };
+          item = { san: move.san, capture: move.captured ? move.to : null, pieces: [] };
           for (const part of parts) {
             const el = document.createElement('div');
             el.className = 'cc-ghost'; el.dataset.square = part.to;
@@ -2491,26 +2528,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
             layer.insertBefore(el, svg); el.getBoundingClientRect();
             item.pieces.push({ el, to: part.to });
           }
-          const group = document.createElementNS(NS, 'g');
-          group.setAttribute('class', 'reply-arrow'); group.dataset.move = uci; group.style.opacity = '0';
-          const title = document.createElementNS(NS, 'title');
-          const shaft = document.createElementNS(NS, 'path');
-          shaft.setAttribute('class', 'reply-shaft'); shaft.setAttribute('stroke-width', '17');
-          const head = document.createElementNS(NS, 'path');
-          head.setAttribute('class', 'reply-head'); head.setAttribute('stroke-width', '7');
-          group.append(title, shaft, head); svg.appendChild(group);
-          Object.assign(item, { group, title, shaft, head });
+          Object.assign(item, makeArrow('reply-arrow', uci));
+          item.group.style.opacity = '0'; item.group.getBoundingClientRect?.();
           items.set(uci, item);
         }
         item.title.textContent = `Opponent reply ${i + 1}: ${item.san}`;
         item.group.dataset.rank = String(i + 1);
-        const g = arrowPath(uci);
-        if (g) { item.shaft.setAttribute('d', g.shaft); item.head.setAttribute('d', g.head); }
-        for (const [el, c] of [[item.shaft, 'stroke'], [item.head, 'fill'], [item.head, 'stroke']]) {
-          el.style[c] = color; el.setAttribute(c, color);
-        }
-        item.group.getBoundingClientRect?.();
-        item.group.style.opacity = '.8';
+        paintArrow(item, uci);
+        item.group.style.opacity = i === 0 ? '.8' : '0';
         for (const { el, to } of item.pieces) {
           el.dataset.rank = String(i + 1);
           el.style.setProperty('--reply-color', color);

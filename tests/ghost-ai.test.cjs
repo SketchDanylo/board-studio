@@ -90,10 +90,15 @@ test('DOM preview renders ranked ghosts only after completion, follows flips and
     iteration(s, 17, replies);
     assert.equal(board.querySelectorAll('.bs-ghost-ai .reply-arrow').length, 4);
     assert.equal(board.querySelectorAll('.bs-ghost-ai .cc-ghost').length, 4);
+    // One yellow arrow, to the top reply; the others only glow, in the color of how good they are.
     [...board.querySelectorAll('.reply-arrow')].forEach((el, i) => {
       assert.equal(el.dataset.rank, String(i + 1));
-      assert.equal(el.querySelector('.reply-head').getAttribute('fill'), f.api.GHOST_AI_COLORS[i]);
+      assert.equal(el.querySelector('.reply-head').getAttribute('fill'), '#f7c045');
+      assert.equal(el.style.opacity, i === 0 ? '0.8' : '0');
     });
+    const glow = rank => board.querySelector('.bs-ghost-ai .cc-ghost[data-rank="' + rank + '"]').style.getPropertyValue('--reply-color');
+    assert.equal(glow(1), f.api.ARROW_GRADES.best.color);
+    assert.ok(Object.values(f.api.ARROW_GRADES).some(g => g.color === glow(4)));
     const ghost = () => board.querySelector('.bs-ghost-ai .cc-ghost[data-rank="1"]');
     assert.equal(ghost().style.left, '50%'); assert.equal(ghost().style.top, '37.5%');
     board.classList.add('flipped'); ctl.syncGhosts();

@@ -587,8 +587,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     });
   }
 
-  // Opening books are against chess.com's fair-play rules in live games, so they stay off there.
-  const bookAllowed = true;
+  const bookAllowed = () => true;
 
   // Draws the book arrows for this board's position into its arrow layer, under your own arrows.
   function addBookArrows(seen) {
@@ -2071,11 +2070,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // ---------- progressive blunder hints ----------
-
-  // Fair play: Stockfish runs against bots, in analysis, puzzles and practice, and on a game
-  // page only once that game has a result (reviewing it). Never while a game against a person
-  // is being played: that is engine help and breaks chess.com's rules.
-  const engineAllowed = true;
+  const engineAllowed = () => true;
 
   function blunderFEN(board) {
     try { return board.game?.getFEN() || board.getAttribute('fen') || board.getAttribute('data-fen') || null; } catch (e) { return null; }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.9.0
+// @version      5.9.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -246,13 +246,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .bs-ghost-ai { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
     .bs-ghost-ai svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
     .bs-ghost-ai .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)); }
-    .bs-ghost-ai .reply-arrow { opacity: .8; animation: bs-reply-in 460ms ease both; }
-    .bs-ghost-ai .reply-shaft { fill: none; stroke-linecap: round; stroke-linejoin: round; }
-    .bs-ghost-ai .reply-head { stroke-linejoin: round; }
-    @keyframes bs-reply-in { from { opacity: 0; } to { opacity: .8; } }
+    .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
+                  opacity 320ms ease, transform 320ms cubic-bezier(.34, 1.4, .64, 1); }
+    .bs-ghost-ai .reply-arrow { transition: opacity 320ms ease; }
+    .bs-ghost-ai .reply-shaft { fill: none; stroke-linecap: round; stroke-linejoin: round; transition: stroke 320ms ease; }
+    .bs-ghost-ai .reply-head { stroke-linejoin: round; transition: fill 320ms ease, stroke 320ms ease; }
     @media (prefers-reduced-motion: reduce) {
       .bs-ghost-ai .cc-ghost { transition: none; }
-      .bs-ghost-ai .reply-arrow { animation: none; }
+      .bs-ghost-ai .reply-arrow, .bs-ghost-ai .reply-shaft, .bs-ghost-ai .reply-head { transition: none; }
     }
     /* "can be taken" dots: only chess.com's dot color token is swapped for red, so its own
        dot (static or animated: grow in, shrink out) is drawn exactly as usual */
@@ -2330,50 +2331,86 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!session.search.results) return;
       this.paint(session, imageFor);
     },
+    // Updates in place: replies that stay slide and recolor to their new rank, new ones grow out of
+    // their square, dropped ones fade away. Nothing is rebuilt, so refinements never flicker.
     paint(session, imageFor) {
       const { ctl, search, fen } = session;
       const signature = JSON.stringify([ctl.flipped, settings.ghosts.opacity, search.results]);
       if (session.signature === signature && session.layer?.isConnected) return;
-      session.layer?.remove();
-      const layer = document.createElement('div');
-      layer.className = 'bs-ghost-ai';
-      layer.setAttribute('aria-hidden', 'true');
-      const svg = document.createElementNS(NS, 'svg');
-      svg.setAttribute('viewBox', '0 0 800 800');
-      session.layer = layer; session.signature = signature;
-      ctl.board.appendChild(layer);
+      session.signature = signature;
+      if (!session.layer?.isConnected) {
+        session.layer?.remove();
+        const layer = document.createElement('div');
+        layer.className = 'bs-ghost-ai';
+        layer.setAttribute('aria-hidden', 'true');
+        const svg = document.createElementNS(NS, 'svg');
+        svg.setAttribute('viewBox', '0 0 800 800');
+        layer.appendChild(svg);
+        Object.assign(session, { layer, svg, items: new Map() });
+        ctl.board.appendChild(layer);
+      }
+      const { layer, svg, items } = session;
       const spot = square => {
         const s = squareXY(square.charCodeAt(0) - 96, +square[1], ctl.flipped);
         return { left: `${s.x * 12.5}%`, top: `${s.y * 12.5}%` };
       };
+      const arrowPath = uci => geometry(Controller.prototype.arrowTarget.call(ctl, MOVE.exec(uci.slice(0, 4)), .8, 17));
+      const keep = new Set();
       // Each reply is an alternative, not a four-move continuation.
       search.results.forEach((score, i) => {
-        const game = new BoardStudioRules.Chess(fen), uci = score.move, color = GHOST_AI_COLORS[i];
-        const move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
-        const pieces = [{ from: move.from, to: move.to, kind: move.color + (move.promotion || move.piece) }];
-        if (move.flags.includes('k')) pieces.push({ from: `h${move.from[1]}`, to: `f${move.from[1]}`, kind: move.color + 'r' });
-        if (move.flags.includes('q')) pieces.push({ from: `a${move.from[1]}`, to: `d${move.from[1]}`, kind: move.color + 'r' });
-        for (const piece of pieces) {
-          const el = document.createElement('div');
-          el.className = 'cc-ghost'; el.dataset.rank = String(i + 1); el.dataset.square = piece.to;
-          el.style.backgroundImage = imageFor(piece.kind);
-          el.style.setProperty('--reply-color', color);
-          Object.assign(el.style, spot(piece.from), { opacity: '0' });
-          layer.appendChild(el); el.getBoundingClientRect();
-          Object.assign(el.style, spot(piece.to), { opacity: String(settings.ghosts.opacity) });
+        const uci = score.move, color = GHOST_AI_COLORS[i];
+        keep.add(uci);
+        let item = items.get(uci);
+        const fresh = !item;
+        if (fresh) {
+          const game = new BoardStudioRules.Chess(fen);
+          const move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
+          const parts = [{ from: move.from, to: move.to, kind: move.color + (move.promotion || move.piece) }];
+          if (move.flags.includes('k')) parts.push({ from: `h${move.from[1]}`, to: `f${move.from[1]}`, kind: move.color + 'r' });
+          if (move.flags.includes('q')) parts.push({ from: `a${move.from[1]}`, to: `d${move.from[1]}`, kind: move.color + 'r' });
+          item = { san: move.san, pieces: [], group: null };
+          for (const part of parts) {
+            const el = document.createElement('div');
+            el.className = 'cc-ghost'; el.dataset.square = part.to;
+            el.style.backgroundImage = imageFor(part.kind);
+            Object.assign(el.style, spot(part.from), { opacity: '0' });
+            layer.insertBefore(el, svg); el.getBoundingClientRect();
+            item.pieces.push({ el, to: part.to });
+          }
+          const group = document.createElementNS(NS, 'g');
+          group.setAttribute('class', 'reply-arrow'); group.dataset.move = uci; group.style.opacity = '0';
+          const title = document.createElementNS(NS, 'title');
+          const shaft = document.createElementNS(NS, 'path');
+          shaft.setAttribute('class', 'reply-shaft'); shaft.setAttribute('stroke-width', '17');
+          const head = document.createElementNS(NS, 'path');
+          head.setAttribute('class', 'reply-head'); head.setAttribute('stroke-width', '7');
+          group.append(title, shaft, head); svg.appendChild(group);
+          Object.assign(item, { group, title, shaft, head });
+          items.set(uci, item);
         }
-        const g = geometry(Controller.prototype.arrowTarget.call(ctl, MOVE.exec(uci.slice(0, 4)), .8, 17));
-        if (!g) return;
-        const group = document.createElementNS(NS, 'g');
-        group.setAttribute('class', 'reply-arrow'); group.dataset.rank = String(i + 1); group.dataset.move = uci;
-        const title = document.createElementNS(NS, 'title'); title.textContent = `Opponent reply ${i + 1}: ${move.san}`;
-        const shaft = document.createElementNS(NS, 'path');
-        shaft.setAttribute('class', 'reply-shaft'); shaft.setAttribute('d', g.shaft); shaft.setAttribute('stroke', color); shaft.setAttribute('stroke-width', '17');
-        const head = document.createElementNS(NS, 'path');
-        head.setAttribute('class', 'reply-head'); head.setAttribute('d', g.head); head.setAttribute('fill', color); head.setAttribute('stroke', color); head.setAttribute('stroke-width', '7');
-        group.append(title, shaft, head); svg.appendChild(group);
+        item.title.textContent = `Opponent reply ${i + 1}: ${item.san}`;
+        item.group.dataset.rank = String(i + 1);
+        const g = arrowPath(uci);
+        if (g) { item.shaft.setAttribute('d', g.shaft); item.head.setAttribute('d', g.head); }
+        for (const [el, c] of [[item.shaft, 'stroke'], [item.head, 'fill'], [item.head, 'stroke']]) {
+          el.style[c] = color; el.setAttribute(c, color);
+        }
+        item.group.getBoundingClientRect?.();
+        item.group.style.opacity = '.8';
+        for (const { el, to } of item.pieces) {
+          el.dataset.rank = String(i + 1);
+          el.style.setProperty('--reply-color', color);
+          el.classList.remove('cc-ghost-leave');
+          Object.assign(el.style, spot(to), { opacity: String(settings.ghosts.opacity) });
+        }
       });
-      layer.appendChild(svg);
+      for (const [uci, item] of items) {
+        if (keep.has(uci)) continue;
+        items.delete(uci);
+        item.group.style.opacity = '0';
+        item.pieces.forEach(({ el }) => { el.style.opacity = '0'; el.classList.add('cc-ghost-leave'); });
+        setTimeout(() => { item.group.remove(); item.pieces.forEach(({ el }) => el.remove()); }, 340);
+      }
     }
   };
   setInterval(() => {

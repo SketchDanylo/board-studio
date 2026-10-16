@@ -5,16 +5,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
-const { setup, source } = require('./helpers.cjs');
+const { setup, source, engineAssets } = require('./helpers.cjs');
 const { Chess } = require('chess.js');
 
 test('Arrow Eval recognizes the queen sacrifice for smothered mate using the real engine', { timeout: 60000 }, async () => {
   const f = setup();
-  const assets = {};
-  vm.runInNewContext(source.slice(source.indexOf('  var SF_JS ='), source.lastIndexOf('})();')), assets);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'board-studio-arrow-'));
-  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), assets.SF_JS);
-  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), Buffer.from(assets.SF_WASM, 'base64'));
+  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), engineAssets.script);
+  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), engineAssets.wasm);
   const child = spawn(process.execPath, [path.join(dir, 'stockfish.cjs')], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const fen = 'q4r1k/6pp/4Q2N/8/8/8/8/6K1 w - - 0 1';
   let timer, stderr = '';
@@ -60,11 +58,9 @@ for (const position of [
   { side: 'Black', fen: 'rnbqkbnr/ppppp1pp/5p2/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 2', move: 'g7g5' }
 ]) test(`bundled Stockfish detects the mate blunder for ${position.side} using real MultiPV and WDL`, { timeout: 60000 }, async () => {
   const f = setup();
-  const assets = {};
-  vm.runInNewContext(source.slice(source.indexOf('  var SF_JS ='), source.lastIndexOf('})();')), assets);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'board-studio-engine-'));
-  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), assets.SF_JS);
-  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), Buffer.from(assets.SF_WASM, 'base64'));
+  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), engineAssets.script);
+  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), engineAssets.wasm);
   const child = spawn(process.execPath, [path.join(dir, 'stockfish.cjs')], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const { fen, move } = position;
   let stderr = '', timer;
@@ -108,11 +104,9 @@ for (const position of [
 
 test('screenshot position: real depth-13 scores produce crosses for Qe2, Qf3 and Qxg4', { timeout: 60000 }, async () => {
   const f = setup();
-  const assets = {};
-  vm.runInNewContext(source.slice(source.indexOf('  var SF_JS ='), source.lastIndexOf('})();')), assets);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'board-studio-screenshot-'));
-  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), assets.SF_JS);
-  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), Buffer.from(assets.SF_WASM, 'base64'));
+  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), engineAssets.script);
+  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), engineAssets.wasm);
   const child = spawn(process.execPath, [path.join(dir, 'stockfish.cjs')], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const fen = 'rn1qkb1r/pp2pppp/5n2/2pp4/4PPbP/8/PPPP4/RNBQKBNR w KQkq - 0 6';
   let timer, stderr = '';

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.0.1
+// @version      6.0.2
 // @description  Runs the latest Board Studio straight from GitHub on every page load.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -27,10 +27,12 @@
   let started = false;
 
   // In the page itself, like a @grant none script, so it can reach chess.com's board objects.
-  const run = code => {
+  // The script downloads its big files (opening book, Stockfish) from assets/ at the same commit.
+  const run = (code, sha) => {
     if (started) return;
     started = true;
     try {
+      if (sha) unsafeWindow.__boardStudioAssetBase = `${BASE}${sha}/assets/`;
       unsafeWindow.eval(`${code}\n//# sourceURL=board-studio.user.js`);
     } catch (e) {
       console.error('[Board Studio] failed to start', e);
@@ -39,7 +41,7 @@
 
   const fallback = () => {
     const cached = GM_getValue('code', '');
-    if (cached) run(cached);
+    if (cached) run(cached, GM_getValue('sha', ''));
     else console.error('[Board Studio] could not download the script from GitHub');
   };
 
@@ -59,9 +61,12 @@
       const code = res.status === 200 ? res.responseText : '';
       if (!code.includes('==UserScript==')) return fallback();
       const cached = GM_getValue('code', '');
-      const selected = newer(cached, code) ? cached : code;
-      if (selected !== cached) GM_setValue('code', selected);
-      run(selected);
+      const keepCached = newer(cached, code);
+      if (!keepCached) {
+        if (code !== cached) GM_setValue('code', code);
+        GM_setValue('sha', sha);
+      }
+      run(keepCached ? cached : code, keepCached ? GM_getValue('sha', '') : sha);
     },
     onerror: fallback,
     ontimeout: fallback

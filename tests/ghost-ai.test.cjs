@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { Chess } = require('chess.js');
-const { setup, iteration, initialFEN, source } = require('./helpers.cjs');
+const { setup, iteration, initialFEN, source, engineAssets } = require('./helpers.cjs');
 const afterE4 = new Chess(); afterE4.move('e4');
 const replies = ['e7e5', 'c7c5', 'e7e6', 'g8f6'].map((move, i) => ({ move, cp: -i * 20, wdl: [0, 1000, 0] }));
 
@@ -131,11 +131,10 @@ test('canvas hook supports native arrows, promotion ghosts and fewer than four l
 test('real bundled engine completes depth-18 opponent search with four legal ranked replies', { timeout: 60000 }, async () => {
   const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), vm = require('node:vm');
   const { spawn } = require('node:child_process');
-  const f = setup(), assets = {};
-  vm.runInNewContext(source.slice(source.indexOf('  var SF_JS ='), source.lastIndexOf('})();')), assets);
+  const f = setup();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'board-studio-ghost-'));
-  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), assets.SF_JS);
-  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), Buffer.from(assets.SF_WASM, 'base64'));
+  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), engineAssets.script);
+  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), engineAssets.wasm);
   const child = spawn(process.execPath, [path.join(dir, 'stockfish.cjs')], { windowsHide: true });
   let timer;
   try {

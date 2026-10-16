@@ -29,7 +29,7 @@ Ghost AI is off by default; enable **Styles → Ghosts → Ghost AI**. It follow
 
 ## Crown behavior
 
-The winning-side crown works on bot and live boards, using the visible evaluation bar when available and the bundled engine otherwise. An equal score shows no crown. Toggle it with **Styles → Winning side**. Version 5.5.3 supports both the current `player-top` / `player-bottom` avatar containers and the older board layout IDs.
+The winning-side crown works on bot and live boards, using the visible evaluation bar when available and the downloaded engine otherwise. An equal score shows no crown. Toggle it with **Styles → Winning side**. Version 5.5.3 supports both the current `player-top` / `player-bottom` avatar containers and the older board layout IDs.
 
 ## Board support
 
@@ -56,6 +56,8 @@ These are Stockfish estimates, **not guaranteed Chess.com Game Review classifica
 ## Development checks
 
 Run `npm ci`, `npm run check`, and `npm test`. Tests cover the settings, both hint renderers, evaluation revisions, stale results, promotion choices, and the bundled Stockfish executable on mating blunders for both colors.
+
+The opening book and Stockfish are not inside the script (they made it 2.8 MB and Tampermonkey slow). They are the files in `assets/` and are downloaded the first time they are needed: the book when a board shows, Stockfish when an engine feature starts. The loader points the script at `assets/` of the same commit and Cache Storage keeps them, so later page loads do not download them again. Without the loader the script falls back to `main`.
 
 Run `node scripts/bundle-rules.cjs` after changing the chess.js dependency to rebuild the embedded legal-move rules. Tests also cover boards with no native hints, pins, castling, en passant, and engine startup failure.
 

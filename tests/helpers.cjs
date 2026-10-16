@@ -2,6 +2,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const source = fs.readFileSync(path.join(__dirname, '../board-studio.user.js'), 'utf8');
+const assetsDir = path.join(__dirname, '../assets');
+// Stockfish's two files exactly as the script downloads them: the JS as text, the wasm as bytes.
+const engineAssets = {
+  script: fs.readFileSync(path.join(assetsDir, 'stockfish.js'), 'utf8'),
+  wasm: fs.readFileSync(path.join(assetsDir, 'stockfish.wasm'))
+};
 const initialFEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 function setup() {
@@ -21,8 +27,16 @@ function setup() {
     terminate() { this.terminated = true; }
   };
   w.HTMLElement.prototype.getClientRects = function () { return this.hidden ? [] : [{}]; };
+  // The opening book never arrives unless a test asks for it, so no download outlives its page.
+  w.fetch = async url => {
+    const name = path.basename(url);
+    if (name === 'opening-book.txt') return new Promise(() => {});
+    const bytes = fs.readFileSync(path.join(assetsDir, name));
+    return { ok: true, status: 200, text: async () => bytes.toString('utf8'), arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+  };
   const end = source.lastIndexOf('})();');
-  w.eval(source.slice(0, end) + '\nwindow.testAPI = { GhostSearch, ghostAI, ghostReplyPosition, GHOST_AI_COLORS, ArrowSearch, arrowEval, arrowGrade, isSoundSacrifice, ARROW_GRADES, BlunderSearch, blunderHints, fallbackHints, blunderPosition, isBlunderLoss, blunderExpected, Controller, CanvasController, settings, setSetting, syncCrown, engine };\n' + source.slice(end));
+  w.eval(source.slice(0, end) + '\nwindow.testAPI = { GhostSearch, ghostAI, ghostReplyPosition, GHOST_AI_COLORS, ArrowSearch, arrowEval, arrowGrade, isSoundSacrifice, ARROW_GRADES, BlunderSearch, blunderHints, fallbackHints, blunderPosition, isBlunderLoss, blunderExpected, Controller, CanvasController, settings, setSetting, syncCrown, engine, loadEngineFiles, bookMoves, preloadEngine: files => { engineFiles = files; } };\n' + source.slice(end));
+  w.testAPI.preloadEngine(engineAssets);
   function board(fen = initialFEN) {
     const b = w.document.createElement('wc-chess-board');
     b.game = { getFEN: () => fen };
@@ -36,4 +50,4 @@ function iteration(search, depth, scores) {
   scores.forEach((s, i) => search.receive(`info depth ${depth} multipv ${i + 1} score ${s.mate === undefined ? `cp ${s.cp}` : `mate ${s.mate}`} wdl ${(s.wdl || [0, 1000, 0]).join(' ')} pv ${s.move}`));
 }
 
-module.exports = { setup, iteration, source, initialFEN };
+module.exports = { setup, iteration, source, initialFEN, engineAssets };

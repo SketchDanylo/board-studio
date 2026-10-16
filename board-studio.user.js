@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.9.5
+// @version      5.9.6
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -671,6 +671,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     });
   }
 
+  // chess.com draws arrows of its own too (analysis lines, review), and they look exactly like
+  // yours. Only an arrow that showed up right after one of your right-clicks counts as drawn by you,
+  // so ghosts and replies never react to the site's arrows.
+  let lastRightUp = -Infinity;
+  window.addEventListener('pointerup', e => { if (e.button === 2) lastRightUp = performance.now(); }, true);
+  function drawnByYou(ctl, list) {
+    const id = a => a.id ?? a.key;
+    const fresh = performance.now() - lastRightUp < 1000;
+    const mine = ctl.arrowsMine || new Set(), seen = ctl.arrowsSeen || new Set();
+    for (const a of list) if (!seen.has(id(a)) && fresh) mine.add(id(a));
+    ctl.arrowsSeen = new Set(list.map(id));
+    ctl.arrowsMine = new Set([...mine].filter(i => ctl.arrowsSeen.has(i)));
+    return list.filter(a => ctl.arrowsMine.has(id(a)));
+  }
+
   function planGhosts(arrows, position) {
     const ghosts = new Map(); // square -> { id, kind, from }
     arrows.forEach(({ from, to }) => {
@@ -966,7 +981,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     syncGhosts() {
       if (!this.ghosts) return;
       if (this.ghosts.el.parentNode !== this.board || this.ghosts.el.nextSibling !== this.svg) this.svg.before(this.ghosts.el);
-      this.ghosts.sync(this.aimedArrows(), readBoard(this.board), kind => this.imageFor(kind));
+      this.ghosts.sync(drawnByYou(this, this.aimedArrows()), readBoard(this.board), kind => this.imageFor(kind));
       ghostAI.sync(this, kind => this.imageFor(kind));
     }
 
@@ -1412,7 +1427,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     syncGhosts() {
       if (!this.ghosts) return;
       this.place();
-      const arrows = this.aimedArrows();
+      const arrows = drawnByYou(this, this.aimedArrows());
       const style = this.board.game.getOptions().pieceStyle;
       this.ghosts.sync(arrows, this.readPosition(), kind => pieceImageUrl(style, kind));
       ghostAI.sync(this, kind => pieceImageUrl(style, kind));
@@ -2344,11 +2359,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       let viewing = false;
       try { viewing = !!board.game?.canMoveForward?.(); } catch (e) { /* no game yet */ }
       if (!settings.ghosts.on || !settings.ghosts.ai || !engineAllowed() || document.hidden || !board.isConnected || viewing) { this.stop(board); return; }
-      const arrows = settings.arrows.on ? ctl.aimedArrows() : ctl.nativeArrows ?
-        [...ctl.nativeArrows.values()].map(i => i.data) : [...ctl.svg.querySelectorAll('polygon.arrow')].map(p => {
+      const all = settings.arrows.on ? ctl.aimedArrows() : ctl.nativeArrows ?
+        [...ctl.nativeArrows.values()].map(i => ({ key: i.key, ...i.data })) : [...ctl.svg.querySelectorAll('polygon.arrow')].map(p => {
           const m = MOVE.exec(p.getAttribute('data-arrow') || '');
-          return m && { from: m[1] + m[2], to: m[3] + m[4] };
+          return m && { id: m[0], from: m[1] + m[2], to: m[3] + m[4] };
         }).filter(Boolean);
+      const arrows = drawnByYou(ctl, all);
       const base = blunderFEN(board), need = new Set(), fen = ghostReplyPosition(base, arrows, need);
       // Playing on before the opponent's best reply is known: work it out first, then carry on.
       this.feed(ctl, need.values().next().value);

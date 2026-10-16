@@ -43,7 +43,8 @@ function setup() {
     w.document.body.appendChild(b);
     return b;
   }
-  return { dom, w, api: w.testAPI, board, close: () => { observers.forEach(o => o.disconnect()); w.testAPI.ghostAI.clear(); w.testAPI.arrowEval.clear(); w.testAPI.fallbackHints.clear(); w.testAPI.blunderHints.clear(); w.close(); } };
+  const rightClick = () => w.dispatchEvent(new w.MouseEvent('pointerup', { button: 2 }));
+  return { dom, w, api: w.testAPI, board, rightClick, close: () => { observers.forEach(o => o.disconnect()); w.testAPI.ghostAI.clear(); w.testAPI.arrowEval.clear(); w.testAPI.fallbackHints.clear(); w.testAPI.blunderHints.clear(); w.close(); } };
 }
 
 function iteration(search, depth, scores) {

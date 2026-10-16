@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.9.4
+// @version      5.9.5
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2339,7 +2339,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     },
     sync(ctl, imageFor) {
       const board = ctl.board;
-      if (!settings.ghosts.on || !settings.ghosts.ai || !engineAllowed() || document.hidden || !board.isConnected) { this.stop(board); return; }
+      // Stepping back through earlier moves (analysis, game review, a running game) is just viewing:
+      // replies are only worked out at the end of the line.
+      let viewing = false;
+      try { viewing = !!board.game?.canMoveForward?.(); } catch (e) { /* no game yet */ }
+      if (!settings.ghosts.on || !settings.ghosts.ai || !engineAllowed() || document.hidden || !board.isConnected || viewing) { this.stop(board); return; }
       const arrows = settings.arrows.on ? ctl.aimedArrows() : ctl.nativeArrows ?
         [...ctl.nativeArrows.values()].map(i => i.data) : [...ctl.svg.querySelectorAll('polygon.arrow')].map(p => {
           const m = MOVE.exec(p.getAttribute('data-arrow') || '');

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { setup, source } = require('./helpers.cjs');
+const { setup, source, iteration } = require('./helpers.cjs');
 
 test('a second copy of the script does not start', () => {
   const f = setup();
@@ -24,15 +24,19 @@ test('an older copy without the guard is reported on screen', async () => {
   } finally { f.close(); }
 });
 
-test('no engine in games against people', () => {
+for (const route of ['/game/185390694268', '/game/live/185390694268', '/play/online', '/live', '/play/computer']) test(`blunder analysis works on a readable board at ${route}`, () => {
   const f = setup();
   try {
     f.api.settings.danger.blunders = true;
-    f.dom.reconfigure({ url: 'https://www.chess.com/game/185390694268' });
+    f.dom.reconfigure({ url: 'https://www.chess.com' + route });
     const b = f.board();
     b.innerHTML = '<svg class="arrows"></svg><div class="piece wp square-42"></div><div class="hint square-44"><div></div></div>';
     const ctl = new f.api.Controller(b.querySelector('svg'));
     ctl.selected = { f: 3, r: 1 }; ctl.paintHints();
-    assert.equal(f.api.blunderHints.search, null, 'no Stockfish search started');
+    const search = f.api.blunderHints.search;
+    assert.ok(search, 'the URL must not prevent a readable board from being evaluated');
+    iteration(search, 1, [{ move: 'e2e4', cp: 20, wdl: [100, 850, 50] }, { move: 'd2d4', cp: -300, wdl: [0, 150, 850] }]);
+    assert.equal(b.querySelector('.bs-blunder-cross').dataset.square, 'd4');
+    assert.equal(f.w.getComputedStyle(b.querySelector('.hint')).visibility, 'visible');
   } finally { f.close(); }
 });

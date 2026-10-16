@@ -103,6 +103,7 @@ test('DOM crosses appear immediately, flip, animate out, and can revive without 
     const s = f.api.blunderHints.search;
     iteration(s, 1, [best, bad]);
     assert.equal(b.querySelector('.hint').dataset.bsBlunder, '1');
+    assert.equal(f.w.getComputedStyle(b.querySelector('.hint')).visibility, 'visible');
     let cross = b.querySelector('.bs-blunder-cross');
     assert.equal(cross.dataset.square, 'd4');
     assert.equal(cross.style.left, '37.5%');
@@ -127,7 +128,7 @@ test('DOM crosses appear immediately, flip, animate out, and can revive without 
   } finally { f.close(); }
 });
 
-test('canvas dots restore their original renderability when mode is disabled', () => {
+test('canvas red dots stay visible with blunder mode on and off', () => {
   const f = setup();
   try {
     f.api.settings.danger.blunders = true;
@@ -139,8 +140,8 @@ test('canvas dots restore their original renderability when mode is disabled', (
     ctl.paintHints();
     const s = f.api.blunderHints.search;
     iteration(s, 10, [best, bad]); s.publish(); iteration(s, 11, [best, bad]); s.publish();
-    assert.equal(sprite.renderable, false);
-    assert.equal(sprite.tint, 0xffffff, 'the cross wins over the red dot');
+    assert.equal(sprite.renderable, true);
+    assert.equal(sprite.tint, 0xff4a42, 'the red dot remains under the cross');
     assert.equal(other.tint, 0xff4a42, 'non-blunder capture squares stay red');
     assert.ok(b.querySelector('.bs-blunder-cross'));
     f.api.settings.danger.blunders = false; ctl.paintHints();

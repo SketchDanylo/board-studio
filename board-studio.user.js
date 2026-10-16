@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.6.8
+// @version      5.6.9
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -208,7 +208,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     wc-chess-board > [data-bs-danger], chess-board > [data-bs-danger] {
       --color-transparent-black-14: rgba(220, 45, 45, 0.42) !important;
     }
-    [data-bs-blunder] { visibility: hidden !important; }
     .bs-blunder-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
     .bs-blunder-cross {
       position: absolute; width: 12.5%; height: 12.5%; color: rgba(220, 45, 45, .42);
@@ -981,8 +980,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const to = targets[i];
         if (to && blunders.has(sqName(to))) el.dataset.bsBlunder = '1';
         else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
-        // A blunder cross wins; every other square the piece could be taken on stays red.
-        if (from && to && !blunders.has(sqName(to)) && canBeTaken(board, from, to)) {
+        // Keep capture-risk dots visible underneath blunder crosses.
+        if (from && to && canBeTaken(board, from, to)) {
           if (el.dataset.bsDanger !== '1') el.dataset.bsDanger = '1';
         } else if (el.dataset.bsDanger) {
           delete el.dataset.bsDanger;
@@ -1191,17 +1190,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     paintHints() {
       this.hintSprites = this.hintSprites.filter(h => !h.sprite._destroyed);
       const from = this.hintSprites.find(h => h.from)?.from;
-      const blunders = blunderHints.sync(this, from ? sqOf(from) : null, this.hintSprites.map(h => sqOf(h.square)));
+      blunderHints.sync(this, from ? sqOf(from) : null, this.hintSprites.map(h => sqOf(h.square)));
       this.hintSprites.forEach(h => {
         if (h.sprite._destroyed) return;
-        h.sprite.tint = h.danger && settings.danger.on && !blunders.has(h.square) ? DANGER_TINT : 0xffffff;
-        if (blunders.has(h.square)) {
-          if (!Object.prototype.hasOwnProperty.call(h, 'bsRenderable')) h.bsRenderable = h.sprite.renderable;
-          h.sprite.renderable = false;
-        } else if (Object.prototype.hasOwnProperty.call(h, 'bsRenderable')) {
-          h.sprite.renderable = h.bsRenderable;
-          delete h.bsRenderable;
-        }
+        h.sprite.tint = h.danger && settings.danger.on ? DANGER_TINT : 0xffffff;
       });
     }
 
@@ -1935,9 +1927,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // ---------- progressive blunder hints ----------
 
-  // Stockfish (blunder crosses and the crown) only runs against bots, in analysis, puzzles and
-  // practice: engine help in a game against a person breaks chess.com's fair-play rules.
-  const engineAllowed = () => /^\/(play\/computer|game\/computer|analysis|puzzles|practice)(\/|$)/.test(location.pathname);
+  // Board capability, rather than URL shape, determines whether evaluation can run.
+  const engineAllowed = () => !!blunderFEN(document.querySelector('wc-chess-board, chess-board'));
 
 
   function blunderFEN(board) {
@@ -2104,8 +2095,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const fen = blunderFEN(ctl.board);
       const position = blunderPosition(ctl.board);
       const piece = from && position[from.f]?.[from.r];
-      if (!engineAllowed() && settings.danger.blunders) showHintStatus('Show Blunders is off in games against people (fair play).');
-      if (!engineAllowed() || !ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
+      if (!ctl.board.isConnected || document.hidden || !settings.danger.on || !settings.danger.blunders || !from || !targets.length || !fen || piece?.c !== fen.split(' ')[1]) {
         if (this.ctl === ctl) this.clear();
         return empty;
       }
@@ -2190,10 +2180,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const ctl = this.ctl;
       this.ctl = null;
       ctl?.board.querySelectorAll('[data-bs-blunder]').forEach(el => delete el.dataset.bsBlunder);
-      ctl?.hintSprites?.forEach(h => {
-        if (Object.prototype.hasOwnProperty.call(h, 'bsRenderable') && !h.sprite._destroyed) h.sprite.renderable = h.bsRenderable;
-        delete h.bsRenderable;
-      });
     }
   };
 
@@ -2233,7 +2219,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     nativeHints() {
       if (!this.board) return false;
       const domHints = [...this.board.querySelectorAll(':scope > .hint, :scope > .capture-hint')];
-      return domHints.some(el => !el.querySelector('.removing') && el.getClientRects().length && getComputedStyle(el).display !== 'none' && (getComputedStyle(el).visibility !== 'hidden' || el.dataset.bsBlunder)) ||
+      return domHints.some(el => !el.querySelector('.removing') && el.getClientRects().length && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden') ||
         !!this.board.__cc?.hintSprites?.some(h => !h.sprite._destroyed && h.sprite.visible !== false);
     },
     refresh() {
@@ -2267,7 +2253,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const left = `${xy.x * 12.5}%`, top = `${xy.y * 12.5}%`;
         if (el.style.left !== left) el.style.left = left;
         if (el.style.top !== top) el.style.top = top;
-        el.classList.toggle('bs-danger', !bad.has(el.dataset.square) && canBeTaken(position, this.from, target));
+        el.classList.toggle('bs-danger', canBeTaken(position, this.from, target));
         if (bad.has(el.dataset.square)) el.dataset.bsBlunder = '1';
         else if (el.dataset.bsBlunder) delete el.dataset.bsBlunder;
       });

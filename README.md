@@ -18,7 +18,7 @@ Everything is switched on and off from the **Styles** item in chess.com's left s
 - **Winning side** – a crown on the avatar of whoever is ahead, from chess.com's eval bar or, where there is none, a built-in Stockfish that keeps searching deeper.
 - **Take squares** – move dots turn red where your piece could be taken.
   - If Chess.com's own move hints are absent or disabled, Board Studio draws legal move dots itself. This also works before an arrow controller or canvas sprite hook is available. Legal destinations appear without waiting for the engine.
-  - **Show Blunders** – optional engine mode: translucent red crosses replace dots for likely blunders, appearing from the first available engine scores and updating as analysis deepens. Crosses span half a square, with a spring scale-in and a smooth fade-out when a move is cleared. Hold or keep a piece selected for deeper analysis. Supports normal and canvas boards.
+  - **Show Blunders** – optional engine mode: translucent red crosses appear over the move dots for likely blunders, appearing from the first available engine scores and updating as analysis deepens. Crosses span half a square, with a spring scale-in and a smooth fade-out when a move is cleared. Hold or keep a piece selected for deeper analysis. Supports normal and canvas boards.
 - **Ghosts** – each arrow moves a see-through copy of the piece, so you can plan lines.
 
 Works on both chess.com board types (the normal one and the Arcade / Natural canvas board).
@@ -27,9 +27,9 @@ Works on both chess.com board types (the normal one and the Arcade / Natural can
 
 The winning-side crown works on bot and live boards, using the visible evaluation bar when available and the bundled engine otherwise. An equal score shows no crown. Toggle it with **Styles → Winning side**. Version 5.5.3 supports both the current `player-top` / `player-bottom` avatar containers and the older board layout IDs.
 
-## Fair play
+## Board support
 
-Stockfish (Show Blunders and the Winning side crown without an eval bar) only runs against bots, in analysis, in puzzles and in practice, and the opening book is off in live games. Engine help in a game against a person breaks chess.com's fair-play rules.
+Version 5.6.9 restores evaluation on game pages by checking for a readable board position instead of restricting it by URL. Red capture-risk dots stay visible alongside blunder crosses on DOM, canvas, and fallback boards. The opening book retains its existing live-game restriction.
 
 ## Blunder estimates
 
@@ -37,7 +37,7 @@ Version 5.6.4 also flags a loss of at least 250 centipawns when both moves have 
 
 Version 5.6.3 preserves the engine and its scores when native and fallback hint renderers hand off to each other, and restores overlay layers if the board redraw removes them. The status below Show Blunders now reports engine startup, actual analysis depth, and the number of blunder destinations for the selected piece. No cross is expected when that piece has no moves classified as blunders. Crosses describe destinations before moving, rather than annotating the last played move.
 
-Enable **Styles → Take squares → Show Blunders** (off by default). It replaces the capture-risk coloring while enabled, and evaluates every legal root move so a bad move is compared against the best move in the whole position. Analysis stops when selection is cleared, the board is removed, the tab is hidden, or the option is disabled. Changing positions discards the old worker and its results. In the absence of native hints, legal dots come from the bundled chess.js rules; engine startup or failure never removes those ordinary dots. The Take squares panel reports when the position or engine is unavailable.
+Enable **Styles → Take squares → Show Blunders** (off by default). It keeps capture-risk dots visible while adding crosses, and evaluates every legal root move so a bad move is compared against the best move in the whole position. Analysis stops when selection is cleared, the board is removed, the tab is hidden, or the option is disabled. Changing positions discards the old worker and its results. In the absence of native hints, legal dots come from the bundled chess.js rules; engine startup or failure never removes those ordinary dots. The Take squares panel reports when the position or engine is unavailable.
 
 These are Stockfish estimates, **not guaranteed Chess.com Game Review classifications**. [Chess.com's published blunder cutoff](https://support.chess.com/en/articles/8572705-how-are-moves-classified-what-is-a-blunder-or-brilliant-etc) is a loss of 0.20 expected points, using a rating-dependent model. This script instead uses Stockfish's win/draw/loss probabilities, with an additional 200-centipawn loss requirement unless forced mate is involved. Scores appear as soon as each candidate and the best move have evaluations at the same depth; there is no minimum-depth or repeated-verdict delay. Existing hints remain until their own fresh evaluation arrives, and are revised immediately if that verdict changes. A promotion destination is marked only after all four promotion choices have been evaluated as blunders. Early estimates can change substantially as the search deepens; engine startup and the first evaluation still take some time.
 

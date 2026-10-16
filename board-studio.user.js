@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.9.2
+// @version      5.9.3
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -629,7 +629,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!ax && !ay) return false;
     switch (piece.t) {
       case 'n': return (ax === 1 && ay === 2) || (ax === 2 && ay === 1);
-      case 'k': return Math.max(ax, ay) === 1;
+      // From its home square a king can also castle: two files over, or onto its rook.
+      case 'k': return Math.max(ax, ay) === 1 || (!dy && from.f === 4 && from.r === (piece.c === 'w' ? 0 : 7) && (ax === 2 || ax === 3 || ax === 4));
       case 'r': return !dx || !dy;
       case 'b': return ax === ay;
       case 'q': return !dx || !dy || ax === ay;
@@ -2257,7 +2258,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Best reply found so far for each position the opponent was to move in, so a drawn line can assume it.
   const ghostBest = new Map();
 
-  function ghostReplyPosition(fen, arrows) {
+  function ghostReplyPosition(fen, arrows, need) {
     if (!fen || !arrows.length) return null;
     try {
       let game = new BoardStudioRules.Chess(fen);
@@ -2268,6 +2269,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (ghostMove(game, arrow)) continue;
         // Drawing your next move assumes the opponent's best reply to the last one, then carries on.
         const best = game.turn() !== player && ghostBest.get(game.fen());
+        if (!best && need && game.turn() !== player) need.add(game.fen());
         if (best && game.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: best[4] }) && ghostMove(game, arrow)) continue;
         game = new BoardStudioRules.Chess(fen);
         if (!ghostMove(game, arrow)) return null;
@@ -2308,13 +2310,25 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   const ghostAI = {
     sessions: new Map(),
-    stop(board) {
+    stop(board, keepFeeder) {
       const session = this.sessions.get(board);
       session?.search.stop();
+      if (!keepFeeder) this.feed({ board }, null);
       session?.layer?.remove();
       this.sessions.delete(board);
     },
     clear() { for (const board of this.sessions.keys()) this.stop(board); },
+    feeders: new Map(),
+    feed(ctl, fen) {
+      const board = ctl.board, old = this.feeders.get(board);
+      if (old && old.fen === fen) return;
+      old?.search.stop();
+      this.feeders.delete(board);
+      if (!fen) return;
+      const search = new GhostSearch(fen, () => { if (board.isConnected) ctl.syncGhosts(); });
+      this.feeders.set(board, { fen, search });
+      search.start();
+    },
     sync(ctl, imageFor) {
       const board = ctl.board;
       if (!settings.ghosts.on || !settings.ghosts.ai || !engineAllowed() || document.hidden || !board.isConnected) { this.stop(board); return; }
@@ -2323,11 +2337,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           const m = MOVE.exec(p.getAttribute('data-arrow') || '');
           return m && { from: m[1] + m[2], to: m[3] + m[4] };
         }).filter(Boolean);
-      const base = blunderFEN(board), fen = ghostReplyPosition(base, arrows);
-      if (!fen) { this.stop(board); return; }
+      const base = blunderFEN(board), need = new Set(), fen = ghostReplyPosition(base, arrows, need);
+      // Playing on before the opponent's best reply is known: work it out first, then carry on.
+      this.feed(ctl, need.values().next().value);
+      if (!fen) { if (!need.size) this.stop(board); return; }
       let session = this.sessions.get(board);
       if (!session || session.fen !== fen || session.base !== base) {
-        this.stop(board);
+        this.stop(board, true);
         const search = new GhostSearch(fen, () => {
           if (this.sessions.get(board)?.search === search) {
             const current = this.sessions.get(board);

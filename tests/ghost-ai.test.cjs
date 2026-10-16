@@ -29,6 +29,11 @@ test('reply position applies legal arrows and chains without altering the live b
     assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'e7', to: 'e5' }, { from: 'g1', to: 'f3' }]), line.fen());
     const d4 = new Chess(); d4.move('d4');
     assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'd2', to: 'd4' }]), d4.fen(), 'new root arrow selects another variation');
+    // Drawing for the side that is NOT to move assumes the opponent's best reply first.
+    const e4pos = new Chess(); e4pos.move('e4');
+    assert.equal(position(e4pos.fen(), [{ from: 'd2', to: 'd4' }]), null, 'best reply not known yet');
+    const need = new Set(); position(e4pos.fen(), [{ from: 'd2', to: 'd4' }], need);
+    assert.deepEqual([...need], [e4pos.fen()], 'asks for the best reply to be worked out');
     assert.equal(position('q4r1k/6pp/4Q2N/8/8/8/8/6K1 w - - 0 1', [{ from: 'e6', to: 'g8' }]).split(' ')[1], 'b');
   } finally { f.close(); }
 });

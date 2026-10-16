@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.9.3
+// @version      5.9.4
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2262,17 +2262,25 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!fen || !arrows.length) return null;
     try {
       let game = new BoardStudioRules.Chess(fen);
-      const player = game.turn();
+      // You are whoever owns the first arrow's piece, so drawing while the opponent is still
+      // thinking works: their best reply is assumed first, then your move goes on top of it.
+      const player = game.get(arrows[0].from)?.color;
+      if (!player) return null;
+      // Play one arrow. If it is not legal yet and it is the opponent's move, assume their best
+      // reply (asking for it to be worked out if it is not known) and try again.
+      const play = arrow => {
+        if (ghostMove(game, arrow)) return true;
+        if (game.turn() === player) return false;
+        const best = ghostBest.get(game.fen());
+        if (!best) { need?.add(game.fen()); return false; }
+        return !!game.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: best[4] }) && !!ghostMove(game, arrow);
+      };
       // Follow a legal drawn line. A separate root arrow selects a new variation.
       // An invalid last arrow clears the preview instead of evaluating a made-up position.
       for (const arrow of arrows) {
-        if (ghostMove(game, arrow)) continue;
-        // Drawing your next move assumes the opponent's best reply to the last one, then carries on.
-        const best = game.turn() !== player && ghostBest.get(game.fen());
-        if (!best && need && game.turn() !== player) need.add(game.fen());
-        if (best && game.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: best[4] }) && ghostMove(game, arrow)) continue;
+        if (play(arrow)) continue;
         game = new BoardStudioRules.Chess(fen);
-        if (!ghostMove(game, arrow)) return null;
+        if (!play(arrow)) return null;
       }
       return game.turn() !== player && !game.isGameOver() ? game.fen() : null;
     } catch (e) { return null; }

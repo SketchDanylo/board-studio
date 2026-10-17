@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.32.0
+// @version      6.34.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3992,6 +3992,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Our move in a position, the human way. analyse(fen, options) is the engine call (searchMoves limits
   // it to the moves the player considers). Resolves like a search result, with human: true and the
   // chosen move first; null when the search was replaced.
+  // How the rating colours the way an outcome is reached (centipawn-sized nudges, added to a move's score):
+  //  - winning: a strong player goes for it directly, with forcing moves; a weak one wins slowly, simplifying with
+  //    trades and consolidating;
+  //  - drawing: a weak player simplifies (trades pieces off); a strong one keeps the position stable, quiet moves that leave
+  //    the eval where it is;
+  //  - losing: nothing here (the plan and the slips do it).
+  function styleOf(mode, skill, r, v, topValue, winning) {
+    const c = r.c, trade = c.capture && c.net >= 0, quiet = !c.capture && !c.check;
+    if (mode === 'win') {
+      if (winning) return (trade ? (1 - skill) * 45 : 0) + (c.check || (c.capture && c.net > 0) ? skill * 30 : 0);
+      return trade ? (1 - skill) * 15 : 0;
+    }
+    if (mode === 'draw') return (trade ? (1 - skill) * 60 : 0) + (quiet ? skill * 25 : 0) - (c.capture && !trade ? 30 : 0) - skill * 0.4 * Math.abs(v - topValue);
+    return 0;
+  }
+
   // What a move puts at risk: the most the other side can win on any square afterwards (a static exchange), less what the
   // move itself takes. Positive: the move gives material away. Centipawns.
   function materialAtRisk(fen, uci) {
@@ -4067,9 +4083,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const q = await analyse(fen, { depth: 8, ms: 60, multipv: 1, fresh: true });
       if (q) evalNow = q.mate !== undefined ? Math.sign(q.mate) * 5000 : q.cp;
     }
+    // How strong a player this is, 0 (a beginner) to 1 (strong). It decides the way the outcome is reached, never the outcome.
+    const skill = Math.max(0, Math.min(1, (elo - 400) / 1800));
     const played = evalNow !== null && expected !== null && evalNow - expected < -60;
     let boost = countPieces(fen) <= 10 && mode !== 'lose' ? (mode === 'win' ? 350 : 180) : 0;
-    if (mode !== 'lose' && evalNow !== null && evalNow <= -150) boost = Math.max(boost, 400);
+    // The further the eval bar is below level, the nearer to an engine it plays (from level and a little above, a little better than
+    // its rating; at about 2 pawns down, as strong as it gets): the aim is held onto, whatever the rating.
+    if (mode !== 'lose' && evalNow !== null && evalNow < 50) boost = Math.max(boost, Math.min(1800, (50 - evalNow) * 8));
+    // Going for a win, an edge has to be made: until the eval is clearly in favour the play is lifted well above the rating.
+    if (mode === 'win' && evalNow !== null && evalNow < 200) boost = Math.max(boost, Math.min(1800, 700 + Math.max(0, 50 - evalNow) * 8));
     if (mode !== 'lose' && (pressure || played)) boost += 300;
     elo = Math.min(2600, elo + boost);
     const p = humanProfile(elo, fen);
@@ -4091,6 +4113,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const plain = mode === 'win' ? reach : mode === 'draw' ? (countPieces(fen) <= 6 ? reach : Math.min(3, reach)) : 0;
     if (mateLook.mate > 0 && mateLook.mate <= plain) return { ...mateLook, human: true, lines: [mateLook] };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
+    // Behind on the eval bar with an aim to win or draw: nothing is left to the rating. Every move is looked at, as deep as
+    // the time allows, and the best is played. (The rating comes back as soon as the position is level again.)
+    if (mode !== 'lose' && evalNow !== null && evalNow < -60 && left() > 200) {
+      const full = await analyse(fen, { depth: 14, ms: Math.max(150, Math.min(1000, left() * 0.7)), multipv: 2, fresh: true });
+      if (full && full.pv && full.pv.length) return { ...full, human: true, lines: full.lines && full.lines.length ? full.lines : [full] };
+    }
     // A player a queen up looks at every move, not only the checks and captures that catch the eye.
     const ahead = (() => {
       const side = fen.split(' ')[1]; let n = 0;
@@ -4151,8 +4179,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         target = Math.max(0, topValue - 200);
         if (delta > 80 && enough(topValue - target + delta)) target = Math.max(0, topValue - Math.max(200, Math.min(delta, 600)));
       }
-    } else if (mode === 'lose') {
-      target = topValue > -300 ? topValue - 300 : topValue - 120;
+    } else if (mode === 'lose' && (topValue > -150 || unitHash(fen + 'path') < skill)) {
+      // (never fighting on while ahead: a loss is not reached by playing the best moves)
+      // (a strong player loses on purpose, steadily; a weak one defends and slips, below)
+      // (a strong player goes down slowly, a pawn and a bit a move; a weaker one in bigger steps)
+      // (from far ahead it comes down quickly to about level first, then slowly)
+      const step = topValue > 250 ? 300 : 120 + (1 - skill) * 180;
+      target = topValue > -300 ? topValue - step : topValue - step * 0.4;
       if (delta > 80 && enough(delta + 300)) target -= Math.min(delta, 600) * 0.5;
       target = Math.max(target, -1500);
     }
@@ -4161,7 +4194,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const holdsNothing = ahead >= 4 && topValue < Math.min(150, ahead * 30);
     // The moves it noticed are well short of what the position holds (the eval bar says so): it was looking at the wrong
     // moves, so it looks at the rest, whatever the rating. The aim is not given up for a narrow view.
-    const missedBetter = evalNow !== null && mode !== 'lose' && topValue < evalNow - 120;
+    // (and when a loss is the aim and everything noticed still wins, the rest are looked at for a way down)
+    const missedBetter = (evalNow !== null && mode !== 'lose' && topValue < evalNow - 120) || (mode === 'lose' && topValue > 300);
     if (left() > 300 && ((winning && rated.filter(r => value(r.line) >= topValue - 150).every(r => { const st = stepFor(fen, r.c.uci); return st && seen(st.fen); })) || holdsNothing || missedBetter)) {
       const have = new Set(rated.map(r => r.c.uci));
       const rest = legal.map(m => m.from + m.to + (m.promotion || '')).filter(u => !have.has(u) && !seen((stepFor(fen, u) || {}).fen));
@@ -4192,7 +4226,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       r.score = v0 + humanTaste(r.c, p, fen, { winning }) - (gives ? 1500 : 0) - (v0 < floorV ? 4000 : 0) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (squeeze || mode === 'draw' ? 0.3 : winning && countPieces(fen) <= 6 ? 0.1 : 1))
         - (again && mode === 'win' ? (winning ? 300 : 50) * again : 0)
         + (mode === 'draw' ? drawTaste(r, value(r.line), after, again, elo, target) : 0)
-        + (mode === 'lose' ? loseTaste(value(r.line), target, after) : 0)
+        + (mode === 'lose' && target !== null ? loseTaste(value(r.line), target, after) : 0)
+        + styleOf(mode, skill, r, v0, topValue, winning)
         + (mode === 'win' && winning && countPieces(fen) <= 6 && after ? mateProgress(fen, after.fen, fen.split(' ')[1]) : 0)
         + (winning && halfmove >= 16 && (r.c.capture || r.c.move.piece === 'p') ? 80 : 0);
     }
@@ -4213,18 +4248,24 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     rated.sort((a, b) => b.score - a.score);
     let best = rated[0];
-    // Now and then the move played is simply the most natural-looking one (a capture, a check, the
-    // developing move) instead of the calculated one. When it happens is decided by the position.
+    // Now and then the move played is simply the most natural-looking one (a capture, a check, the developing move)
+    // instead of the calculated one: a slip a person could make, never a throw. When it happens is decided by the position.
+    // How often and how far depends on the outcome: a win may slip a little (never to the point of losing the edge), a
+    // draw hardly at all and never below the floor, and a loss is mostly done by slips when the player is weak, which
+    // fights on and drifts, the move chosen being the worst of the natural ones.
     const top = value(best.line), bad = rated.filter(r => value(r.line) < top - 100).length;
-    const slipChance = Math.min(0.9, p.slip * (0.5 + bad / rated.length));
-    // Free material is always taken, and a slip never gives up more than maxLoss or loses material
-    // outright: the natural-looking move has to be a fair one.
+    const base = p.slip * (0.5 + bad / rated.length);
+    const slipChance = Math.min(0.9, base * (mode === 'win' ? (winning ? 0.35 : 0.6) : mode === 'draw' ? 0.35 : (1 + (1 - skill) * 2) * (topValue > -200 ? 2.5 : 1) * (topValue > -150 || unitHash(fen + 'path') < skill ? 0.3 : 1)));
+    const slipCap = mode === 'win' ? Math.min(p.maxLoss, 100) : mode === 'draw' ? Math.min(p.maxLoss, 60) : Math.min(300, 120 + (1 - skill) * 180);
+    // Free material is always taken, and a slip never gives up more than its cap or loses material outright: the
+    // natural-looking move has to be a fair one, and one that does not strike out against the outcome.
     // (when everything wins anyway, the free piece still beats a slightly faster route)
     const freeTake = rated.find(r => r.c.free && (value(r.line) >= top - 150 || (value(r.line) >= 500 && top >= 500)));
     if (freeTake && (mode === 'win' || (mode === 'draw' && target === null))) best = freeTake;
-    else if (!winning && !squeeze && mode === 'win' && rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
-      const fair = rated.filter(r => value(r.line) >= top - p.maxLoss && !(r.c.capture && r.c.net < 0));
-      if (fair.length) best = fair.slice().sort((a, b) => b.c.salience - a.c.salience)[0];
+    else if (!squeeze && !(mode === 'draw' && topValue < 20) && rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
+      const okAim = r => { const v = value(r.line); return mode === 'draw' ? v >= floorV : mode === 'win' ? (topValue < 150 || v >= 100) : true; };
+      const fair = rated.filter(r => r.score > -1000 && value(r.line) >= top - slipCap && !(r.c.capture && r.c.net < 0) && okAim(r) && !(mode !== 'lose' && risks.get(r) >= 200));
+      if (fair.length) best = fair.slice().sort((a, b) => (b.c.salience - a.c.salience) + (mode === 'lose' ? (value(a.line) - value(b.line)) / 150 : 0))[0];
     }
     return { ...best.line, human: true, depth: p.quietDepth, lines: [best.line, ...rated.map(r => r.line).filter(l => l !== best.line)] };
   }
@@ -4546,6 +4587,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const steps = clutchChain(item.fen, lineOfItem(item));
       if (!mainSteps) mainSteps = steps;
       steps.forEach((step, k) => {
+        // The first step, what they may play, is a ghost with no arrow. What follows from it (our answer) is drawn as an
+        // arrow, the move itself, and no ghost.
+        if (k > 0) {
+          const from = step.uci.slice(0, 2), to = step.uci.slice(2, 4), lid = `cc:${from}${to}:${k}`;
+          if (from !== to && !links.has(lid)) links.set(lid, { id: lid, from, to, color: item.color, opacity: Math.max(clutchStrength(k), 0.35) });
+          return;
+        }
         const id = k + ':' + step.uci;
         keep.add(id);
         let entry = live.get(id);
@@ -4564,9 +4612,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!claimed.has(id)) {
           claimed.add(id);
           entry.el.style.setProperty('--reply-color', item.color);
-          entry.el.dataset.premove = item.premoveAt === k ? '1' : '';
-          entry.el.dataset.gamble = item.premoveAt === k && item.gamble ? '1' : '';
-          entry.el.title = item.premoveAt === k ? (item.gamble ? 'Premove if they take' : 'Premove: certain') : k === 0 && item.theirs ? 'A move they may make' : 'Considering';
+          // (the premove is our answer to this move of theirs: it is the branch that is marked)
+          entry.el.dataset.premove = item.premoveAt !== undefined ? '1' : '';
+          entry.el.dataset.gamble = item.premoveAt !== undefined && item.gamble ? '1' : '';
+          entry.el.title = item.premoveAt !== undefined ? (item.gamble ? 'Premove if they take' : 'Premove: certain') : item.theirs ? 'A move they may make' : 'Considering';
         }
         entry.el.classList.remove('cc-ghost-leave');
         Object.assign(entry.el.style, spot(step.uci.slice(2, 4)), { opacity: String(clutchStrength(k)) });

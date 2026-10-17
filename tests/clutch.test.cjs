@@ -343,7 +343,7 @@ test('a premove is played exactly as indicated, not decided again once their mov
   } finally { f.close(); }
 });
 
-test('a Clutch ghost shows one step after the first: a ghost at a quarter of the first, joined by an arrow', () => {
+test('a Clutch branch: the first step is a ghost with no arrow, what follows from it is an arrow (the move itself)', () => {
   const f = setup();
   try {
     const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -355,15 +355,11 @@ test('a Clutch ghost shows one step after the first: a ghost at a quarter of the
     f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#ff4d4d', line: ['e2e4', 'e7e5', 'g1f3', 'b8c6'] }]);
     const layer = board.querySelector('.bs-ghost-clutch');
     const ghosts = [...layer.querySelectorAll('.cc-ghost:not(.cc-ghost-leave)')];
-    assert.equal(ghosts.length, 2, 'a ghost and the one after it');
-    const op = el => +el.style.opacity;
-    const [first, second] = ['e2e4', 'e7e5'].map(u => ghosts.find(g => g.dataset.uci === u));
-    assert.ok(first && second);
-    assert.ok(Math.abs(op(second) - op(first) / 4) < 1e-9, 'the next ghost is a quarter of the one before');
-    assert.equal(second.style.left, '50%'); assert.equal(second.style.top, '37.5%', 'it sits where its piece lands (e5)');
-    assert.equal(ctl.chainArrows.length, 1, 'an arrow from the ghost to the next');
-    assert.equal(ctl.chainArrows[0].uci, 'e7e5', 'the move itself, not a line between two ghosts');
-    assert.ok(Math.abs(ctl.chainArrows[0].opacity - op(second)) < 1e-9, 'as strong as the ghost it leads to');
+    assert.equal(ghosts.length, 1, 'only the first step is a ghost');
+    assert.equal(ghosts[0].dataset.uci, 'e2e4');
+    assert.equal(ctl.chainArrows.length, 1, 'the next step is an arrow');
+    assert.equal(ctl.chainArrows[0].uci, 'e7e5', 'the move itself, a legal one');
+    assert.ok(ctl.chainArrows[0].opacity >= 0.35 && ctl.chainArrows[0].opacity < +ghosts[0].style.opacity, 'fainter than the ghost, still visible');
     f.api.settings.arrows.on = false;
     f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#4cc2ff', line: ['e2e4', 'e7e5'] }]);
     assert.equal(ctl.chainArrows.length, 0, 'the board draws none');
@@ -371,7 +367,7 @@ test('a Clutch ghost shows one step after the first: a ghost at a quarter of the
     f.api.settings.arrows.on = true;
     f.api.showClutchGhosts(ctl, [{ fen, uci: 'd2d4', color: '#4cc2ff' }]);
     assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)').length, 1);
-    assert.equal(ctl.chainArrows.length, 0);
+    assert.equal(ctl.chainArrows.length, 0, 'a lone move has no arrow');
     f.api.showClutchGhosts(ctl, []);
     assert.equal(ctl.chainArrows.length, 0, 'clearing the ghosts clears the arrows');
   } finally { f.close(); }
@@ -442,10 +438,10 @@ test('a branch starts from what they may play: their ghost, then our answer, the
     const ghosts = [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)')];
     const by = (d, u) => ghosts.find(g => g.dataset.depth === String(d) && g.dataset.uci === u);
     assert.ok(by(0, 'e7e5') && by(0, 'c7c5'), 'both of their possible moves are shown');
-    assert.equal(ghosts.filter(g => g.dataset.uci === 'g1f3').length, 1, 'the shared answer Nf3 is one ghost');
-    assert.equal(by(1, 'g1f3').dataset.premove, '1', 'the answer of the premove branch is the premove');
-    assert.equal(by(1, 'g1f3').style.getPropertyValue('--reply-color'), '#ff4d4d', 'a shared ghost takes the premove colour');
-    assert.ok(Math.abs(+by(0, 'e7e5').style.opacity - 4 * +by(1, 'g1f3').style.opacity) < 1e-9, 'their move is the strongest, our answer a quarter of it');
+    assert.equal(ghosts.filter(g => g.dataset.uci === 'g1f3').length, 0, 'our answer is an arrow, not a ghost');
+    assert.equal(by(0, 'e7e5').dataset.premove, '1', 'the branch of the premove is marked');
+    assert.equal(by(0, 'c7c5').dataset.premove, '', 'and the other is not');
+    assert.equal(by(0, 'e7e5').style.getPropertyValue('--reply-color'), '#ff4d4d');
     assert.equal(ctl.chainArrows.length, 1, 'the shared answer Nf3 is one arrow: g1f3');
     assert.equal(ctl.chainArrows[0].uci, 'g1f3');
   } finally { f.close(); }
@@ -476,7 +472,7 @@ test('everything is played around the eval bar: the aim sets where it should go,
     const drew = (await play('draw', ahead)).cp;
     assert.ok(drew < 600 && drew >= 300, 'to draw with an edge: some of it is given back, not all at once (' + drew + ')');
     const lost = (await play('lose', ahead)).cp;
-    assert.ok(lost <= 300, 'to lose: the eval is taken down (' + lost + ')');
+    assert.ok(lost < 600 && lost >= 150, 'to lose: the eval is taken down, a step at a time (' + lost + ')');
     // level: drawing keeps it near nothing
     const level = [40, 20, 0, -20, -60, -200, -400];
     const hold = (await play('draw', level)).cp;
@@ -603,7 +599,7 @@ test('Clutch ghosts follow the ruleset of ghosts you draw: what is taken is hatc
     f.api.showClutchGhosts(ctl, [{ fen, line: ['c3d5', 'e6d5'], color: '#ff4d4d' }]);
     const gh = u => [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost')].find(g => g.dataset.uci === u);
     assert.equal(gh('c3d5').style.opacity, '0', 'the taken ghost goes away');
-    assert.ok(+gh('e6d5').style.opacity > 0, 'the one that took it stays');
+    assert.equal(ctl.chainArrows.length, 1, 'the recapture is shown as an arrow'); assert.equal(ctl.chainArrows[0].uci, 'e6d5');
     assert.ok(ctl.clutchFallenSquares.has('d5') && ctl.clutchFallenSquares.has('c3'), 'the hatch squares are handed to the board');
     f.api.showClutchGhosts(ctl, []);
     assert.equal(ctl.clutchFallenSquares.size, 0, 'cleared with the ghosts');
@@ -732,6 +728,61 @@ test('a prepared answer is also made against the eval bar: when the moves notice
     };
     const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'draw' }, 400, eng);
     assert.ok(Math.max(...asked) > 8, 'every move was looked at, not only the few noticed (' + asked.join(',') + ')');
+  } finally { f.close(); }
+});
+
+// moves are rated by a fixed list in the order they are first asked about, so the choice can be seen
+function listed(values) {
+  const order = [];
+  return async (fen, o) => {
+    if (o.mate) return { depth: 4, cp: 0, pv: [] };
+    if (!o.searchMoves) return { depth: 8, cp: o.ms === 60 ? values[0] : -values[0], pv: [] };
+    const lines = o.searchMoves.map(u => { if (!order.includes(u)) order.push(u); return { depth: 6, cp: values[order.indexOf(u)] ?? -900, pv: [u] }; }).sort((a, b) => b.cp - a.cp);
+    return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
+  };
+}
+
+test('the rating colours how a draw is held: a weak player trades, a strong one keeps the position stable', async () => {
+  const f = setup();
+  try {
+    // 1.e4 d5: exd5 is an even trade of pawns, the other moves are quiet; everything is level
+    const fen = 'rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2';
+    const play = elo => f.api.humanAnalyse(fen, { lastMove: { from: 'd7', to: 'd5' }, ms: 300, mode: 'draw' }, elo, async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      if (!o.searchMoves) return { depth: 8, cp: 0, pv: [] };
+      const lines = o.searchMoves.map(u => ({ depth: 6, cp: 0, pv: [u] }));
+      return { depth: 6, cp: 0, pv: lines[0].pv, lines };
+    });
+    const weak = await play(500), strong = await play(2400);
+    assert.equal(weak.pv[0], 'e4d5', 'a weak player simplifies');
+    assert.notEqual(strong.pv[0], 'e4d5', 'a strong one leaves it as it is (' + strong.pv[0] + ')');
+  } finally { f.close(); }
+});
+
+test('slips are logical and bounded, and they depend on the outcome: a win may slip a little, a draw hardly, a loss mostly slips when weak', async () => {
+  const f = setup();
+  try {
+    const base = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 4 4';
+    // ten moves, best first, each a little worse; the slip cap is a fraction of the spread
+    const values = [250, 170, 90, 10, -70, -150, -230, -310, -390, -470];
+    const run = async (mode, elo, n) => {
+      let slips = 0, worst = 0, minCp = Infinity;
+      for (let i = 0; i < n; i++) {
+        const fen = base.replace(' 4 4', ' ' + i + ' 4');
+        const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: 250, expected: 250, clock: 60 }, elo, listed(values));
+        minCp = Math.min(minCp, r.cp);
+        if (r.cp < 250) { slips++; worst = Math.min(worst, r.cp - 250); }
+      }
+      return { slips, worst, minCp };
+    };
+    const win = await run('win', 500, 60), draw = await run('draw', 500, 60), strongWin = await run('win', 2400, 60);
+    assert.ok(win.slips > 0, 'a weak player going for a win slips now and then (' + win.slips + ')');
+    assert.ok(win.worst >= -250, 'never a throw: no more than a couple of pawns (' + win.worst + ')');
+    assert.ok(draw.minCp >= -40, 'a draw never goes below the floor of level, whatever the slips (' + draw.minCp + ')');
+    assert.ok(strongWin.slips <= win.slips, 'a strong player slips less (' + strongWin.slips + ' vs ' + win.slips + ')');
+    const lose = await run('lose', 500, 60);
+    assert.ok(lose.slips > win.slips, 'a weak player meant to lose does it mostly by slipping (' + lose.slips + ' vs ' + win.slips + ')');
+    assert.ok(lose.worst >= -480, 'but not by a throw (' + lose.worst + ')');
   } finally { f.close(); }
 });
 

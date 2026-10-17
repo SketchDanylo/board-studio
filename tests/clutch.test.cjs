@@ -800,6 +800,54 @@ test('their clearly best reply gets a premove for its answer (not in a draw), an
   } finally { f.close(); }
 });
 
+test('ideas are shown as soon as they exist: the moves under consideration are handed over before they are checked, and their moves from the first look', async () => {
+  const f = setup();
+  try {
+    // the candidates reach the display before the verdict, in order of value
+    const fen = '4k3/8/8/2n5/8/8/8/3QK3 w - - 0 1';
+    const eng = async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      if (!o.searchMoves) return { depth: 8, cp: 10, pv: ['d1d2'] };
+      const lines = o.searchMoves.map(u => ({ depth: 6, cp: u === 'd1d2' ? 20 : -10, pv: [u, 'e8d8'] })).sort((a, b) => b.cp - a.cp);
+      return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
+    };
+    let ideas = null, at = null;
+    const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', onIdea: list => { ideas = list; at = Date.now(); } }, 1200, eng);
+    assert.ok(ideas && ideas.length >= 2, 'ideas were handed over');
+    assert.ok(ideas[0].cp >= ideas[ideas.length - 1].cp, 'best first');
+    assert.ok(ideas.every(i => i.pv && i.pv[0] === i.uci), 'each with its line');
+    assert.ok(r && r.pv, 'and the decision still came');
+    // bookBuild hands over their possible moves as soon as the first look is in
+    let options = null;
+    const first = { depth: 6, cp: 0, pv: ['e7e5'], lines: ['e7e5', 'c7c5', 'e7e6', 'g8f6'].map((u, i) => ({ cp: -i, pv: [u] })) };
+    await f.api.bookBuild({ fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1', s: { eval: 2, depth: 6, maxDepth: 12, spare: 2 }, clock: 20, replies: 4, rounds: 1,
+      analyse: async () => first, stop: () => false, onEntry: () => {}, onOptions: (n, list) => { options = list; } });
+    assert.ok(options && options.length >= 4 && options[0].uci === 'e7e5', 'their possible moves, before any answer');
+  } finally { f.close(); }
+});
+
+test('when the ghosts go (a move was made), they fade and shrink away, the corner lists fade, and nothing lingers', async () => {
+  const f = setup();
+  try {
+    const fen = 'r1bqkbnr/pppp1ppp/2n5/4p3/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 3';
+    const board = f.board(fen);
+    board.innerHTML = '<svg class="arrows"></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    f.api.showClutchGhosts(ctl, [{ fen, line: ['e5d4', 'd1d4'], color: '#ff4d4d' }, { fen, line: ['c6d4'], color: '#4cc2ff' }]);
+    assert.ok(board.querySelectorAll('.bs-ghost-clutch .cc-ghost').length >= 1);
+    f.api.showClutchGhosts(ctl, []);
+    const going = [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost')];
+    assert.ok(going.length >= 1 && going.every(g => g.classList.contains('cc-ghost-leave') && g.style.opacity === '0'), 'they are leaving, not cut');
+    const badge = board.querySelector('.bs-ghost-clutch .bs-badge');
+    assert.ok(!badge || badge.classList.contains('bs-leave'), 'a corner list fades too');
+    await new Promise(r => setTimeout(r, 700));
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost').length, 0, 'and then they are gone');
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch .bs-badge').length, 0);
+    const css = f.w.document.head.textContent + [...f.w.document.querySelectorAll('style')].map(x => x.textContent).join('');
+    assert.ok(/\.bs-ghost-clutch \.cc-ghost\.cc-ghost-leave \{[^}]*transform: scale\(\.62\)[^}]*transition: opacity 420ms/.test(css), 'the leaving animation is styled');
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.35.1
+// @version      6.36.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -281,6 +281,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .bs-ghost-ai svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
     .bs-ghost-ai .cc-ghost, .bs-ghost-clutch .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)) drop-shadow(0 0 2px var(--reply-color)); }
     .bs-ghost-clutch .cc-ghost { transition: filter 260ms ease, left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1), opacity 320ms ease, transform 320ms cubic-bezier(.34, 1.4, .64, 1); }
+    .bs-ghost-clutch .cc-ghost.cc-ghost-leave { opacity: 0 !important; transform: scale(.62); filter: blur(3px); transition: opacity 420ms ease, transform 420ms cubic-bezier(.4, 0, .2, 1), filter 420ms ease; }
+    .bs-ghost-clutch .bs-badge { transition: opacity 300ms ease; }
+    .bs-ghost-clutch .bs-badge.bs-leave { opacity: 0; }
     .bs-ghost-clutch svg.cc-chain { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
     .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave, .bs-ghost-clutch .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
                   opacity 320ms ease, transform 320ms cubic-bezier(.34, 1.4, .64, 1); }
@@ -4069,7 +4072,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return r < win ? 'win' : r < win + draw ? 'draw' : 'lose';
   }
 
-  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0, evalNow = null, expected = null, clock = 99 } = {}, elo, analyse) {
+  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0, evalNow = null, expected = null, clock = 99, onIdea = null } = {}, elo, analyse) {
     // The whole decision is held to a budget: a move that costs the game on time is worth nothing.
     const deadline = Date.now() + budget, left = () => deadline - Date.now();
     // In an ending the play should match or beat what the opponent shows: better when playing to win,
@@ -4157,6 +4160,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (c) rated.push({ c, line });
       }
     }
+    // The moves under consideration are shown at once, before they have been checked any further.
+    if (onIdea && rated.length) { try { onIdea(rated.slice().sort((a, b) => value(b.line) - value(a.line)).map(r => ({ uci: r.c.uci, pv: r.line.pv || [r.c.uci], cp: value(r.line) }))); } catch (e) { /* display only */ } }
     if (!rated.length) return cands.length ? { depth: 1, cp: 0, pv: [cands[0].uci], human: true, lines: [] } : { ...mateLook, human: true, lines: [mateLook] };
     // Clearly winning: convert. No taste for checks, a position seen before is avoided (that is how a won
     // game gets drawn), and when the fifty moves loom, a capture or a pawn move is progress.
@@ -4560,7 +4565,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     let layer = ctl.clutchGhostLayer;
     if (!items.length && !layer) return;
     if (!items.length && ctl.chainArrows && ctl.chainArrows.length) { ctl.chainArrows = []; ctl.scheduleArrows?.(); }
-    if (!items.length) { ctl.clutchFallenIds = new Set(); ctl.clutchFallenSquares = new Set(); ctl.paintFallen?.(); (ctl.clutchBadges || new Map()).forEach(b => b.el.remove()); ctl.clutchBadges = new Map(); }
+    if (!items.length) { ctl.clutchFallenIds = new Set(); ctl.clutchFallenSquares = new Set(); ctl.paintFallen?.(); (ctl.clutchBadges || new Map()).forEach(b => { b.el.classList.add('bs-leave'); setTimeout(() => b.el.remove(), 320); }); ctl.clutchBadges = new Map(); }
     const lineOfItem = i => (i.line && i.line.length ? i.line : [i.uci]).slice(0, CLUTCH_DEPTH);
     const key = JSON.stringify([ctl.flipped, settings.ghosts.opacity, settings.arrows.on, items.map(i => [lineOfItem(i), i.color, i.premoveAt, String(i.fen).split(' ')[0]])]);
     if (ctl.clutchGhostKey === key && layer && layer.isConnected) return;
@@ -4707,7 +4712,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       live.delete(id);
       entry.el.style.opacity = '0';
       entry.el.classList.add('cc-ghost-leave');
-      setTimeout(() => entry.el.remove(), 340);
+      setTimeout(() => entry.el.remove(), 480);
     }
   }
 
@@ -4772,7 +4777,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // Look at a position for our move: a quick look, then a deeper one when winning and the clock allows.
-  async function clutchSearch(fen, clock, oppClock, s) {
+  async function clutchSearch(fen, clock, oppClock, s, onIdea = () => {}) {
     const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
     const hurry = oppClock !== null && oppClock < clock * 0.7 ? 0.5 : 1;
@@ -4789,7 +4794,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (quick) evalNow = quick.mate !== undefined ? Math.sign(quick.mate) * 5000 : quick.cp;
       }
       const expected = clutch.lastValue === undefined ? null : clutch.lastValue;
-      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, evalNow, expected, clock, seen: s.seen, mode: s.mode }, s.elo, (f, o) => clutchEngine.analyse(f, o));
+      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, evalNow, expected, clock, seen: s.seen, mode: s.mode, onIdea }, s.elo, (f, o) => clutchEngine.analyse(f, o));
       if (result) clutch.lastValue = result.mate !== undefined ? Math.sign(result.mate) * 5000 : result.cp;
       return result;
     }
@@ -4871,7 +4876,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       options.push({ uci, fen: game.fen(), capture: true, to: move.to });
       game.undo();
     }
-    onOptions(options.length);
+    onOptions(options.length, options);
     const entries = new Map();
     let topDone = false;
     const topReply = options.length ? options[0].uci : null;
@@ -5076,6 +5081,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       fen = board.game.getFEN();
       if (fen !== clutch.curFen) {
         clutch.lastMove = inferLastMove(clutch.curFen, fen); clutch.curFen = fen;
+        // a move was made, by either side: what was shown belonged to the position before it, and goes
+        if (ctl) showClutchGhosts(ctl, []);
         if (/^rnbqkbnr\/pppppppp\/8\/8\/8\/8\/PPPPPPPP\/RNBQKBNR/.test(fen) && fen.split(' ')[5] === '1' && fen.split(' ')[1] === 'w') { clutch.seen = {}; clutch.mode = null; clutch.way = null; clutch.burn = null; clutch.lastValue = null; }
         const k = fen.split(' ').slice(0, 3).join(' ');
         clutch.seen = clutch.seen || {};
@@ -5205,7 +5212,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       clutch.working = key;
       showClutchGhosts(ctl, []);
       if (book && !opening) setClutch('Clutch: not a reply I was ready for, thinking');
-      clutchSearch(fen, clock, oppClock, s).then(result => {
+      clutchSearch(fen, clock, oppClock, s, ideas => showClutchGhosts(ctl, ideas.slice(0, 4).map(i => ({ fen, uci: i.uci, line: (i.pv && i.pv[0] === i.uci ? i.pv : [i.uci]).slice(0, CLUTCH_DEPTH), color: CLUTCH_BLUE })))).then(result => {
         let current = null;
         try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
         if (clutch.working === key) clutch.working = null;
@@ -5250,7 +5257,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const items = [];
       const lead = entries.find(e => e.reply === book.topReply) || entries[0];
       if (prem && lead) items.push({ fen, line: [lead.reply, ...(lead.step.uci === prem.step.uci ? lineFor(lead).slice(1) : [prem.step.uci])].slice(0, CLUTCH_DEPTH), color: CLUTCH_RED, premoveAt: 1, gamble: prem.conditional, likely: prem.likely, theirs: true });
-      entries.filter(e => !(prem && lead && e === lead)).slice(0, prem ? 3 : 4).forEach(e => items.push({ fen, line: lineFor(e), color: CLUTCH_BLUE, theirs: true }));
+      // Their possible moves come from the first look, so they show before any answer to them is worked out; an answer joins its
+      // branch (as an arrow) the moment it exists, and a branch changes as deeper looks change it.
+      const byReply = new Map(entries.map(e => [e.reply, e]));
+      const order = (book.options && book.options.length ? book.options.map(o => o.uci) : entries.map(e => e.reply));
+      order.filter(u => !(prem && lead && u === lead.reply)).slice(0, prem ? 3 : 4).forEach(u => {
+        const e = byReply.get(u);
+        items.push({ fen, line: e ? lineFor(e) : [u], color: CLUTCH_BLUE, theirs: true });
+      });
       showClutchGhosts(ctl, items);
       const native = premoveNative(board);
       const depth = entry ? entry.depth : [...book.entries.values()].reduce((d, e) => Math.max(d, e.depth), 0);
@@ -5270,7 +5284,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       analyse: (f, o) => clutchEngine.analyse(f, o),
       answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode, expected: clutch.lastValue === undefined ? null : clutch.lastValue, clock }, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
-      onOptions: n => { book.total = n; },
+      onOptions: (n, list) => { book.total = n; book.options = list; refresh(); },
       onTop: async () => {
         if (book.wiggleRun || s.mode === 'lose') return;
         book.wiggleRun = true;

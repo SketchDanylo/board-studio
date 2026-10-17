@@ -343,40 +343,34 @@ test('a premove is played exactly as indicated, not decided again once their mov
   } finally { f.close(); }
 });
 
-test('a Clutch ghost goes three deep: each next move a ghost of the one before, half as strong, joined by an arrow', () => {
+test('a Clutch ghost shows one step after the first: a ghost at a quarter of the first, joined by an arrow', () => {
   const f = setup();
   try {
     const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     const board = f.board(fen);
     board.innerHTML = '<svg class="arrows"></svg>';
     const ctl = new f.api.Controller(board.querySelector('svg'));
-    assert.deepEqual(Array.from(f.api.clutchChain(fen, ['e2e4', 'e7e5', 'g1f3', 'b8c6']), s => s.uci), ['e2e4', 'e7e5', 'g1f3'], 'three steps, however long the line');
+    assert.deepEqual(Array.from(f.api.clutchChain(fen, ['e2e4', 'e7e5', 'g1f3', 'b8c6']), s => s.uci), ['e2e4', 'e7e5'], 'two steps, however long the line');
     assert.deepEqual(Array.from(f.api.clutchChain(fen, ['e2e4', 'e2e4']), s => s.uci), ['e2e4'], 'it stops where the line stops being legal');
     f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#ff4d4d', line: ['e2e4', 'e7e5', 'g1f3', 'b8c6'] }]);
     const layer = board.querySelector('.bs-ghost-clutch');
     const ghosts = [...layer.querySelectorAll('.cc-ghost:not(.cc-ghost-leave)')];
-    assert.equal(ghosts.length, 3, 'the answer and the next two moves');
+    assert.equal(ghosts.length, 2, 'a ghost and the one after it');
     const op = el => +el.style.opacity;
-    const [first, second, third] = ['e2e4', 'e7e5', 'g1f3'].map(u => ghosts.find(g => g.dataset.uci === u));
-    assert.ok(first && second && third);
-    assert.ok(Math.abs(op(second) - op(first) / 2) < 1e-9, 'the next ghost is half as strong as the one before');
-    assert.ok(Math.abs(op(third) - op(second) / 2) < 1e-9, 'and the one after that half again');
-    assert.ok(op(third) >= 0.2, 'the third is still visible');
+    const [first, second] = ['e2e4', 'e7e5'].map(u => ghosts.find(g => g.dataset.uci === u));
+    assert.ok(first && second);
+    assert.ok(Math.abs(op(second) - op(first) / 4) < 1e-9, 'the next ghost is a quarter of the one before');
     assert.equal(second.style.left, '50%'); assert.equal(second.style.top, '37.5%', 'it sits where its piece lands (e5)');
-    // an arrow runs from every ghost to the next, in the board's own arrow style, as strong as the ghost it leads to
-    assert.equal(ctl.chainArrows.length, 2, 'ghost to ghost, twice');
-    assert.deepEqual(Array.from(ctl.chainArrows, x => x.uci), ['e4e5', 'e5f3']);
-    assert.ok(Math.abs(ctl.chainArrows[0].opacity - op(second)) < 1e-9 && Math.abs(ctl.chainArrows[1].opacity - op(third)) < 1e-9);
-    // with custom arrows off they are plain ones inside the ghost layer
+    assert.equal(ctl.chainArrows.length, 1, 'an arrow from the ghost to the next');
+    assert.equal(ctl.chainArrows[0].uci, 'e4e5');
+    assert.ok(Math.abs(ctl.chainArrows[0].opacity - op(second)) < 1e-9, 'as strong as the ghost it leads to');
     f.api.settings.arrows.on = false;
-    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#4cc2ff', line: ['e2e4', 'e7e5', 'g1f3'] }]);
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#4cc2ff', line: ['e2e4', 'e7e5'] }]);
     assert.equal(ctl.chainArrows.length, 0, 'the board draws none');
-    assert.equal(board.querySelectorAll('.bs-ghost-clutch svg.cc-chain g').length, 2, 'plain arrows instead');
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch svg.cc-chain g').length, 1, 'a plain arrow instead');
     f.api.settings.arrows.on = true;
-    // a ghost with no further line is just the one ghost
     f.api.showClutchGhosts(ctl, [{ fen, uci: 'd2d4', color: '#4cc2ff' }]);
     assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)').length, 1);
-    assert.equal(board.querySelectorAll('.bs-ghost-clutch svg.cc-chain g').length, 0);
     assert.equal(ctl.chainArrows.length, 0);
     f.api.showClutchGhosts(ctl, []);
     assert.equal(ctl.chainArrows.length, 0, 'clearing the ghosts clears the arrows');
@@ -420,7 +414,7 @@ test('a hand takes time by distance: far from the piece or far across the board 
     assert.ok(far.toPiece > near.toPiece && far.withPiece > near.withPiece, 'further takes longer');
     assert.ok(t(0, 70).toPiece === 0, 'a hand already on the piece does not travel to it');
     assert.ok(t(500, 350, true).toPiece < far.toPiece && t(500, 350, true).withPiece < far.withPiece, 'in a hurry it is quicker');
-    assert.ok(far.toPiece > 300 && far.toPiece < 900 && far.withPiece > 250 && far.withPiece < 800, 'about as long as a person: tenths of a second, not seconds');
+    assert.ok(far.toPiece > 120 && far.toPiece < 400 && far.withPiece > 100 && far.withPiece < 350, 'quick, as a person is: a fraction of a second');
     // the whole move
     const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     const board = f.board(fen);
@@ -449,11 +443,10 @@ test('a branch starts from what they may play: their ghost, then our answer, the
     const by = (d, u) => ghosts.find(g => g.dataset.depth === String(d) && g.dataset.uci === u);
     assert.ok(by(0, 'e7e5') && by(0, 'c7c5'), 'both of their possible moves are shown');
     assert.equal(ghosts.filter(g => g.dataset.uci === 'g1f3').length, 1, 'the shared answer Nf3 is one ghost');
-    assert.ok(by(2, 'b8c6') && by(2, 'd7d6'), 'and what follows');
     assert.equal(by(1, 'g1f3').dataset.premove, '1', 'the answer of the premove branch is the premove');
     assert.equal(by(1, 'g1f3').style.getPropertyValue('--reply-color'), '#ff4d4d', 'a shared ghost takes the premove colour');
-    assert.equal(+by(0, 'e7e5').style.opacity, 2 * +by(1, 'g1f3').style.opacity, 'their move is the strongest');
-    assert.equal(ctl.chainArrows.length, 4, 'e5>Nf3, Nf3>Nc6, c5>Nf3, Nf3>d6');
+    assert.ok(Math.abs(+by(0, 'e7e5').style.opacity - 4 * +by(1, 'g1f3').style.opacity) < 1e-9, 'their move is the strongest, our answer a quarter of it');
+    assert.equal(ctl.chainArrows.length, 2, 'e5>Nf3 and c5>Nf3');
   } finally { f.close(); }
 });
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.27.0
+// @version      6.28.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4332,14 +4332,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // How long a hand takes to cover a distance (Fitts's law: a short start, then more the further it goes relative
   // to the size of the target). times: the leg to the piece and the leg with it. 'fast' is the hurry of a low clock.
   function mouseTimes(toPiece, withPiece, size, fast = false, random = Math.random) {
-    const leg = d => (d > 1 ? 110 + 125 * Math.log2(d / size + 1) : 0) * (0.85 + 0.3 * random()) * (fast ? 0.6 : 1);
-    return { toPiece: Math.round(leg(toPiece)), withPiece: Math.round(leg(withPiece) * 0.85 + (withPiece > 1 ? 40 : 0)) };
+    const leg = d => (d > 1 ? 35 + 60 * Math.log2(d / size + 1) : 0) * (0.85 + 0.3 * random()) * (fast ? 0.6 : 1);
+    return { toPiece: Math.round(leg(toPiece)), withPiece: Math.round(leg(withPiece) * 0.85 + (withPiece > 1 ? 20 : 0)) };
   }
 
-  // Moves a piece the way a hand does, taking the time it takes: the pointer runs from where it is to the piece, a
-  // beat, down, across to the square on a slightly bent path that starts and ends slowly, up. Returns how long it will
-  // take in ms. Where the pointer was and where the piece goes both matter, so a capture on the far side of the board
-  // takes longer than one beside the hand.
+  // Makes a move after the time a hand would have taken for it: the pointer's trip from where it is to the piece, a beat,
+  // and the trip with the piece to the square. Nothing is shown of the trip; the time is simply waited out and then the
+  // move is made at once. Where the pointer was and where the piece goes both matter, so a capture on the far side of
+  // the board takes longer than one beside the hand. Returns how long it will take in ms.
   function humanDrag(board, from, to, fast = false, random = Math.random) {
     const rect = board.getBoundingClientRect(), size = rect.width / 8, flipped = board.classList.contains('flipped');
     const at = square => {
@@ -4349,30 +4349,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const a = at(from), b = at(to);
     const start = hand.x === null ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : { x: hand.x, y: hand.y };
     const times = mouseTimes(Math.hypot(a.x - start.x, a.y - start.y), Math.hypot(b.x - a.x, b.y - a.y), size, fast, random);
-    const beat = Math.round((fast ? 25 : 45) + 40 * random());
-    const total = times.toPiece + beat + times.withPiece + 30;
-    const fire = (type, p, buttons) => {
-      const el = document.elementFromPoint(p.x, p.y) || board;
-      const init = { bubbles: true, cancelable: true, composed: true, clientX: p.x, clientY: p.y, button: 0, buttons, pointerId: 1, pointerType: 'mouse', isPrimary: true, view: window };
-      el.dispatchEvent(new PointerEvent(type, init));
-      el.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), init));
-    };
-    const ease = t => t * t * t * (10 - 15 * t + 6 * t * t);
-    const bend = (random() - .5) * 0.16;
-    // points along a leg, a few every frame
-    const path = (p, q, ms, buttons, t0) => {
-      const steps = Math.max(1, Math.round(ms / 14));
-      for (let i = 1; i <= steps; i++) {
-        const t = i / steps, e = ease(t), k = Math.sin(Math.PI * t) * bend;
-        const dx = q.x - p.x, dy = q.y - p.y;
-        const point = { x: p.x + dx * e - dy * k, y: p.y + dy * e + dx * k };
-        setTimeout(() => { fire('pointermove', point, buttons); hand.x = point.x; hand.y = point.y; }, t0 + ms * t);
-      }
-    };
-    path(start, a, times.toPiece, 0, 0);
-    setTimeout(() => fire('pointerdown', a, 1), times.toPiece + beat);
-    path(a, b, times.withPiece, 1, times.toPiece + beat);
-    setTimeout(() => { fire('pointerup', b, 0); hand.x = b.x; hand.y = b.y; }, total - 30);
+    const total = times.toPiece + Math.round((fast ? 15 : 30) + 25 * random()) + times.withPiece;
+    const fen = blunderFEN(board);
+    setTimeout(() => {
+      // only if the board is still as it was when the move was decided
+      if (fen && blunderFEN(board) !== fen) return;
+      dragPiece(board, from, to, true);
+      hand.x = b.x; hand.y = b.y;
+    }, total);
     return total;
   }
 
@@ -4410,9 +4394,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     } catch (e) { return null; }
   }
 
-  // How many moves a Clutch branch shows: three, one ghost after another. Displayed only; the line itself is
+  // How many moves a Clutch branch shows: two, a ghost and the one after it. Displayed only; the line itself is
   // whatever the engine had already worked out.
-  const CLUTCH_DEPTH = 3;
+  const CLUTCH_DEPTH = 2;
   function clutchChain(fen, line) {
     const out = [];
     try {
@@ -4427,13 +4411,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return out;
   }
 
-  // How strong each step of a branch is drawn: the first at full, every next one half of the one before. A floor keeps the
-  // third visible however faint the Ghosts opacity setting is.
-  const clutchStrength = k => Math.max(Math.max(settings.ghosts.opacity + 0.1, 0.8) * Math.pow(0.5, k), 0.2);
+  // How strong each step of a branch is drawn: the first at full, the next a quarter of it. A floor keeps it
+  // visible however faint the Ghosts opacity setting is.
+  const clutchStrength = k => Math.max(Math.max(settings.ghosts.opacity + 0.1, 0.8) * Math.pow(0.25, k), 0.2);
 
   // Items are branches: { fen (the position), line (moves from it: their possible move, our answer, theirs after that),
-  // color, premoveAt (the step that is the premove) }. Each step is a ghost of its piece, the ones after the first half
-  // as strong as the one before, and an arrow runs from every ghost to the next. Several branches may share a ghost.
+  // color, premoveAt (the step that is the premove) }. Each step is a ghost of its piece, the one after the first a
+  // quarter as strong as it, and an arrow runs from the ghost to the next. Several branches may share a ghost.
   function showClutchGhosts(ctl, items) {
     const board = ctl.board;
     let layer = ctl.clutchGhostLayer;
@@ -4656,7 +4640,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return out;
   }
 
-  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, onRound = () => {}, stop, replies = 6, rounds = 6 }) {
+  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, onRound = () => {}, onOptions = () => {}, stop, replies = 6, rounds = 6 }) {
     // A person's answer is looked at twice: a quick look first, so the ghosts and the premove are there while the
     // opponent is still thinking, then a longer one that may change it.
     if (answer) rounds = 2;
@@ -4675,6 +4659,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       options.push({ uci, fen: game.fen(), capture: true, to: move.to });
       game.undo();
     }
+    onOptions(options.length);
     const entries = new Map();
     const topReply = options.length ? options[0].uci : null;
     // Replies that lead into the opening book need no search: the book move is the answer.
@@ -5017,6 +5002,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Show what is ready. The premove (red) is only a move Clutch is certain of, named once, and taken
     // back rather than swapped for another if it stops being certain; the other answers it weighs are blue.
     const refresh = entry => {
+      // The answers to the three likeliest replies are enough to name a premove; waiting for all of them was why they were rare.
+      if (!book.complete && book.total && book.entries.size >= Math.min(3, book.total)) book.complete = true;
       const certain = clutchPremove(book.entries, book.topReply, book.complete);
       // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
       const sticky = book.premove && (book.premove.wiggle || book.premove.gamble);
@@ -5054,6 +5041,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       analyse: (f, o) => clutchEngine.analyse(f, o),
       answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode, expected: clutch.lastValue === undefined ? null : clutch.lastValue, clock }, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
+      onOptions: n => { book.total = n; },
       onRound: () => {
         book.complete = true; refresh();
         if (!book.wiggleRun && s.mode !== 'lose') {

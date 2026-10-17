@@ -218,7 +218,7 @@ test('premoves are only used where chess.com has them, and cancelling goes throu
 test('the settings are the trigger time and the Elo (with Auto); the rest is worked out from the position and the clock', () => {
   const f = setup();
   try {
-    assert.equal(Object.keys(f.api.settings.clutch).sort().join(), 'auto,elo,on,time');
+    assert.equal(Object.keys(f.api.settings.clutch).sort().join(), 'auto,draw,elo,on,time,win');
     assert.equal(f.api.settings.clutch.auto, true, 'Auto is the default');
     const p = f.api.clutchParams;
     const base = { on: true, time: 10 };
@@ -463,16 +463,31 @@ test('a won position is converted: no habit of checks, and a position seen befor
   } finally { kill(); f.close(); }
 });
 
-test('a game is played to win or to draw: the same won position is mated in one mode and stalemated in the other', { timeout: 120000 }, async () => {
+test('win, draw or lose: a plain mate is never thrown away in a draw game, a lose game declines it', { timeout: 120000 }, async () => {
   const f = setup(); const { engine, kill } = realEngine(f);
   try {
     const fen = '7k/8/5K2/8/8/8/8/6Q1 w - - 0 1';
     const ask = mode => f.api.humanAnalyse(fen, { ms: 4000, mode }, 1200, (x, y) => engine.analyse(x, y));
     assert.equal((await ask('win')).pv[0], 'g1g7', 'to win: the mate');
-    const g = new Chess(fen); const drawn = await ask('draw');
-    g.move({ from: drawn.pv[0].slice(0, 2), to: drawn.pv[0].slice(2, 4) });
-    assert.ok(g.isDraw() || g.isStalemate(), 'to draw: the stalemate, not the mate');
+    assert.equal((await ask('draw')).pv[0], 'g1g7', 'to draw: a mate in one is still plainly there, stalemating it would be absurd');
+    const lost = await ask('lose');
+    const g = new Chess(fen); g.move({ from: lost.pv[0].slice(0, 2), to: lost.pv[0].slice(2, 4) });
+    assert.ok(!g.isCheckmate() && !g.isDraw() && !g.isStalemate(), 'to lose: neither the mate nor a draw');
   } finally { kill(); f.close(); }
+});
+
+test('the result of a game is rolled from the odds, lose being what win and draw leave', () => {
+  const f = setup();
+  try {
+    const roll = (base, r) => f.api.clutchRollMode(base, () => r);
+    const odds = { win: 60, draw: 30 };
+    assert.equal(roll(odds, 0.0), 'win'); assert.equal(roll(odds, 0.59), 'win');
+    assert.equal(roll(odds, 0.6), 'draw'); assert.equal(roll(odds, 0.89), 'draw');
+    assert.equal(roll(odds, 0.9), 'lose'); assert.equal(roll(odds, 0.999), 'lose');
+    assert.equal(roll({ win: 100, draw: 0 }, 0.999), 'win');
+    assert.equal(roll({ win: 0, draw: 0 }, 0.0), 'lose');
+    assert.equal(f.api.settings.clutch.win, 60); assert.equal(f.api.settings.clutch.draw, 40);
+  } finally { f.close(); }
 });
 
 test('the rating does not depend on how many pieces are left: the same misjudgement of quiet positions', () => {

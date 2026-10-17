@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.12.0
+// @version      6.13.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -81,7 +81,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Clutch: from `time` seconds on your clock down, the engine takes over, playing at `elo`
     // (with `auto` the opponent's rating). Everything else (what counts as winning, how deep to look,
     // how much clock a deep search may cost) it works out itself.
-    clutch: { on: false, time: 10, elo: 1500, auto: true },
+    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40 },
     global: { on: true }
   };
 
@@ -1862,6 +1862,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .rng { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 4px 0; font-size: 12px; }
     .rng input { grid-column: 1 / -1; width: 100%; accent-color: #f7c045; margin: 0; }
     .rng b { font-weight: 600; color: #f7c045; }
+    .odds { padding: 6px 0 2px; font-size: 12px; }
+    .odds-top { display: flex; justify-content: space-between; }
+    .odds-top b { font-weight: 600; color: #f7c045; }
+    .odds-bar { position: relative; height: 10px; margin: 9px 7px 5px; border-radius: 5px; touch-action: none; --a: 60%; --b: 100%; background: linear-gradient(90deg, #96bc4b 0 var(--a), #8a8a8a var(--a) var(--b), #fa412d var(--b) 100%); }
+    .odds-bar .seg { display: none; }
+    .odds-bar .ball { position: absolute; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
+    .odds-bar .ball[data-ball="0"] { left: var(--a); }
+    .odds-bar .ball[data-ball="1"] { left: var(--b); }
+    .odds-key { display: flex; justify-content: space-between; font-size: 10px; opacity: .8; }
+    .odds-key .w::before, .odds-key .d::before, .odds-key .l::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 4px; border-radius: 50%; background: #96bc4b; }
+    .odds-key .d::before { background: #8a8a8a; } .odds-key .l::before { background: #fa412d; }
     .clutch-status { padding: 4px 0 2px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
     .status { padding: 8px 12px 4px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
     .status.paused { color: #f7c045; }
@@ -2150,6 +2161,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0.1" max="60" step="0.1"></label>
           <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="100" max="3500" step="50" aria-label="Clutch Elo">
             <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo in the box"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
+          <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
+            <div class="odds-top"><span>Result</span><b data-out="odds"></b></div>
+            <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
+            <div class="odds-key"><span class="w">Win</span><span class="d">Draw</span><span class="l">Lose</span></div>
+          </div>
           <div class="clutch-status"></div>
         </div>
       </div>
@@ -2188,6 +2204,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (document.activeElement !== input && shadow.activeElement !== input) input.value = String(c[key]);
       shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
     });
+    const bar = shadow.querySelector('.odds-bar');
+    if (bar) {
+      const win = Math.max(0, Math.min(100, c.win)), draw = Math.max(0, Math.min(100 - win, c.draw));
+      bar.style.setProperty('--a', win + '%'); bar.style.setProperty('--b', (win + draw) + '%');
+      shadow.querySelector('.odds-top b').textContent = `Win ${win}  Draw ${draw}  Lose ${100 - win - draw}`;
+    }
     const eloInput = shadow.querySelector('.elo-input');
     if (eloInput && shadow.activeElement !== eloInput) eloInput.value = String(c.elo);
     const cs = shadow.querySelector('.clutch-status');
@@ -2233,6 +2255,23 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // The field is its own value (what plays with Auto off, or when no rating can be read).
   shadow.querySelector('.elo-input').addEventListener('input', e => {
     setSetting('clutch', 'elo', Math.max(100, Math.min(3500, Math.round(+e.target.value) || 100)));
+  });
+  // The two balls on the bar split it into win | draw | lose; dragging one moves a boundary.
+  shadow.querySelectorAll('.odds-bar .ball').forEach(ball => {
+    ball.addEventListener('pointerdown', e => {
+      e.preventDefault(); e.stopPropagation();
+      try { ball.setPointerCapture(e.pointerId); } catch (err) { /* no capture: the drag still follows the ball */ }
+      const bar = ball.parentElement, which = +ball.dataset.ball;
+      const move = ev => {
+        const r = bar.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(100, Math.round((ev.clientX - r.left) / r.width * 100)));
+        const c = rawSettings.clutch, end = Math.min(100, c.win + c.draw);
+        if (which === 0) { const win = Math.min(pct, end); setSetting('clutch', 'win', win); setSetting('clutch', 'draw', end - win); }
+        else { const stop = Math.max(pct, c.win); setSetting('clutch', 'draw', stop - c.win); }
+      };
+      const done = () => { ball.removeEventListener('pointermove', move); ball.removeEventListener('pointerup', done); ball.removeEventListener('pointercancel', done); };
+      ball.addEventListener('pointermove', move); ball.addEventListener('pointerup', done); ball.addEventListener('pointercancel', done);
+    });
   });
   listeners.add(renderPanel);
   renderPanel();
@@ -3744,6 +3783,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return t;
   }
 
+  // Playing to lose, believably: every move gives up a little (never more than about three pawns at
+  // once, so it reads as a bad day, not a throw), never a draw, the worst of those moves first.
+  function loseTaste(v, top, after) {
+    let t = -2 * v - (v < top - 300 ? 5000 : 0);
+    if (after) { try { const g = new BoardStudioRules.Chess(after.fen); if (g.isDraw() || g.isStalemate()) t -= 800; } catch (e) {} }
+    return t;
+  }
+
+  // The result a game is played for: win, draw or lose, by the odds set in the panel (lose is the rest).
+  function clutchRollMode(base, random = Math.random) {
+    const win = Math.max(0, Math.min(100, +base.win)), draw = Math.max(0, Math.min(100 - win, +base.draw));
+    const r = random() * 100;
+    return r < win ? 'win' : r < win + draw ? 'draw' : 'lose';
+  }
+
   async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win' } = {}, elo, analyse) {
     const p = humanProfile(elo, fen);
     const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
@@ -3757,7 +3811,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const reach = countPieces(fen) <= 6 ? Math.max(p.mateReach, technique) : p.mateReach;
     const mateLook = await analyse(fen, { mate: reach, depth: 2 * reach + 2, ms: reach > 4 ? 1500 : 220, multipv: 1, fresh: true });
     if (!mateLook) return null;
-    if (mode === 'win' && mateLook.mate > 0 && mateLook.mate <= reach) return { ...mateLook, human: true, lines: [mateLook] };
+    // (playing for the draw, a mate that is plainly there is still played: stalemating a won ending would be
+    // absurd. Only a deeper one, in a fuller position, may be let go. Playing to lose, no mate is taken.)
+    const plain = mode === 'win' ? reach : mode === 'draw' ? (countPieces(fen) <= 6 ? reach : Math.min(3, reach)) : 0;
+    if (mateLook.mate > 0 && mateLook.mate <= plain) return { ...mateLook, human: true, lines: [mateLook] };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
     // A player a queen up looks at every move, not only the checks and captures that catch the eye.
     const ahead = (() => {
@@ -3800,7 +3857,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Clearly winning: convert. No taste for checks, a position seen before is avoided (that is how a won
     // game gets drawn), and when the fifty moves loom, a capture or a pawn move is progress.
     const halfmove = +String(fen).split(' ')[4] || 0;
-    const winning = Math.max(...rated.map(r => value(r.line))) >= 300 || (ahead >= 4 && Math.max(...rated.map(r => value(r.line))) >= 100);
+    const winning = mode !== 'lose' && Math.max(...rated.map(r => value(r.line))) >= 300 || (ahead >= 4 && Math.max(...rated.map(r => value(r.line))) >= 100);
     // Every good move it noticed repeats a position and the game is won: look at the rest of the moves too,
     // since going round in circles is how a won game is drawn.
     const topValue = Math.max(...rated.map(r => value(r.line)));
@@ -3828,12 +3885,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       r.score = value(r.line) + humanTaste(r.c, p, fen, { winning }) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (winning && countPieces(fen) <= 6 ? 0.1 : 1))
         - (again && mode === 'win' ? (winning ? 300 : 50) * again : 0)
         + (mode === 'draw' ? drawTaste(r, value(r.line), after, again, elo) : 0)
+        + (mode === 'lose' ? loseTaste(value(r.line), Math.max(...rated.map(x => value(x.line))), after) : 0)
         + (mode === 'win' && winning && countPieces(fen) <= 6 && after ? mateProgress(fen, after.fen, fen.split(' ')[1]) : 0)
         + (winning && halfmove >= 16 && (r.c.capture || r.c.move.piece === 'p') ? 80 : 0);
     }
     rated.sort((a, b) => b.score - a.score);
     // Never walk into a mate: the few best moves are each checked for a mate by the other side.
-    for (const r of rated.slice(0, 5)) {
+    for (const r of mode === 'lose' ? [] : rated.slice(0, 5)) {
       const after = stepFor(fen, r.c.uci);
       if (!after) continue;
       const reply = await analyse(after.fen, { mate: 3, depth: 8, ms: 150, multipv: 1, fresh: true });
@@ -3849,7 +3907,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // outright: the natural-looking move has to be a fair one.
     // (when everything wins anyway, the free piece still beats a slightly faster route)
     const freeTake = rated.find(r => r.c.free && (value(r.line) >= top - 150 || (value(r.line) >= 500 && top >= 500)));
-    if (freeTake) best = freeTake;
+    if (freeTake && mode !== 'lose') best = freeTake;
     else if (!winning && mode === 'win' && rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
       const fair = rated.filter(r => value(r.line) >= top - p.maxLoss && !(r.c.capture && r.c.net < 0));
       if (fair.length) best = fair.slice().sort((a, b) => b.c.salience - a.c.salience)[0];
@@ -4328,8 +4386,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     s = clutchStrengthen(clutchParams(base, clock, countPieces(fen)), elo);
     // Each game is played to win (six in ten) or, in the rest, to draw whatever the position is.
-    if (!clutch.mode) clutch.mode = Math.random() < 0.6 ? 'win' : 'draw';
+    const odds = base.win + '/' + base.draw;
+    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = clutchRollMode(base); clutch.odds = odds; }
     s.mode = clutch.mode;
+    if (s.mode !== 'win') s.human = true; // a game not played to win goes through the human model at any rating
     s.seen = after => (clutch.seen && clutch.seen[String(after).split(' ').slice(0, 3).join(' ')]) || 0;
     clutch.acting = clutchMayPlay();
     const oppClock = readClock('opp');

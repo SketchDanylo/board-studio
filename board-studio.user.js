@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.14.1
+// @version      6.15.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3570,7 +3570,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function clutchThink(entry, clock, s) {
     if (!entry || entry.book || entry.plan || !entry.crit || clock < s.spare) return 0;
     if (entry.depth >= s.depth + 2 * entry.crit) return 0;
-    return Math.round(Math.min(clock * 1000 * 0.06 * entry.crit, clock * 1000 * 0.2, 3000));
+    return Math.round(Math.min(clock * 1000 * 0.025 * entry.crit, clock * 1000 * 0.06, 1500));
   }
 
   // ---------- Clutch strength ----------
@@ -4159,6 +4159,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }, true);
 
   // Look at a position for our move: a quick look, then a deeper one when winning and the clock allows.
+  // What one move may cost: a few per cent of the clock, so that thirty moves still fit (a game on a
+  // minute is lost by spending 1.5 s a move at 40 s left), never more than 0.7 s, never less than a flash.
+  function clutchMoveMs(clock) {
+    return Math.max(45, Math.min(700, clock * 1000 * (clock < 3 ? 0.04 : clock < 10 ? 0.03 : 0.025)));
+  }
+
   async function clutchSearch(fen, clock, oppClock, s) {
     const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
@@ -4166,7 +4172,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
     if (s.human) {
       // Never more than a small share of what is left on the clock (and a flash when it is nearly gone).
-      const budgetMs = Math.max(45, Math.min(1800, clock * 1000 * (clock < 3 ? 0.05 : 0.08)));
+      const budgetMs = clutchMoveMs(clock);
       // How well they just played: our own estimate of the position last time against a quick look now.
       let pressure = 0;
       if (pieces <= 10 && clock >= 3 && clutch.lastValue !== null && clutch.lastValue !== undefined) {
@@ -4180,7 +4186,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: s.multipv || 4 });
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0 && !(s.strength && s.strength.limited)) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
-      result = (await clutchEngine.analyse(fen, { depth: budget.maxDepth, ms: budget.stage2Ms })) || result;
+      result = (await clutchEngine.analyse(fen, { depth: budget.maxDepth, ms: Math.min(budget.stage2Ms, clock * 1000 * 0.06) })) || result;
     } else if (result && !(result.mate > 0) && budget.canDeepen) {
       // Not winning, but a move that calls for care gets a longer look.
       const decision = clutchDecide(fen, result, s);
@@ -4374,6 +4380,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // ever named once the first full round of replies has been worked out. Null when there is none.
   function clutchPremove(entries, topReply, complete) {
     const list = [...entries.values()];
+    // Clearly lost whatever they play (a deep minus, or mated): nothing is risked, so the answer to their best reply is
+    // premoved at once, even before the other replies are worked out. Speed is the only chance left.
+    const lead = list.find(e => e.reply === topReply);
+    if (lead && !lead.forced && (lead.mate < 0 || (lead.cp !== undefined && lead.cp <= -500))) {
+      return { step: lead.step, fen: lead.fen, conditional: false, gamble: true, why: 'lost anyway: playing for their best reply' };
+    }
     if (!complete || !list.length) return null;
     const robust = robustMove(entries);
     const top = list.find(e => e.reply === topReply) || list[0];
@@ -4552,7 +4564,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const refresh = entry => {
       const certain = clutchPremove(book.entries, book.topReply, book.complete);
       // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
-      const now = book.premove && book.premove.wiggle ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (certain || book.wiggle || null);
+      const sticky = book.premove && (book.premove.wiggle || book.premove.gamble);
+      const now = sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (certain || book.wiggle || null);
       if (book.premove && (!now || now.step.uci !== book.premove.step.uci)) {
         if (book.premoveSet) cancelPremove(board);
         book.premove = null; book.premoveSet = false; book.spent = true;

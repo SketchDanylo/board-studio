@@ -201,6 +201,30 @@ test('a premove with room: a winning position gets one even when the answers dif
   } finally { kill(); f.close(); }
 });
 
+test('a move costs a few per cent of the clock, so a whole game fits', () => {
+  const f = setup();
+  try {
+    const ms = f.api.clutchMoveMs;
+    assert.ok(ms(40) <= 700 && ms(40) >= 600, 'a long clock still caps at 0.7 s');
+    assert.equal(ms(20), 500); assert.equal(ms(8), 240); assert.ok(ms(2) <= 80, 'nearly out: a flash'); assert.ok(ms(0.2) >= 45);
+    // thirty moves at the worst rate leave most of the clock
+    let clock = 40; for (let i = 0; i < 30; i++) clock -= ms(clock) / 1000;
+    assert.ok(clock > 12, 'thirty moves later ' + clock.toFixed(1) + ' s are left');
+  } finally { f.close(); }
+});
+
+test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
+  const f = setup();
+  try {
+    const step = uci => ({ uci, from: uci.slice(0, 2), to: uci.slice(2, 4) });
+    const lost = new Map([['a', { reply: 'e7e5', topReply: 'e7e5', step: step('g1f3'), fen: 'x', cp: -900 }], ['b', { reply: 'a7a6', topReply: 'e7e5', step: step('d2d4'), fen: 'y', cp: -800 }]]);
+    const p = f.api.clutchPremove(lost, 'e7e5', false);
+    assert.ok(p && p.gamble && p.step.uci === 'g1f3', 'a gamble on their best reply, before the other replies are worked out');
+    const fine = new Map([['a', { reply: 'e7e5', topReply: 'e7e5', step: step('g1f3'), fen: 'x', cp: 20 }], ['b', { reply: 'a7a6', topReply: 'e7e5', step: step('d2d4'), fen: 'y', cp: 30 }]]);
+    assert.equal(f.api.clutchPremove(fine, 'e7e5', true), null, 'a playable position does not gamble');
+  } finally { f.close(); }
+});
+
 test('the book gives up as soon as the position changes', { timeout: 60000 }, async () => {
   const f = setup(); const { engine, kill } = realEngine(f);
   try {

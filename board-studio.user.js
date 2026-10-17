@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.37.0
+// @version      6.37.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4789,7 +4789,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // quick look now. (At any number of pieces: everything is played around the eval.)
       let evalNow = null;
       if (clock >= 3) {
-        const quick = await clutchEngine.analyse(fen, { depth: 8, ms: 80, multipv: 4, fresh: true, onInfo: lines => onIdea(lines.filter(l => l && l.pv && l.pv[0]).map(l => ({ uci: l.pv[0], pv: l.pv, cp: l.cp }))) });
+        const quick = await clutchEngine.analyse(fen, { depth: 8, ms: 80, multipv: 4, onInfo: lines => onIdea(lines.filter(l => l && l.pv && l.pv[0]).map(l => ({ uci: l.pv[0], pv: l.pv, cp: l.cp }))) });
         if (quick) evalNow = quick.mate !== undefined ? Math.sign(quick.mate) * 5000 : quick.cp;
       }
       const expected = clutch.lastValue === undefined ? null : clutch.lastValue;

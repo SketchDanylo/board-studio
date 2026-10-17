@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.10.0
+// @version      6.11.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3965,6 +3965,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       entry.el.style.setProperty('--reply-color', item.color);
       entry.el.dataset.premove = item.color === CLUTCH_RED ? '1' : '';
+      entry.el.dataset.gamble = item.gamble ? '1' : '';
+      entry.el.title = item.color === CLUTCH_RED ? (item.gamble ? 'Premove if they take' : 'Premove: certain') : 'Considering';
       entry.el.classList.remove('cc-ghost-leave');
       Object.assign(entry.el.style, spot(item.uci.slice(2, 4)), { opacity: String(settings.ghosts.opacity + 0.1) });
     }
@@ -4048,13 +4050,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // analyse(fen, options) is the engine call. onEntry(key, entry) hears every new or improved
   // answer; stop() says whether to give up (the position changed). Resolves with how many answers
   // the book ended with.
-  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, stop, replies = 6, rounds = 6 }) {
+  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, onRound = () => {}, stop, replies = 6, rounds = 6 }) {
     if (answer) rounds = 1; // a person's answer is decided once
     const first = await analyse(fen, { depth: s.depth, ms: 250, multipv: Math.max(replies, s.multipv || 0) });
     if (stop() || !first) return 0;
     const lines = (first.lines && first.lines.length ? first.lines : [first]).filter(l => l && l.pv && l.pv.length);
     const options = lines.map(l => stepFor(fen, l.pv[0])).filter(Boolean)
-      .map(step => ({ uci: step.uci, fen: step.fen }));
+      .map(step => ({ uci: step.uci, fen: step.fen, capture: step.capture, to: step.to }));
     // Every capture is worth being ready for even when the engine ranks it low (trades).
     const game = new BoardStudioRules.Chess(fen);
     for (const move of game.moves({ verbose: true })) {
@@ -4062,7 +4064,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const uci = move.from + move.to + (move.promotion || '');
       if (!move.captured || options.some(o => o.uci === uci)) continue;
       game.move(move);
-      options.push({ uci, fen: game.fen() });
+      options.push({ uci, fen: game.fen(), capture: true, to: move.to });
       game.undo();
     }
     const entries = new Map();
@@ -4073,7 +4075,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!hit) continue;
       option.book = true;
       const key = repKey(option.fen);
-      const entry = { plan: null, step: hit.step, note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, book: true, fen: option.fen, topReply };
+      const entry = { plan: null, step: hit.step, note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, replyCapture: option.capture, replyTo: option.to, book: true, fen: option.fen, topReply };
       entries.set(key, entry);
       onEntry(key, entry);
     }
@@ -4093,11 +4095,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!decision) continue;
         const key = repKey(option.fen), old = entries.get(key);
         if (old && old.depth > result.depth) continue;
-        const entry = { ...decision, fen: option.fen, topReply, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
+        const entry = { ...decision, fen: option.fen, topReply, replyCapture: option.capture, replyTo: option.to, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
         if (entry.forced) entry.crit = 0;
         entries.set(key, entry);
         onEntry(key, entry, old);
       }
+      onRound(round);
     }
     return entries.size;
   }
@@ -4162,6 +4165,23 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       multipv: strength.limited ? 6 : 4,
       human: elo < HUMAN_BELOW
     };
+  }
+
+  // A premove is a move Clutch is certain to play once they move: the same answer to every reply it has
+  // prepared (when they have only one move, that is trivially so), or a trade it is counting on: they
+  // are about to take on a square and every taking is answered by taking back there. A premove is only
+  // ever named once the first full round of replies has been worked out. Null when there is none.
+  function clutchPremove(entries, topReply, complete) {
+    const list = [...entries.values()];
+    if (!complete || !list.length) return null;
+    const robust = robustMove(entries);
+    const top = list.find(e => e.reply === topReply) || list[0];
+    if (robust) return { step: robust, fen: top.fen, conditional: false, why: list.length === 1 ? 'their only move' : 'the same answer to every reply' };
+    if (top.replyCapture) {
+      const takes = list.filter(e => e.replyCapture && e.replyTo === top.replyTo);
+      if (takes.every(e => e.step.capture && e.step.to === top.replyTo)) return { step: top.step, fen: top.fen, conditional: true, why: `if they take on ${top.replyTo}` };
+    }
+    return null;
   }
 
   function clutchTick() {
@@ -4296,10 +4316,32 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // 3. Their move: build the book of answers on their time.
     if (clutch.book && clutch.book.key === key) return;
     clutchStopBook();
-    const book = { key, entries: new Map(), token: { stop: false }, premoveUci: null };
+    const book = { key, entries: new Map(), token: { stop: false }, premove: null, premoveSet: false, spent: false, complete: false, topReply: null };
     const forced = new BoardStudioRules.Chess(fen).moves().length === 1;
     clutch.book = book;
     const started = Date.now();
+    // Show what is ready. The premove (red) is only a move Clutch is certain of, named once, and taken
+    // back rather than swapped for another if it stops being certain; the other answers it weighs are blue.
+    const refresh = entry => {
+      const now = clutchPremove(book.entries, book.topReply, book.complete);
+      if (book.premove && (!now || now.step.uci !== book.premove.step.uci)) {
+        if (book.premoveSet) cancelPremove(board);
+        book.premove = null; book.premoveSet = false; book.spent = true;
+      }
+      if (!book.premove && now && !book.spent) book.premove = now;
+      const answers = clutchAnswers(book.entries);
+      const prem = book.premove;
+      const items = [];
+      if (prem) items.push({ fen: prem.fen, uci: prem.step.uci, color: CLUTCH_RED, gamble: prem.conditional });
+      answers.filter(x => !prem || x.step.uci !== prem.step.uci).slice(0, 3).forEach(x => items.push({ fen: x.fen, uci: x.step.uci, color: CLUTCH_BLUE }));
+      showClutchGhosts(ctl, items.filter(i => i.fen));
+      const native = premoveNative(board);
+      const depth = entry ? entry.depth : [...book.entries.values()].reduce((d, e) => Math.max(d, e.depth), 0);
+      setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${depth}. Premove: ${prem ? `${prem.step.from}-${prem.step.to} (${prem.why})` : book.complete ? 'none, the replies need different answers' : 'working it out'}${native ? '' : '. No premoves in this game: answers are held and played the instant they move'}`);
+      // Where chess.com has premoves, a certain one is set for real (a trade is not: it must not
+      // run if they do not take).
+      if (native && mayPlay && prem && !prem.conditional && !book.premoveSet) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
+    };
     const stillTheirMove = () => {
       if (book.token.stop) return false;
       let now = null;
@@ -4310,32 +4352,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       fen, s, clock, stop: () => !stillTheirMove() || Date.now() - started > 45000,
       analyse: (f, o) => clutchEngine.analyse(f, o),
       answer: s.human ? (f, o) => humanAnalyse(f, o, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
-      onEntry: (k, entry) => {
-        book.entries.set(k, entry);
-        // Show what is ready, like a premove would be shown: the answer covering most replies first.
-        const answers = clutchAnswers(book.entries);
-        clutchShow(ctl, answers.slice(0, 3).map((answer, i) => ({ id: 'cl:' + answer.step.uci, uci: answer.step.uci, color: ['#4cc2ff', '#2f8fbf', '#256a8c'][i] })));
-        // red: the answer it will premove (hold and play the moment they move); blue: the others it is weighing
-        const topEntry = [...book.entries.values()].find(e => e.reply === entry.topReply);
-        const premoveUci = topEntry ? topEntry.step.uci : answers[0].step.uci;
-        const ordered = [...answers.filter(a => a.step.uci === premoveUci), ...answers.filter(a => a.step.uci !== premoveUci)];
-        showClutchGhosts(ctl, ordered.slice(0, 4).filter(a => a.fen).map(a => ({ fen: a.fen, uci: a.step.uci, color: a.step.uci === premoveUci ? CLUTCH_RED : CLUTCH_BLUE })));
-        const native = premoveNative(board);
-        setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${entry.depth}: ${answers.map(x => `${x.step.from}-${x.step.to} x${x.replies.length}`).join(', ')}${native ? '' : ' (no premoves in this game, held and played the instant they move)'}`);
-        if (!native || !mayPlay) return;
-        // Where chess.com has premoves: one answer that fits every reply is set for real, and taken
-        // back (cancelled) the moment the replies need different answers.
-        const robust = robustMove(book.entries);
-        if (robust && book.premoveUci !== robust.uci) {
-          if (book.premoveUci) cancelPremove(board);
-          book.premoveUci = robust.uci;
-          act(robust, true, forced ? 'their only move' : 'the same answer to every reply', false);
-        } else if (!robust && book.premoveUci) {
-          cancelPremove(board);
-          book.premoveUci = null;
-          setClutch('Clutch: replies need different answers, premove cancelled, waiting for their move');
-        }
-      }
+      onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
+      onRound: () => { book.complete = true; refresh(); }
     }).then(count => {
       if (clutch.book === book && book.entries.size === 0 && stillTheirMove()) setClutch('Clutch: no answers prepared');
     });

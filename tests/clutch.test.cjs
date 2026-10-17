@@ -485,3 +485,33 @@ test('Clutch ghosts: tied to their move, the premove one marked, a colour change
     assert.equal(ctl.clutchArrows === undefined || ctl.clutchArrows.length === 0, true, 'Clutch draws no arrows');
   } finally { f.close(); }
 });
+
+test('a premove is only a move Clutch is certain of, or a trade it is counting on', () => {
+  const f = setup();
+  try {
+    const mk = (reply, uci, extra = {}) => [reply, { reply, fen: 'fen-' + reply, step: { uci, from: uci.slice(0, 2), to: uci.slice(2, 4), capture: false, ...(extra.step || {}) }, replyCapture: false, replyTo: reply.slice(2, 4), ...extra, ...(extra.step ? { step: { uci, from: uci.slice(0, 2), to: uci.slice(2, 4), capture: false, ...extra.step } } : {}) }];
+    const P = f.api.clutchPremove;
+    // not before the first full round
+    assert.equal(P(new Map([mk('e7e5', 'g1f3')]), 'e7e5', false), null);
+    // the same answer to every reply: certain
+    const same = P(new Map([mk('e7e5', 'g1f3'), mk('c7c5', 'g1f3'), mk('e7e6', 'g1f3')]), 'e7e5', true);
+    assert.equal(same.step.uci, 'g1f3'); assert.equal(same.conditional, false);
+    // their only move: certain
+    assert.equal(P(new Map([mk('g8f6', 'd1d2')]), 'g8f6', true).why, 'their only move');
+    // different answers and no trade: no premove at all
+    assert.equal(P(new Map([mk('e7e5', 'g1f3'), mk('c7c5', 'd2d4')]), 'e7e5', true), null);
+    // a trade: they take on d5 (with whatever), and every taking is answered by taking back on d5
+    const trade = new Map([
+      mk('e6d5', 'c4d5', { replyCapture: true, replyTo: 'd5', step: { capture: true } }),
+      mk('c6d5', 'd1d5', { replyCapture: true, replyTo: 'd5', step: { capture: true } }),
+      mk('g8f6', 'b1c3')
+    ]);
+    const gamble = P(trade, 'e6d5', true);
+    assert.equal(gamble.conditional, true); assert.equal(gamble.step.uci, 'c4d5'); assert.equal(gamble.why, 'if they take on d5');
+    // if one of the takings is not answered by taking back, it is not counted on
+    const broken = new Map([mk('e6d5', 'c4d5', { replyCapture: true, replyTo: 'd5', step: { capture: true } }), mk('c6d5', 'a2a3', { replyCapture: true, replyTo: 'd5' }), mk('g8f6', 'b1c3')]);
+    assert.equal(P(broken, 'e6d5', true), null);
+    // and the engine's top reply has to be the taking
+    assert.equal(P(trade, 'g8f6', true), null);
+  } finally { f.close(); }
+});

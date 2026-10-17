@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.20.0
+// @version      6.20.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -297,6 +297,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     [data-bs-blunder] { visibility: hidden !important; }
     .bs-blunder-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+    .bs-plan-float { position: fixed; z-index: 2147483000; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; --g: #96bc4b; background: linear-gradient(180deg, #a6cc5c, #7ea53a); box-shadow: 0 0 0 2px rgba(255,255,255,.2), 0 0 12px var(--g); animation: bs-plan-pulse 1.9s ease-in-out infinite; cursor: default; }
+    .bs-plan-float[hidden] { display: none; }
+    .bs-plan-float[data-kind="draw"] { --g: #c8c8c8; background: linear-gradient(180deg, #b4b4b4, #858585); }
+    .bs-plan-float[data-kind="lose"] { --g: #fa412d; background: linear-gradient(180deg, #ff7a66, #e4432f); }
+    .bs-plan-float svg { width: 18px; height: 18px; display: block; filter: drop-shadow(0 1px 1px rgba(0,0,0,.3)); }
+    .bs-plan-float.pop svg { animation: bs-plan-pop .45s cubic-bezier(.34, 1.56, .64, 1); }
+    @keyframes bs-plan-pop { from { transform: scale(.2) rotate(-25deg); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes bs-plan-pulse { 0%, 100% { box-shadow: 0 0 0 2px rgba(255,255,255,.2), 0 0 6px var(--g); } 50% { box-shadow: 0 0 0 2px rgba(255,255,255,.32), 0 0 16px 3px var(--g); } }
+    @media (prefers-reduced-motion: reduce) { .bs-plan-float, .bs-plan-float svg { animation: none !important; } }
     .bs-block-flash { position: absolute; width: 12.5%; height: 12.5%; z-index: 7; pointer-events: none; background: rgba(250, 65, 45, .6); border-radius: 4px; animation: bs-block-flash .55s ease-out forwards; }
     @keyframes bs-block-flash { 0% { opacity: 1; transform: scale(.82); } 35% { opacity: 1; transform: scale(1.04); } 100% { opacity: 0; transform: scale(1.12); } }
     .bs-blunder-cross {
@@ -3645,7 +3654,32 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   const CLUTCH_COLOR = '#4cc2ff';
   const clutchMayPlay = () => true;
   // The result Clutch rolled for this game (win, draw, lose), or null before it kicks in: the panel's bar glows in its colour.
-  const setClutchMode = (mode, way = null) => { if (clutchState.mode !== mode || clutchState.way !== way) { clutchState.mode = mode; clutchState.way = way; listeners.forEach(fn => fn()); } };
+  const setClutchMode = (mode, way = null) => { if (clutchState.mode !== mode || clutchState.way !== way) { clutchState.mode = mode; clutchState.way = way; listeners.forEach(fn => fn()); syncPlanBadge(); } };
+
+  // The same badge as in the panel, beside your own clock on the board (left of it), so the plan can be read at a glance.
+  // It lives in the page body and follows the clock's position, since chess.com redraws the clock itself.
+  const planFloat = { el: null };
+  function syncPlanBadge() {
+    const mode = clutchState.mode;
+    const clock = document.querySelector('#player-bottom .move-time-time, #player-bottom .clock-component, #player-bottom [class*="clock"]');
+    if (!mode || !clock || document.hidden) { if (planFloat.el) planFloat.el.hidden = true; return; }
+    let el = planFloat.el;
+    if (!el || !el.isConnected) {
+      el = planFloat.el = document.createElement('div');
+      el.className = 'bs-plan-float';
+      document.body.appendChild(el);
+    }
+    if (el.dataset.kind !== mode) {
+      el.dataset.kind = mode; el.innerHTML = PLAN_BADGES[mode];
+      el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+    }
+    el.title = mode === 'win' ? 'Clutch is playing to win' : mode === 'draw' ? 'Clutch is playing to draw' : clutchState.way === 'time' ? 'Clutch is playing to lose, on time if it can' : 'Clutch is playing to lose';
+    const r = clock.getBoundingClientRect();
+    el.style.left = Math.max(2, r.left - 36) + 'px';
+    el.style.top = (r.top + (r.height - 28) / 2) + 'px';
+    el.hidden = false;
+  }
+  setInterval(() => { if (clutchState.mode) syncPlanBadge(); }, 400);
   const setClutch = text => { if (clutchState.text !== text) { clutchState.text = text; listeners.forEach(fn => fn()); } };
 
   // "1:23", "0:09.8", "9.8" or "1:02:03" in seconds; null when it is not a time.

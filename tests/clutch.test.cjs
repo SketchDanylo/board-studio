@@ -271,6 +271,24 @@ test('the panel shows a crown, a half or a flag for the plan, each its own colou
   } finally { f.close(); }
 });
 
+test('the plan badge sits just left of your own clock on the board, in the colour of the plan, and goes with the game', () => {
+  const f = setup();
+  try {
+    const d = f.w.document;
+    d.body.insertAdjacentHTML('beforeend', '<div id="player-bottom"><div class="move-time-time"></div></div>');
+    d.querySelector('.move-time-time').getBoundingClientRect = () => ({ left: 541, top: 644, width: 135, height: 40, right: 676, bottom: 684 });
+    assert.equal(d.querySelector('.bs-plan-float'), null, 'nothing before Clutch kicks in');
+    f.api.setClutchMode('win');
+    const badge = d.querySelector('.bs-plan-float');
+    assert.ok(badge && !badge.hidden && badge.dataset.kind === 'win', 'a crown for a win');
+    assert.equal(badge.style.left, '505px', 'left of the clock'); assert.equal(badge.style.top, '650px', 'centred on it');
+    f.api.setClutchMode('lose', 'time');
+    assert.equal(badge.dataset.kind, 'lose'); assert.ok(/on time/.test(badge.title));
+    f.api.setClutchMode(null);
+    assert.equal(badge.hidden, true, 'gone when the game is');
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

@@ -457,6 +457,51 @@ test('a branch starts from what they may play: their ghost, then our answer, the
   } finally { f.close(); }
 });
 
+// An engine that rates the moves it is asked about by a fixed list, best first, so the plan for the eval can be seen.
+function ratedBy(values) {
+  const order = [];
+  return async (fen, o) => {
+    if (o.mate) return { depth: 4, cp: 0, pv: [] };
+    const moves = o.searchMoves || [];
+    const lines = moves.map(uci => { if (!order.includes(uci)) order.push(uci); return { depth: 6, cp: values[order.indexOf(uci)] ?? -900, pv: [uci] }; })
+      .sort((a, b) => b.cp - a.cp);
+    return { depth: 6, cp: lines[0] ? lines[0].cp : 0, pv: lines[0] ? lines[0].pv : [], lines };
+  };
+}
+
+test('everything is played around the eval bar: the aim sets where it should go, and what they just did sets how far', async () => {
+  const f = setup();
+  try {
+    // a middlegame with captures and checks to choose from, so there are many candidates
+    const fen = 'r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4';
+    const play = (mode, values, extra = {}) => f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, ...extra }, 2400, ratedBy(values));
+    // far ahead (+6 pawns at best): winning takes it, drawing gives some back, losing sinks
+    const ahead = [600, 450, 300, 150, 0, -150, -300];
+    assert.equal((await play('win', ahead)).cp, 600, 'to win: the best');
+    const drew = (await play('draw', ahead)).cp;
+    assert.ok(drew < 600 && drew >= 300, 'to draw with an edge: some of it is given back, not all at once (' + drew + ')');
+    const lost = (await play('lose', ahead)).cp;
+    assert.ok(lost <= 300, 'to lose: the eval is taken down (' + lost + ')');
+    // level: drawing keeps it near nothing
+    const level = [40, 20, 0, -20, -60, -200, -400];
+    const hold = (await play('draw', level)).cp;
+    assert.ok(Math.abs(hold) <= 40, 'level: held near nothing (' + hold + ')');
+    // against us: winning and drawing both need the best moves
+    const against = [-250, -300, -400, -550, -700, -900];
+    assert.equal((await play('win', against)).cp, -250, 'to win from behind: the best move');
+    assert.equal((await play('draw', against)).cp, -250, 'to draw from behind: the best move, not a move that is nearer to level for show');
+    // they have just erred (the eval is 400 better than we reckoned on): a draw game gives that edge back, a win game keeps it
+    const edge = [350, 300, 150, 0, -100, -300];
+    const kept = (await play('win', edge, { expected: -50, clock: 40 })).cp;
+    const gave = (await play('draw', edge, { expected: -50, clock: 40 })).cp;
+    assert.equal(kept, 350, 'to win: a mistake of theirs is taken');
+    assert.ok(gave < 350 && gave >= 0, 'to draw: it is matched, the edge goes back (' + gave + ')');
+    // but not when there is no time to get anywhere
+    const hurried = (await play('draw', edge, { expected: -50, clock: 5 })).cp;
+    assert.ok(hurried >= gave, 'with no clock to spare it does not go for the long way (' + hurried + ' vs ' + gave + ')');
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

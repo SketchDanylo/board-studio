@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.26.0
+// @version      6.27.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4007,18 +4007,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // Playing for the draw: keep the evaluation at nothing, love a repeated position, a stalemate or a
   // dead draw. The lower the rating, the weaker the pull, so the draw comes about more slowly.
-  function drawTaste(r, v, after, again, elo) {
+  function drawTaste(r, v, after, again, elo, target) {
     const pull = 0.35 + 0.65 * Math.min(1, Math.max(0, (elo - 300) / 1900));
-    let t = -v - Math.abs(v) * pull; // (the score becomes minus the size of the advantage, either side)
+    // Level, or giving back an edge: the score becomes how far the move leaves the eval from where it should be. When
+    // the eval is against us (no target) the best move simply wins, and a repetition or stalemate is a gift.
+    let t = target === null ? 0 : -v - Math.abs(v - target) * pull;
     t += again * 120 * pull;
     if (after) { try { const g = new BoardStudioRules.Chess(after.fen); if (g.isStalemate() || g.isInsufficientMaterial()) t += 600; else if (g.isDraw()) t += 300; } catch (e) {} }
     return t;
   }
 
-  // Playing to lose, believably: every move gives up a little (never more than about three pawns at
-  // once, so it reads as a bad day, not a throw), never a draw, the worst of those moves first.
-  function loseTaste(v, top, after) {
-    let t = -2 * v - (v < top - 300 ? 5000 : 0);
+  // Playing to lose, believably: every move takes the eval down towards a mark a little below where it stands (about
+  // three pawns at a time, more when they have just handed over an edge), never a draw.
+  function loseTaste(v, target, after) {
+    let t = -v - Math.abs(v - target);
     if (after) { try { const g = new BoardStudioRules.Chess(after.fen); if (g.isDraw() || g.isStalemate()) t -= 800; } catch (e) {} }
     return t;
   }
@@ -4030,13 +4032,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return r < win ? 'win' : r < win + draw ? 'draw' : 'lose';
   }
 
-  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0 } = {}, elo, analyse) {
+  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0, evalNow = null, expected = null, clock = 99 } = {}, elo, analyse) {
     // The whole decision is held to a budget: a move that costs the game on time is worth nothing.
     const deadline = Date.now() + budget, left = () => deadline - Date.now();
     // In an ending the play should match or beat what the opponent shows: better when playing to win,
     // level when playing to draw, and more so when they have just found a really good move. Not an engine
     // at a low rating, a step up from it.
-    if (countPieces(fen) <= 10 && mode !== 'lose') elo = Math.min(2600, elo + (mode === 'win' ? 350 : 180) + (pressure ? 300 : 0));
+    // Everything is played around the eval bar. With it against us (and an aim to win or draw) the moves have to be
+    // really good, so the rating is lifted, as it is when they have just played better than was reckoned on. Lifted,
+    // not made an engine: a low rating stays stretched, the best move is simply likelier.
+    const played = evalNow !== null && expected !== null && evalNow - expected < -60;
+    let boost = countPieces(fen) <= 10 && mode !== 'lose' ? (mode === 'win' ? 350 : 180) : 0;
+    if (mode !== 'lose' && evalNow !== null && evalNow <= -150) boost = Math.max(boost, 400);
+    if (mode !== 'lose' && (pressure || played)) boost += 300;
+    elo = Math.min(2600, elo + boost);
     const p = humanProfile(elo, fen);
     const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
     if (!legal.length) return null;
@@ -4100,6 +4109,25 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Every good move it noticed repeats a position and the game is won: look at the rest of the moves too,
     // since going round in circles is how a won game is drawn.
     const topValue = Math.max(...rated.map(r => value(r.line)));
+    // The plan for the eval. Winning: as high as it goes. Drawing: near nothing, held there; an edge is given back a
+    // little at a time; against us, the best moves. Losing: down, about three pawns a move. When they have just made
+    // a mistake (the eval rose past what was reckoned on), and there is time to get where it is going, the edge they
+    // handed over is given back in step with it (matched), instead of being kept.
+    const delta = expected === null ? 0 : topValue - expected;
+    const enough = gap => clock >= 6 + Math.ceil(Math.abs(gap) / 250) * 1.4;
+    const squeeze = mode !== 'lose' && topValue <= -150;
+    let target = null;
+    if (mode === 'draw') {
+      if (Math.abs(topValue) <= 40) target = 0;
+      else if (topValue > 40) {
+        target = Math.max(0, topValue - 200);
+        if (delta > 80 && enough(topValue - target + delta)) target = Math.max(0, topValue - Math.max(200, Math.min(delta, 600)));
+      }
+    } else if (mode === 'lose') {
+      target = topValue > -300 ? topValue - 300 : topValue - 120;
+      if (delta > 80 && enough(delta + 300)) target -= Math.min(delta, 600) * 0.5;
+      target = Math.max(target, -1500);
+    }
     // Far ahead on material yet nothing noticed holds it (a queen up, and every move it saw is a check
     // that throws the queen away): it was looking at the wrong moves, so it looks at the others.
     const holdsNothing = ahead >= 4 && topValue < Math.min(150, ahead * 30);
@@ -4121,10 +4149,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     for (const r of rated) {
       const after = stepFor(fen, r.c.uci);
       const again = after ? seen(after.fen) : 0;
-      r.score = value(r.line) + humanTaste(r.c, p, fen, { winning }) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (winning && countPieces(fen) <= 6 ? 0.1 : 1))
+      r.score = value(r.line) + humanTaste(r.c, p, fen, { winning }) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (squeeze ? 0.3 : winning && countPieces(fen) <= 6 ? 0.1 : 1))
         - (again && mode === 'win' ? (winning ? 300 : 50) * again : 0)
-        + (mode === 'draw' ? drawTaste(r, value(r.line), after, again, elo) : 0)
-        + (mode === 'lose' ? loseTaste(value(r.line), Math.max(...rated.map(x => value(x.line))), after) : 0)
+        + (mode === 'draw' ? drawTaste(r, value(r.line), after, again, elo, target) : 0)
+        + (mode === 'lose' ? loseTaste(value(r.line), target, after) : 0)
         + (mode === 'win' && winning && countPieces(fen) <= 6 && after ? mateProgress(fen, after.fen, fen.split(' ')[1]) : 0)
         + (winning && halfmove >= 16 && (r.c.capture || r.c.move.piece === 'p') ? 80 : 0);
     }
@@ -4146,8 +4174,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // outright: the natural-looking move has to be a fair one.
     // (when everything wins anyway, the free piece still beats a slightly faster route)
     const freeTake = rated.find(r => r.c.free && (value(r.line) >= top - 150 || (value(r.line) >= 500 && top >= 500)));
-    if (freeTake && mode !== 'lose') best = freeTake;
-    else if (!winning && mode === 'win' && rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
+    if (freeTake && (mode === 'win' || (mode === 'draw' && target === null))) best = freeTake;
+    else if (!winning && !squeeze && mode === 'win' && rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
       const fair = rated.filter(r => value(r.line) >= top - p.maxLoss && !(r.c.capture && r.c.net < 0));
       if (fair.length) best = fair.slice().sort((a, b) => b.c.salience - a.c.salience)[0];
     }
@@ -4557,13 +4585,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // Never more than a small share of what is left on the clock (and a flash when it is nearly gone).
       // (the hand takes its share of the move's time: about half a second)
       const budgetMs = Math.max(45, clutchMoveMs(clock, fen) - 450);
-      // How well they just played: our own estimate of the position last time against a quick look now.
-      let pressure = 0;
-      if (pieces <= 10 && clock >= 3 && clutch.lastValue !== null && clutch.lastValue !== undefined) {
+      // Where the eval bar stands now, and how well they just played: our own estimate of the position last time against a
+      // quick look now. (At any number of pieces: everything is played around the eval.)
+      let evalNow = null;
+      if (clock >= 3) {
         const quick = await clutchEngine.analyse(fen, { depth: 8, ms: 60, multipv: 1, fresh: true });
-        if (quick) { const now = quick.mate !== undefined ? Math.sign(quick.mate) * 5000 : quick.cp; if (now < clutch.lastValue - 60) pressure = 1; }
+        if (quick) evalNow = quick.mate !== undefined ? Math.sign(quick.mate) * 5000 : quick.cp;
       }
-      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, pressure, seen: s.seen, mode: s.mode }, s.elo, (f, o) => clutchEngine.analyse(f, o));
+      const expected = clutch.lastValue === undefined ? null : clutch.lastValue;
+      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, evalNow, expected, clock, seen: s.seen, mode: s.mode }, s.elo, (f, o) => clutchEngine.analyse(f, o));
       if (result) clutch.lastValue = result.mate !== undefined ? Math.sign(result.mate) * 5000 : result.cp;
       return result;
     }
@@ -5022,7 +5052,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     bookBuild({
       fen, s, clock, stop: () => !stillTheirMove() || Date.now() - started > 45000,
       analyse: (f, o) => clutchEngine.analyse(f, o),
-      answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode }, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
+      answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode, expected: clutch.lastValue === undefined ? null : clutch.lastValue, clock }, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
       onRound: () => {
         book.complete = true; refresh();

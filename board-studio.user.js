@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.2.0
+// @version      6.3.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3712,6 +3712,34 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return list.every(e => e.step.uci === uci) ? list[0].step : null;
   }
 
+  // The answers in the book grouped: which move answers how many of the replies, most first.
+  function clutchAnswers(entries) {
+    const by = new Map();
+    for (const entry of entries.values()) {
+      const answer = by.get(entry.step.uci) || { step: entry.step, replies: [] };
+      answer.replies.push(entry.reply);
+      by.set(entry.step.uci, answer);
+    }
+    return [...by.values()].sort((a, b) => b.replies.length - a.replies.length);
+  }
+
+  // Does chess.com have premoves in this game? Its game modes list their plugins: live games carry the
+  // "premoves" one, games against the computer do not (that is why a dragged premove never shows there).
+  function premoveNative(board) {
+    try { return !!board.game.getMode().plugins?.some(p => p.name === 'premoves'); } catch (e) { return false; }
+  }
+
+  // A right-button press on the board is chess.com's way to cancel a premove. Our own right-click
+  // handling (square marks) is told to stand aside for it.
+  function cancelPremove(board) {
+    const rect = board.getBoundingClientRect();
+    const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const el = document.elementFromPoint(point.x, point.y) || board;
+    const init = { bubbles: true, cancelable: true, composed: true, clientX: point.x, clientY: point.y, button: 2, buttons: 2, pointerId: 1, pointerType: 'mouse', isPrimary: true, view: window };
+    synthetic = true;
+    try { el.dispatchEvent(new PointerEvent('pointerdown', init)); } finally { synthetic = false; }
+  }
+
   function clutchTick() {
     const s = settings.clutch;
     if (s.on && !clutch.wasOn) { clutch.suspended = false; }
@@ -3809,7 +3837,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // 3. Their move: build the book of answers on their time.
     if (clutch.book && clutch.book.key === key) return;
     clutchStopBook();
-    const book = { key, entries: new Map(), token: { stop: false }, premoved: false };
+    const book = { key, entries: new Map(), token: { stop: false }, premoveUci: null };
     const forced = new BoardStudioRules.Chess(fen).moves().length === 1;
     clutch.book = book;
     const started = Date.now();
@@ -3824,10 +3852,24 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       analyse: (f, o) => clutchEngine.analyse(f, o),
       onEntry: (k, entry) => {
         book.entries.set(k, entry);
-        setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${entry.depth}${robustMove(book.entries) ? ', same answer to all' : ''}`);
-        // Their only move can be premoved for real; with a choice of replies the answer is held and
-        // played the instant their move arrives, which beats a premove's own delay.
-        if (forced && mayPlay && !book.premoved) { book.premoved = true; act(entry.step, true, 'their only move', false); }
+        // Show what is ready, like a premove would be shown: the answer covering most replies first.
+        const answers = clutchAnswers(book.entries);
+        clutchShow(ctl, answers.slice(0, 3).map((answer, i) => ({ id: 'cl:' + answer.step.uci, uci: answer.step.uci, color: ['#4cc2ff', '#2f8fbf', '#256a8c'][i] })));
+        const native = premoveNative(board);
+        setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${entry.depth}: ${answers.map(x => `${x.step.from}-${x.step.to} x${x.replies.length}`).join(', ')}${native ? '' : ' (no premoves in this game, held and played the instant they move)'}`);
+        if (!native || !mayPlay) return;
+        // Where chess.com has premoves: one answer that fits every reply is set for real, and taken
+        // back (cancelled) the moment the replies need different answers.
+        const robust = robustMove(book.entries);
+        if (robust && book.premoveUci !== robust.uci) {
+          if (book.premoveUci) cancelPremove(board);
+          book.premoveUci = robust.uci;
+          act(robust, true, forced ? 'their only move' : 'the same answer to every reply', false);
+        } else if (!robust && book.premoveUci) {
+          cancelPremove(board);
+          book.premoveUci = null;
+          setClutch('Clutch: replies need different answers, premove cancelled, waiting for their move');
+        }
       }
     }).then(count => {
       if (clutch.book === book && book.entries.size === 0 && stillTheirMove()) setClutch('Clutch: no answers prepared');

@@ -189,3 +189,28 @@ test('one answer to every reply is flagged as safe to premove', () => {
     assert.equal(f.api.robustMove(new Map()), null);
   } finally { f.close(); }
 });
+
+test('answers are grouped by move, the one covering most replies first', () => {
+  const f = setup();
+  try {
+    const mk = (uci, reply) => ({ step: { uci, from: uci.slice(0, 2), to: uci.slice(2, 4) }, reply });
+    const answers = f.api.clutchAnswers(new Map([['a', mk('e2e4', 'e7e5')], ['b', mk('d2d4', 'c7c5')], ['c', mk('e2e4', 'g8f6')]]));
+    assert.equal(answers.length, 2);
+    assert.equal(answers[0].step.uci, 'e2e4'); assert.equal(answers[0].replies.join(), 'e7e5,g8f6');
+  } finally { f.close(); }
+});
+
+test('premoves are only used where chess.com has them, and cancelling goes through the right button', () => {
+  const f = setup();
+  try {
+    const live = { game: { getMode: () => ({ name: 'playing', plugins: [{ name: 'playing' }, { name: 'premoves' }] }) } };
+    const bot = { game: { getMode: () => ({ name: 'playing', plugins: [{ name: 'playing' }] }) } };
+    assert.equal(f.api.premoveNative(live), true);
+    assert.equal(f.api.premoveNative(bot), false);
+    assert.equal(f.api.premoveNative({ game: {} }), false);
+    const board = f.board(); const seen = []; f.w.document.elementFromPoint = () => board;
+    board.addEventListener('pointerdown', e => seen.push(e.button), true);
+    f.api.cancelPremove(board);
+    assert.equal(seen.join(), '2', 'a right-button press reaches the board');
+  } finally { f.close(); }
+});

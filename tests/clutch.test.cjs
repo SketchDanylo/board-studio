@@ -88,3 +88,47 @@ test('the real engine finds a forced mate and the planner turns it into steps', 
     assert.equal((await quick).mate, 1);
   } finally { child.kill(); f.close(); }
 });
+
+test('clocks are read from the player rows: your own at the bottom, the opponent at the top', () => {
+  const f = setup();
+  try {
+    f.w.document.body.innerHTML = '<div id="player-top"><div class="move-time-monospace">0:42</div></div><div id="player-bottom"><div class="move-time-monospace">0:09.8</div></div>';
+    assert.equal(f.api.readClock('own'), 9.8);
+    assert.equal(f.api.readClock('opp'), 42);
+    f.w.document.body.innerHTML = '';
+    assert.equal(f.api.readClock('own'), null, 'no clock, no Clutch');
+    f.w.__bsClutchClock = 5;
+    assert.equal(f.api.readClock('own'), 5, 'the test override wins');
+  } finally { f.close(); }
+});
+
+test('without a mate: best move when fine, a check that holds when losing, a holding move otherwise', () => {
+  const f = setup();
+  try {
+    const s = { eval: 2 };
+    const fen = '6k1/5ppp/8/8/8/8/5PPP/3Q2K1 w - - 0 1';
+    const line = (move, cp, mate) => ({ pv: [move], ...(mate !== undefined ? { mate } : { cp }) });
+    // fine: just the best move
+    assert.equal(f.api.clutchPick(fen, { cp: 30, pv: ['d1d4'], lines: [line('d1d4', 30), line('d1d2', 20)] }, s).uci, 'd1d4');
+    // losing, and a queen check holds the draw: take the check even though it is not the best line
+    const losing = { cp: -400, pv: ['g1f1'], lines: [line('g1f1', -400), line('d1d8', -10), line('d1d2', -450)] };
+    const pick = f.api.clutchPick(fen, losing, s);
+    assert.equal(pick.uci, 'd1d8'); assert.equal(pick.check, true);
+    // losing and nothing holds: the best move
+    assert.equal(f.api.clutchPick(fen, { cp: -500, pv: ['g1f1'], lines: [line('g1f1', -500), line('d1d2', -600)] }, s).uci, 'g1f1');
+    assert.equal(f.api.clutchPick(fen, { pv: [] }, s), null);
+    assert.equal(f.api.clutchLosing({ mate: -3 }, s), true);
+  } finally { f.close(); }
+});
+
+test('promotion: the queen in chess.com\'s picker gets clicked', () => {
+  const f = setup();
+  try {
+    f.w.document.body.innerHTML = '<div class="promotion-window"><div class="promotion-piece wq"></div><div class="promotion-piece wn"></div></div>';
+    const clicks = [];
+    f.w.document.querySelector('.promotion-piece.wq').addEventListener('click', () => clicks.push('q'));
+    f.w.document.querySelector('.promotion-piece.wn').addEventListener('click', () => clicks.push('n'));
+    f.api.choosePromotion('w', 'q');
+    return new Promise(resolve => setTimeout(() => { assert.equal(clicks.join(), 'q'); f.close(); resolve(); }, 150));
+  } catch (e) { f.close(); throw e; }
+});

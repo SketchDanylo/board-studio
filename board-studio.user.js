@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.0.0
+// @version      6.1.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3388,11 +3388,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // ---------- Clutch ----------
 
-  // Short on time? Once your clock is down to the Time setting, Clutch looks for a forced mate with
-  // the engine: a quick look first, a much deeper one when you are clearly winning and the clock
-  // allows it (deeper still the fewer pieces are left), then it plays the line out, premoving the
-  // moves that are certain. It only ever moves pieces in games against the computer; anywhere else
-  // it just draws the line it found.
+  // Short on time? Once your clock is down to the Time setting, Clutch takes over in games against
+  // the computer: it thinks on the opponent's time too (pondering), plays your moves for you, hunts
+  // for a forced mate when you are winning (deeper the fewer pieces are left), seeks a draw by
+  // perpetual check when you are losing, and premoves whatever is certain. Anywhere else (a game
+  // against a person) it only draws the line it found and never moves a piece.
 
   const CLUTCH_COLOR = '#4cc2ff';
   const clutchMayPlay = () => /^\/play\/computer/.test(location.pathname);
@@ -3410,12 +3410,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return total;
   }
 
-  // Your clock, in seconds: the one at the bottom of the board. window.__bsClutchClock overrides it
-  // so Clutch can be tried on pages without a clock.
-  function ownClock() {
-    if (typeof window.__bsClutchClock === 'number') return window.__bsClutchClock;
-    const selectors = ['.clock-bottom .clock-time-monospace', '.clock-bottom', '#board-layout-player-bottom .clock-time-monospace', '#board-layout-player-bottom .clock-component', '[data-cy="clock-bottom"]'];
-    for (const selector of selectors) {
+  // A clock in seconds: your own is the one at the bottom of the board, the opponent's at the top.
+  // window.__bsClutchClock overrides your own so Clutch can be tried on pages without a clock.
+  const CLOCKS = {
+    own: ['#player-bottom .move-time-monospace', '#board-layout-player-bottom .move-time-monospace', '.clock-bottom .clock-time-monospace', '.clock-bottom', '[data-cy="clock-bottom"]'],
+    opp: ['#player-top .move-time-monospace', '#board-layout-player-top .move-time-monospace', '.clock-top .clock-time-monospace', '.clock-top', '[data-cy="clock-top"]']
+  };
+  function readClock(side) {
+    if (side === 'own' && typeof window.__bsClutchClock === 'number') return window.__bsClutchClock;
+    for (const selector of CLOCKS[side]) {
       for (const el of document.querySelectorAll(selector)) {
         const seconds = parseClock(el.textContent);
         if (seconds !== null) return seconds;
@@ -3433,7 +3436,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const scale = pieces <= 6 ? 3 : pieces <= 10 ? 2 : pieces <= 16 ? 1.4 : 1;
     const ms = clock * 1000;
     return {
-      stage1Ms: Math.max(120, Math.min(500, ms * 0.03)),
+      stage1Ms: Math.max(80, Math.min(500, ms * 0.03)),
       stage2Ms: Math.max(0, Math.min(ms * 0.12 * scale, 4000 * scale)),
       maxDepth: Math.min(40, s.maxDepth + (pieces <= 6 ? 6 : pieces <= 10 ? 3 : 0)),
       canDeepen: clock >= s.spare
@@ -3442,6 +3445,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // Winning enough to be worth a deep search: a mate, or at least the Eval setting in pawns.
   const clutchWinning = (result, s) => result.mate > 0 || (result.cp !== undefined && result.cp >= s.eval * 100);
+  const clutchLosing = (result, s) => result.mate < 0 || (result.cp !== undefined && result.cp <= -s.eval * 100);
 
   // The engine's line as steps. Our steps are sure when every opponent move before them was forced
   // (their only legal move), so they can be played without seeing the reply, and premoved.
@@ -3465,8 +3469,33 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   const sameFen = (a, b) => String(a).split(' ').slice(0, 4).join(' ') === String(b).split(' ').slice(0, 4).join(' ');
 
-  // One Stockfish for Clutch, kept running. analyse() resolves with { depth, cp | mate, pv } or null
-  // when a newer request replaced it.
+  // One move as a step, from a uci string in a position.
+  function stepFor(fen, uci) {
+    const game = new BoardStudioRules.Chess(fen);
+    const move = game.moves({ verbose: true }).find(m => m.from + m.to + (m.promotion || '') === uci);
+    if (!move) return null;
+    game.move(move);
+    return { uci, from: move.from, to: move.to, promotion: move.promotion || null, ours: true, sure: true, check: /[+#]/.test(move.san), fen: game.fen() };
+  }
+
+  // The move to play when there is no mate: the best one, except when losing, when a move that
+  // holds about equal wins out, a check first (a perpetual is the way out of a lost position).
+  function clutchPick(fen, result, s) {
+    const lines = (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv.length);
+    if (!lines.length) return null;
+    const best = lines[0];
+    if (clutchLosing(best, s)) {
+      const holds = lines.filter(l => l.mate === undefined ? l.cp >= -50 : l.mate > 0);
+      const checks = holds.map(l => stepFor(fen, l.pv[0])).filter(st => st && st.check);
+      if (checks.length) return checks[0];
+      if (holds.length) return stepFor(fen, holds[0].pv[0]);
+    }
+    return stepFor(fen, best.pv[0]);
+  }
+
+  // One Stockfish for Clutch, kept running. analyse() resolves with { depth, cp | mate, pv, lines }
+  // when the search ends, or with null when a newer request replaced it (unless keepPartial, then with
+  // what it had). finish() ends the running search at once and gives what it has.
   const clutchEngine = {
     worker: null, starting: false, ready: false, job: null, pending: null,
     start() {
@@ -3488,28 +3517,46 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       else if (line === 'readyok') { this.ready = true; this.next(); }
       else if (line.startsWith('info ') && this.job && !/ (lower|upper)bound/.test(line)) {
         const depth = /\bdepth (\d+)/.exec(line), score = /\bscore (cp|mate) (-?\d+)/.exec(line), pv = / pv (.+)$/.exec(line);
-        if (depth && score && pv) this.job.last = { depth: +depth[1], [score[1]]: +score[2], pv: pv[1].trim().split(/\s+/) };
+        if (!depth || !score || !pv) return;
+        const rank = +((/\bmultipv (\d+)/.exec(line) || [])[1] || 1);
+        const entry = { depth: +depth[1], [score[1]]: +score[2], pv: pv[1].trim().split(/\s+/) };
+        const job = this.job;
+        job.lines = job.lines && job.depth === entry.depth ? job.lines : [];
+        job.depth = entry.depth;
+        job.lines[rank - 1] = entry;
+        if (rank === 1) job.last = { ...entry, lines: job.lines };
       } else if (line.startsWith('bestmove')) {
         const job = this.job;
         this.job = null;
-        if (job) job.resolve(job.cancelled || !job.last ? null : { ...job.last, best: line.split(' ')[1] });
+        if (job) job.resolve(!job.last || (job.cancelled && !job.keepPartial) ? null : { ...job.last, lines: job.lines.filter(Boolean), best: line.split(' ')[1], partial: job.cancelled });
         this.next();
       }
     },
     next() {
       if (!this.ready || this.job || !this.pending) return;
-      const { fen, depth, ms, resolve } = this.pending;
+      const { fen, depth, ms, multipv, keepPartial, resolve } = this.pending;
       this.pending = null;
-      this.job = { resolve, last: null, cancelled: false };
+      this.job = { resolve, last: null, lines: [], depth: 0, cancelled: false, keepPartial };
+      this.send(`setoption name MultiPV value ${multipv}`);
       this.send('position fen ' + fen);
       this.send(`go depth ${depth} movetime ${Math.round(ms)}`);
     },
-    analyse(fen, { depth, ms }) {
+    analyse(fen, { depth, ms, multipv = 1, keepPartial = false }) {
       this.start();
       return new Promise(resolve => {
         this.pending?.resolve(null);
-        this.pending = { fen, depth, ms, resolve };
+        this.pending = { fen, depth, ms, multipv, keepPartial, resolve };
         if (this.job) { this.job.cancelled = true; this.send('stop'); } else this.next();
+      });
+    },
+    // End the running search now and take what it found so far.
+    finish() {
+      if (!this.job) return Promise.resolve(null);
+      return new Promise(resolve => {
+        const job = this.job, done = job.resolve;
+        job.keepPartial = true; job.cancelled = true;
+        job.resolve = value => { done(value); resolve(value); };
+        this.send('stop');
       });
     }
   };
@@ -3536,7 +3583,28 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     setTimeout(() => fire('pointerup', b, 0), 90);
   }
 
-  const clutch = { plan: null, searching: null, played: '', arrows: '' };
+  // A pawn reaching the last rank opens chess.com's piece picker: click the wanted piece in it.
+  function choosePromotion(color, piece, tries = 12) {
+    const el = document.querySelector(`.promotion-window .promotion-piece.${color}${piece}`);
+    if (!el) { if (tries > 0) setTimeout(() => choosePromotion(color, piece, tries - 1), 50); return; }
+    const r = el.getBoundingClientRect();
+    const init = { bubbles: true, cancelable: true, composed: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true, view: window };
+    el.dispatchEvent(new PointerEvent('pointerdown', init));
+    el.dispatchEvent(new MouseEvent('mousedown', init));
+    init.buttons = 0;
+    setTimeout(() => {
+      el.dispatchEvent(new PointerEvent('pointerup', init));
+      el.dispatchEvent(new MouseEvent('mouseup', init));
+      el.dispatchEvent(new MouseEvent('click', init));
+    }, 40);
+  }
+
+  function clutchMove(board, step, own) {
+    dragPiece(board, step.from, step.to);
+    if (step.promotion) setTimeout(() => choosePromotion(own, step.promotion), 160);
+  }
+
+  const clutch = { plan: null, working: null, played: '', playedAt: 0, tries: 0, arrows: '', ponder: null, suspended: false, wasOn: false, acting: false };
 
   function clutchShow(ctl, specs) {
     const key = JSON.stringify(specs);
@@ -3546,10 +3614,25 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     ctl.scheduleArrows?.();
   }
 
-  async function clutchSearch(key, fen, clock, s) {
+  // While Clutch plays, the user's own mouse is ignored (Clutch's drags are not "trusted" events),
+  // so it is never fighting a hand. Escape hands control back until Clutch is switched off and on.
+  const clutchActive = () => !!settings.clutch.on && !clutch.suspended && clutch.acting && clutchMayPlay();
+  ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'].forEach(type => window.addEventListener(type, e => {
+    if (!e.isTrusted || !clutchActive()) return;
+    const t = e.target;
+    if (t instanceof Element && (t.closest('wc-chess-board, chess-board') || t.closest('.promotion-window'))) { e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true));
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && settings.clutch.on && clutch.acting) { clutch.suspended = true; clutch.acting = false; clutch.working = null; setClutch('Clutch: you have control, switch Clutch off and on to resume'); }
+  }, true);
+
+  // Look at a position for our move: a quick look, then a deeper one when winning and the clock allows.
+  async function clutchSearch(fen, clock, oppClock, s) {
     const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
+    // When the opponent is lower on time than we are and we are not winning, speed matters more.
+    const hurry = oppClock !== null && oppClock < clock * 0.7 ? 0.5 : 1;
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
-    let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms });
+    let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: 4 });
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
       result = (await clutchEngine.analyse(fen, { depth: budget.maxDepth, ms: budget.stage2Ms })) || result;
@@ -3557,33 +3640,61 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return result;
   }
 
+  // From a result to what to do: a mate becomes a plan, anything else one move.
+  function clutchDecide(fen, result, s) {
+    if (result.mate > 0 && result.pv) {
+      const line = mateLine(fen, result.pv);
+      if (line[0] && line[0].ours) return { plan: { start: fen, line }, step: line[0], note: `mate in ${result.mate} (depth ${result.depth})` };
+    }
+    const step = clutchPick(fen, result, s);
+    if (!step) return null;
+    const score = result.mate !== undefined ? `mate ${result.mate}` : (result.cp / 100).toFixed(2);
+    return { plan: null, step, note: `${step.check && clutchLosing(result, s) ? 'perpetual try' : 'best move'} ${step.from}-${step.to} (${score}, depth ${result.depth})` };
+  }
+
   function clutchTick() {
     const s = settings.clutch;
+    if (s.on && !clutch.wasOn) { clutch.suspended = false; }
+    clutch.wasOn = s.on;
     const board = document.querySelector('wc-chess-board, chess-board');
     const ctl = board && board.__cc;
     if (!s.on || !board || !ctl || !board.game || typeof board.game.getFEN !== 'function') {
       if (ctl) clutchShow(ctl, []);
-      clutch.plan = null;
+      clutch.plan = null; clutch.acting = false; clutch.ponder = null;
       setClutch(s.on ? 'Clutch: waiting for a board' : 'Clutch: off');
       return;
     }
+    if (clutch.suspended) return;
     let fen, own;
     try {
       fen = board.game.getFEN();
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
-    if (!own) { setClutch('Clutch: waiting for a game you are playing'); return; }
-    const clock = ownClock();
-    if (clock === null) { setClutch('Clutch: no clock found on this page'); clutchShow(ctl, []); return; }
+    if (!own) { clutch.acting = false; setClutch('Clutch: waiting for a game you are playing'); return; }
+    const clock = readClock('own');
+    if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchShow(ctl, []); return; }
     if (clock > s.time) {
+      clutch.acting = false; clutch.plan = null; clutch.ponder = null;
       setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at ${s.time.toFixed(1)} s`);
       clutchShow(ctl, []);
-      clutch.plan = null;
       return;
     }
+    clutch.acting = clutchMayPlay();
+    const oppClock = readClock('opp');
     const turn = fen.split(' ')[1], key = fen.split(' ').slice(0, 4).join(' ');
-    // Follow a plan that is already made: where are we in it?
+    const mayPlay = clutchMayPlay();
+    const act = (step, premove, note) => {
+      if (!mayPlay) { setClutch(`Clutch: ${note} (drawn only, it moves pieces in games against the computer)`); return; }
+      const stale = clutch.played === key && Date.now() - clutch.playedAt < 1500;
+      if (stale || clutch.tries > 3 && clutch.played === key) return;
+      clutch.tries = clutch.played === key ? clutch.tries + 1 : 1;
+      clutch.played = key; clutch.playedAt = Date.now();
+      setClutch(`Clutch: ${premove ? 'premoving' : 'playing'} ${step.from}-${step.to}, ${note}`);
+      clutchMove(board, step, own);
+    };
+
+    // 1. A plan already made: where are we in it?
     let rest = null;
     if (clutch.plan) {
       const at = clutch.plan.line.findIndex(step => sameFen(step.fen, fen));
@@ -3593,34 +3704,70 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     if (rest) {
       clutchShow(ctl, rest.filter(step => step.ours).map(step => ({ id: 'cl:' + step.uci, uci: step.uci, color: CLUTCH_COLOR })));
-      if (clutch.played === key) return;
-      let step = null, premove = false;
-      if (turn === own && rest[0]?.ours && rest[0].sure) step = rest[0];
-      else if (turn !== own && rest[0] && !rest[0].ours && rest[0].sure && rest[1]?.ours && rest[1].sure) { step = rest[1]; premove = true; }
-      if (!step) return;
-      if (!clutchMayPlay()) { setClutch('Clutch: mate line drawn (it only moves pieces in games against the computer)'); return; }
-      if (step.promotion) { setClutch('Clutch: the line promotes, that move is yours'); return; }
-      clutch.played = key;
-      setClutch(`Clutch: ${premove ? 'premoving' : 'playing'} ${step.from}-${step.to}`);
-      dragPiece(board, step.from, step.to);
+      if (turn === own && rest[0]?.ours && rest[0].sure) { act(rest[0], false, 'following the mate'); return; }
+      if (turn !== own && rest[0] && !rest[0].ours && rest[0].sure && rest[1]?.ours && rest[1].sure) { act(rest[1], true, 'the reply is forced'); return; }
+    }
+
+    // 2. Our move: use what was pondered if the opponent played what was expected, else look now.
+    if (turn === own) {
+      if (clutch.working === key) return;
+      clutch.working = key;
+      const ponder = clutch.ponder;
+      clutch.ponder = null;
+      const fromPonder = ponder && sameFen(ponder.fen, fen);
+      (fromPonder ? (ponder.result ? Promise.resolve(ponder.result) : clutchEngine.finish()) : clutchSearch(fen, clock, oppClock, s)).then(async result => {
+        if (fromPonder && (!result || !result.pv)) result = await clutchSearch(fen, clock, oppClock, s);
+        let current = null;
+        try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
+        if (clutch.working === key) clutch.working = null;
+        if (!result || !current || !sameFen(current, fen)) return;
+        const decision = clutchDecide(fen, result, s);
+        if (!decision) { setClutch('Clutch: no move found'); return; }
+        if (decision.plan) clutch.plan = decision.plan;
+        clutchShow(ctl, [{ id: 'cl:' + decision.step.uci, uci: decision.step.uci, color: CLUTCH_COLOR }]);
+        act(decision.step, false, (fromPonder ? 'pondered ' : '') + decision.note);
+      });
       return;
     }
-    if (turn !== own || clutch.searching === key) return;
-    clutch.searching = key;
-    clutchSearch(key, fen, clock, s).then(result => {
-      if (clutch.searching === key) clutch.searching = null;
+
+    // 3. Their move: think on their time. First who they will probably play, then deeper on the
+    // position after it. If their move is forced, the reply is premoved as soon as it is ready.
+    if (clutch.working === key || (clutch.ponder && clutch.ponder.key === key)) return;
+    clutch.working = key;
+    clutch.ponder = { key, fen: null };
+    clutchEngine.analyse(fen, { depth: s.depth, ms: 300 }).then(first => {
+      if (clutch.working === key) clutch.working = null;
       let current = null;
       try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
-      if (!result || !current || !sameFen(current, fen)) return;
-      if (result.mate > 0 && result.pv) {
-        const line = mateLine(fen, result.pv);
-        if (line[0] && line[0].ours) {
-          clutch.plan = { start: fen, line };
-          setClutch(`Clutch: mate in ${result.mate} found at depth ${result.depth}`);
-          return;
-        }
-      }
-      setClutch(`Clutch: no forced mate found (depth ${result.depth}, ${result.mate ? 'mate against' : (result.cp / 100).toFixed(2)})`);
+      if (!first || !first.pv || !current || !sameFen(current, fen)) { if (clutch.ponder && clutch.ponder.key === key) clutch.ponder = null; return; }
+      const reply = stepFor(fen, first.pv[0]);
+      if (!reply) return;
+      const predicted = reply.fen;
+      const forced = new BoardStudioRules.Chess(fen).moves().length === 1;
+      const pRef = { key, fen: predicted, result: null };
+      clutch.ponder = pRef;
+      setClutch(`Clutch: pondering ${reply.from}-${reply.to}${forced ? ' (their only move)' : ''}`);
+      const pieces = countPieces(predicted), budget = clutchBudget(clock, pieces, s);
+      // Their time is free, so ponder as deep as allowed (not tied to our clock).
+      clutchEngine.analyse(predicted, { depth: Math.min(40, budget.maxDepth + 4), ms: 60000, multipv: 4, keepPartial: true }).then(done => {
+        pRef.result = done;
+        if (!done || !forced || !done.pv) return;
+        // Their reply is forced, so premove ours.
+        let now = null;
+        try { now = board.game.getFEN(); } catch (e) { /* board gone */ }
+        if (!now || !sameFen(now, fen) || !mayPlay) return;
+        const decision = clutchDecide(predicted, done, s);
+        if (decision) act(decision.step, true, 'the reply is forced');
+      });
+      // a forced reply needs no waiting: premove once a first look at it exists
+      if (forced) setTimeout(() => clutchEngine.finish().then(partial => {
+        if (!partial || !partial.pv) return;
+        let now = null;
+        try { now = board.game.getFEN(); } catch (e) { /* board gone */ }
+        if (!now || !sameFen(now, fen) || !mayPlay) return;
+        const decision = clutchDecide(predicted, partial, s);
+        if (decision) act(decision.step, true, 'the reply is forced');
+      }), 400);
     });
   }
   setInterval(clutchTick, 200);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.14.0
+// @version      6.14.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4424,6 +4424,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
     if (!own) { clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
+    // The fast path: the opponent has just made a move the book was ready for and the answer is the premove
+    // (or an opening-book or plain answer that needs no more thought). Nothing is read or worked out first:
+    // the move goes out in the same breath as the board changing.
+    if (clutch.engaged && clutch.book && fen.split(' ')[1] === own && clutchMayPlay()) {
+      const quickKey = repKey(fen), e = clutch.book.entries.get(quickKey), prem = clutch.book.premove;
+      if (e && e.step && (e.book || !e.crit || (prem && prem.step.uci === e.step.uci)) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 700)) {
+        clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
+        if (e.plan) clutch.plan = e.plan;
+        clutchMove(board, e.step, own, true);
+        clutchStopBook(); showClutchGhosts(ctl, []);
+        setClutch(`Clutch: playing ${e.step.from}-${e.step.to}, prepared answer to ${e.reply}`);
+        return;
+      }
+    }
     // Auto plays at the opponent's rating when it can be read; otherwise, and with Auto off, the field's.
     const opponentElo = readOpponentElo();
     const elo = clutchEloFor(base, opponentElo);

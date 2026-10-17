@@ -795,7 +795,7 @@ test('their clearly best reply gets a premove for its answer (not in a draw), an
     const p = f.api.clutchPremove(clear, 'e7e5', true, true, true);
     assert.ok(p && p.likely && p.step.uci === 'g1f3', 'their best stands clear: its answer is premoved');
     assert.equal(f.api.clutchPremove(clear, 'e7e5', true, true, false), null, 'not when it may not guess (a draw)');
-    const close = new Map([mk('e7e5', 'g1f3', -60), mk('c7c5', 'd2d4', -40), mk('e7e6', 'b1c3', -50)]);
+    const close = new Map([mk('e7e5', 'g1f3', -60), mk('c7c5', 'd2d4', -50), mk('e7e6', 'b1c3', -45)]);
     assert.equal(f.api.clutchPremove(close, 'e7e5', true, true, true), null, 'replies that are close: no guess');
   } finally { f.close(); }
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.35.0
+// @version      6.35.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5032,11 +5032,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // (the value of each reply for us; the lowest is their best)
     const worth = e => e.mate !== undefined ? Math.sign(e.mate) * (10000 - Math.abs(e.mate)) : e.cp;
     if (robust) return { step: robust, fen: top.fen, line: lineOf(list.find(e => e.step.uci === robust.uci), robust), conditional: false, why: list.length === 1 ? 'their only move' : 'the same answer to every reply' };
-    // Their best reply stands clear of the others (it is worth them at least 0.8 pawn more): the answer to it is premoved, in
+    // Their best reply stands clear of the others (it is worth them at least 0.3 pawn more): the answer to it is premoved, in
     // the hope they play it. Where it turns out illegal or bad the answer is decided afresh, so this only ever saves time.
-    if (allowLikely && top && list.length >= 3 && worth(top) !== undefined) {
+    if (allowLikely && top && list.length >= 2 && worth(top) !== undefined) {
       const rest = Math.min(...list.filter(e => e !== top && worth(e) !== undefined).map(worth));
-      if (rest - worth(top) >= 80) return { step: top.step, fen: top.fen, line: lineOf(top, top.step), conditional: false, likely: true, why: 'their best move stands clear' };
+      if (rest - worth(top) >= 30) return { step: top.step, fen: top.fen, line: lineOf(top, top.step), conditional: false, likely: true, why: 'their best move stands clear' };
     }
     if (top.replyCapture) {
       const takes = list.filter(e => e.replyCapture && e.replyTo === top.replyTo);

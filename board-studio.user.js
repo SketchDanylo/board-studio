@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.21.0
+// @version      6.21.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3644,9 +3644,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // The same badge as in the panel, beside your own clock on the board (left of it), so the plan can be read at a glance.
   // It lives in the page body and follows the clock's position, since chess.com redraws the clock itself.
   const planFloat = { el: null };
+  // Your own clock on the page, in a bot game or a live one: the same elements Clutch reads the time from,
+  // taking the box around the digits when there is one, so the badge sits beside the whole clock.
+  function ownClockBox() {
+    for (const selector of CLOCKS.own) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (parseClock(el.textContent) === null) continue;
+        return el.closest('.move-time-time, .clock-component, [class*="clock-bottom"], [data-cy="clock-bottom"]') || el;
+      }
+    }
+    return null;
+  }
   function syncPlanBadge() {
     const mode = clutchState.mode;
-    const clock = document.querySelector('#player-bottom .move-time-time, #player-bottom .clock-component, #player-bottom [class*="clock"]');
+    const clock = ownClockBox();
     if (!mode || !clock || document.hidden) { if (planFloat.el) planFloat.el.hidden = true; return; }
     let el = planFloat.el;
     if (!el || !el.isConnected) {

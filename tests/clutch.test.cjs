@@ -291,7 +291,7 @@ test('the plan badge sits just left of your own clock on the board, in the colou
   const f = setup();
   try {
     const d = f.w.document;
-    d.body.insertAdjacentHTML('beforeend', '<div id="player-bottom"><div class="move-time-time"></div></div>');
+    d.body.insertAdjacentHTML('beforeend', '<div id="player-bottom"><div class="move-time-time"><div class="move-time-monospace">1:00</div></div></div>');
     d.querySelector('.move-time-time').getBoundingClientRect = () => ({ left: 541, top: 644, width: 135, height: 40, right: 676, bottom: 684 });
     assert.equal(d.querySelector('.bs-plan-float'), null, 'nothing before Clutch kicks in');
     f.api.setClutchMode('win');
@@ -302,6 +302,26 @@ test('the plan badge sits just left of your own clock on the board, in the colou
     assert.equal(badge.dataset.kind, 'lose'); assert.ok(/on time/.test(badge.title));
     f.api.setClutchMode(null);
     assert.equal(badge.hidden, true, 'gone when the game is');
+  } finally { f.close(); }
+});
+
+test('the plan badge also finds the clock of a live game (other markup than the bot page)', () => {
+  const f = setup();
+  try {
+    const d = f.w.document;
+    for (const [html, box] of [
+      ['<div class="clock-bottom"><span class="clock-time-monospace">2:59</span></div>', '.clock-bottom'],
+      ['<div id="board-layout-player-bottom"><div class="clock-component"><span class="move-time-monospace">1:00</span></div></div>', '.clock-component'],
+      ['<div data-cy="clock-bottom">0:45.2</div>', '[data-cy="clock-bottom"]']
+    ]) {
+      d.querySelectorAll('.bs-plan-float').forEach(x => x.remove());
+      d.body.innerHTML = html;
+      d.querySelector(box).getBoundingClientRect = () => ({ left: 300, top: 500, width: 100, height: 40, right: 400, bottom: 540 });
+      f.api.setClutchMode(null); f.api.setClutchMode('draw');
+      const badge = d.querySelector('.bs-plan-float');
+      assert.ok(badge && !badge.hidden, 'the badge shows beside ' + box);
+      assert.equal(badge.style.left, '264px'); assert.equal(badge.style.top, '506px');
+    }
   } finally { f.close(); }
 });
 

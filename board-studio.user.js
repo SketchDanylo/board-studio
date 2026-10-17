@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.15.0
+// @version      6.15.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2261,8 +2261,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     ball.addEventListener('pointerdown', e => {
       e.preventDefault(); e.stopPropagation();
       try { ball.setPointerCapture(e.pointerId); } catch (err) { /* no capture: the drag still follows the ball */ }
-      const bar = ball.parentElement, which = +ball.dataset.ball;
+      const bar = ball.parentElement;
+      // Two balls on the same spot (all win, say): the way the drag goes says which one is meant, left for
+      // the win ball, right for the draw ball, so neither is ever stuck behind the other.
+      let which = rawSettings.clutch.draw === 0 ? null : +ball.dataset.ball;
+      const startX = e.clientX;
       const move = ev => {
+        if (which === null) { if (Math.abs(ev.clientX - startX) < 2) return; which = ev.clientX < startX ? 0 : 1; }
         const r = bar.getBoundingClientRect();
         const pct = Math.max(0, Math.min(100, Math.round((ev.clientX - r.left) / r.width * 100)));
         const c = rawSettings.clutch, end = Math.min(100, c.win + c.draw);

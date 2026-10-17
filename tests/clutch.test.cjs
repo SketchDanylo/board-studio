@@ -362,13 +362,56 @@ test('a Clutch ghost goes three deep: each next move a ghost of the one before, 
     assert.ok(Math.abs(op(second) - op(first) / 2) < 1e-9, 'the next ghost is half as strong as the one before');
     assert.ok(Math.abs(op(third) - op(second) / 2) < 1e-9, 'and the one after that half again');
     assert.equal(second.style.left, '50%'); assert.equal(second.style.top, '37.5%', 'it sits where its piece lands (e5)');
-    const arrows = layer.querySelectorAll('svg.cc-chain g');
-    assert.equal(arrows.length, 2, 'an arrow from each ghost to the next');
-    assert.ok(Math.abs(+arrows[0].getAttribute('opacity') - op(second)) < 1e-9 && Math.abs(+arrows[1].getAttribute('opacity') - op(third)) < 1e-9, 'each arrow as strong as the ghost it leads to');
+    assert.equal((ctl.chainArrows || []).length + layer.querySelectorAll('svg.cc-chain g').length, 0, 'no arrow from a live piece: their reply and a fresh piece of ours get a ghost and nothing more');
+    // a ghost that moves on again: an arrow from that ghost to where it goes, in the board's own arrow style, as strong as the ghost it leads to
+    const line = ['g1f3', 'b8c6', 'f3g5'];
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'g1f3', color: '#4cc2ff', line }]);
+    assert.equal(ctl.chainArrows.length, 1, 'one arrow: ghost knight f3 -> g5');
+    assert.equal(ctl.chainArrows[0].uci, 'f3g5');
+    const third2 = [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)')].find(g => g.dataset.uci === 'f3g5');
+    assert.ok(Math.abs(ctl.chainArrows[0].opacity - op(third2)) < 1e-9, 'as strong as the ghost it leads to');
+    // with custom arrows off the same arrow is a plain one inside the ghost layer
+    f.api.settings.arrows.on = false;
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'g1f3', color: '#4cc2ff', line: ['g1f3', 'b8c6', 'f3h4'] }]);
+    assert.equal(ctl.chainArrows.length, 0, 'the board draws none');
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch svg.cc-chain g').length, 1, 'a plain arrow instead');
+    f.api.settings.arrows.on = true;
     // a ghost with no further line is just the one ghost
     f.api.showClutchGhosts(ctl, [{ fen, uci: 'd2d4', color: '#4cc2ff' }]);
     assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)').length, 1);
     assert.equal(board.querySelectorAll('.bs-ghost-clutch svg.cc-chain g').length, 0);
+    assert.equal(ctl.chainArrows.length, 0);
+    f.api.showClutchGhosts(ctl, []);
+    assert.equal(ctl.chainArrows.length, 0, 'clearing the ghosts clears the arrows');
+  } finally { f.close(); }
+});
+
+test('a short line is carried on to three moves by quick looks, and stops where it stops being legal', async () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const replies = ['e7e5', 'g1f3'];
+    const asked = [];
+    const out = await f.api.extendLine(fen, ['e2e4'], async (x, o) => { asked.push(x.split(' ')[1]); return { pv: [replies[asked.length - 1]] }; });
+    assert.deepEqual(Array.from(out), ['e2e4', 'e7e5', 'g1f3'], 'three moves');
+    assert.deepEqual(asked, ['b', 'w'], 'one look per missing move');
+    assert.deepEqual(Array.from(await f.api.extendLine(fen, ['e2e4', 'e7e5', 'g1f3'], async () => { throw new Error('no look needed'); })), ['e2e4', 'e7e5', 'g1f3'], 'a full line is left alone');
+    assert.deepEqual(Array.from(await f.api.extendLine(fen, ['e2e4'], async () => ({ pv: ['a1a5'] }))), ['e2e4'], 'an illegal continuation stops it');
+  } finally { f.close(); }
+});
+
+test('answers for a person are looked at quickly first so the ghosts are up early, then again at more length', async () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1';
+    const calls = [], entries = new Map();
+    const analyse = async () => ({ depth: 6, cp: 20, pv: ['e7e5'], lines: [{ cp: 20, pv: ['e7e5'] }, { cp: 10, pv: ['d7d5'] }] });
+    const answer = async (x, o) => { calls.push([o.budget, x]); return { depth: 6, cp: 30, pv: ['g1f3', 'b8c6', 'f1c4'], human: true, lines: [] }; };
+    await f.api.bookBuild({ fen, s: { eval: 2, depth: 6, maxDepth: 12, spare: 2, human: true }, clock: 20, replies: 2, analyse, answer, stop: () => false, onEntry: (k, e) => entries.set(k, e) });
+    const budgets = calls.map(c => c[0]);
+    assert.ok(budgets.includes(450) && budgets.includes(1600), 'a quick look, then a longer one');
+    assert.ok(budgets.indexOf(450) < budgets.indexOf(1600), 'the quick one first');
+    assert.ok(calls.every(c => c[0] <= 1600), 'never an unbounded look');
   } finally { f.close(); }
 });
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.23.0
+// @version      6.24.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -667,11 +667,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // your own custom arrows, so they look and move exactly like them.
   const ENGINE_COLOR = '#f7c045';
   function addEngineArrows(seen) {
-    [...(this.engineArrows || []), ...(this.clutchArrows || [])].forEach(spec => {
+    [...(this.engineArrows || []), ...(this.chainArrows || []), ...(this.clutchArrows || [])].forEach(spec => {
       const m = MOVE.exec(spec.uci.slice(0, 4));
       if (!m) return;
       seen.add(spec.id);
-      const target = this.arrowTarget(m, 0.8);
+      const target = this.arrowTarget(m, spec.opacity ?? 0.8);
       let arrow = this.arrows.get(spec.id);
       if (!arrow) {
         arrow = this.createArrow(spec.id);
@@ -4344,6 +4344,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const board = ctl.board;
     let layer = ctl.clutchGhostLayer;
     if (!items.length && !layer) return;
+    if (!items.length && ctl.chainArrows && ctl.chainArrows.length) { ctl.chainArrows = []; ctl.scheduleArrows?.(); }
     const key = JSON.stringify([ctl.flipped, settings.ghosts.opacity, items.map(i => [i.uci, i.color, String(i.fen).split(' ')[0], (i.line || []).slice(0, CLUTCH_DEPTH)])]);
     if (ctl.clutchGhostKey === key && layer && layer.isConnected) return;
     ctl.clutchGhostKey = key;
@@ -4390,6 +4391,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // The branch it leads to: the next moves of the line, each a ghost of the one before, half as strong, joined
       // by an arrow from ghost to ghost. Only what is shown: the line was already worked out.
       const steps = clutchChain(item.fen, item.line || [item.uci]);
+      const ghostAt = new Set([item.uci.slice(2, 4)]);   // where a ghost of this branch stands
       for (let k = 1; k < steps.length; k++) {
         const step = steps[k], sid = item.uci + '>' + k + ':' + step.uci;
         keep.add(sid);
@@ -4409,18 +4411,24 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         sub.el.style.setProperty('--reply-color', item.color);
         sub.el.classList.remove('cc-ghost-leave');
         Object.assign(sub.el.style, spot(step.uci.slice(2, 4)), { opacity: String(strength) });
-        chains.push({ from: steps[k - 1].uci.slice(2, 4), to: step.uci.slice(2, 4), color: item.color, opacity: strength });
+        // An arrow only where a ghost moves on: the piece starts from a square a ghost stands on, so the arrow
+        // runs from that ghost to the next one. A live piece's move (their reply) gets a ghost and no arrow.
+        if (ghostAt.has(step.uci.slice(0, 2))) chains.push({ id: `cc:${item.uci}:${k}`, from: step.uci.slice(0, 2), to: step.uci.slice(2, 4), color: item.color, opacity: strength });
+        ghostAt.add(step.uci.slice(2, 4));
       }
     }
-    // the arrows between the ghosts, one drawing for all of them (board squares as units)
-    let arrows = layer.querySelector('svg.cc-chain');
-    if (!arrows) { arrows = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); arrows.setAttribute('class', 'cc-chain'); arrows.setAttribute('viewBox', '0 0 8 8'); layer.appendChild(arrows); }
-    arrows.innerHTML = chains.filter(c => c.from !== c.to).map(c => {
-      const a = squareXY(c.from.charCodeAt(0) - 96, +c.from[1], ctl.flipped), b = squareXY(c.to.charCodeAt(0) - 96, +c.to[1], ctl.flipped);
-      const x1 = a.x + .5, y1 = a.y + .5, x2 = b.x + .5, y2 = b.y + .5, len = Math.hypot(x2 - x1, y2 - y1) || 1, ux = (x2 - x1) / len, uy = (y2 - y1) / len;
-      // stop short of the centres, so the arrow sits between the two ghosts
-      const sx = x1 + ux * .32, sy = y1 + uy * .32, ex = x2 - ux * .36, ey = y2 - uy * .36, hx = ex - ux * .2, hy = ey - uy * .2;
-      return `<g opacity="${c.opacity}" fill="${c.color}" stroke="${c.color}"><line class="cc-chain-line" x1="${sx}" y1="${sy}" x2="${hx}" y2="${hy}" stroke-width=".11" stroke-linecap="round"/><polygon points="${ex},${ey} ${hx - uy * .14},${hy + ux * .14} ${hx + uy * .14},${hy - ux * .14}" stroke="none"/></g>`;
+    // The arrows between ghosts. With custom arrows on they are the board's own arrows, the same style and
+    // movement as the ones you draw; otherwise plain ones in the ghost layer.
+    const own = settings.arrows.on && ctl.scheduleArrows;
+    const specs = own ? chains.map(c => ({ id: c.id, uci: c.from + c.to, color: c.color, opacity: c.opacity })) : [];
+    if (JSON.stringify(specs) !== JSON.stringify(ctl.chainArrows || [])) { ctl.chainArrows = specs; ctl.scheduleArrows?.(); }
+    let plain = layer.querySelector('svg.cc-chain');
+    if (!own && chains.length && !plain) { plain = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); plain.setAttribute('class', 'cc-chain'); plain.setAttribute('viewBox', '0 0 8 8'); layer.appendChild(plain); }
+    if (plain) plain.innerHTML = own ? '' : chains.map(c => {
+      const p = squareXY(c.from.charCodeAt(0) - 96, +c.from[1], ctl.flipped), q = squareXY(c.to.charCodeAt(0) - 96, +c.to[1], ctl.flipped);
+      const x1 = p.x + .5, y1 = p.y + .5, x2 = q.x + .5, y2 = q.y + .5, len = Math.hypot(x2 - x1, y2 - y1) || 1, ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+      const sx = x1 + ux * .3, sy = y1 + uy * .3, ex = x2 - ux * .12, ey = y2 - uy * .12, hx = ex - ux * .24, hy = ey - uy * .24;
+      return `<g opacity="${c.opacity}" fill="${c.color}" stroke="${c.color}"><line x1="${sx}" y1="${sy}" x2="${hx}" y2="${hy}" stroke-width=".13" stroke-linecap="round"/><polygon points="${ex},${ey} ${hx - uy * .17},${hy + ux * .17} ${hx + uy * .17},${hy - ux * .17}" stroke="none"/></g>`;
     }).join('');
     for (const [id, entry] of live) {
       if (keep.has(id)) continue;
@@ -4552,8 +4560,27 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // analyse(fen, options) is the engine call. onEntry(key, entry) hears every new or improved
   // answer; stop() says whether to give up (the position changed). Resolves with how many answers
   // the book ended with.
+  // Carries a line of moves on to three by asking for the best move after each, quickly. Stops where a move is not legal.
+  async function extendLine(fen, pv, analyse) {
+    const out = [];
+    const game = new BoardStudioRules.Chess(fen);
+    const play = uci => {
+      const move = game.moves({ verbose: true }).find(m => m.from + m.to + (m.promotion || '') === uci);
+      if (!move) return false;
+      game.move(move); out.push(uci); return true;
+    };
+    for (const uci of pv) if (!play(uci)) return out.length ? out : pv;
+    while (out.length < 3 && !game.isGameOver()) {
+      const r = await analyse(game.fen(), { depth: 6, ms: 90, multipv: 1 });
+      if (!r || !r.pv || !r.pv.length || !play(r.pv[0])) break;
+    }
+    return out;
+  }
+
   async function bookBuild({ fen, analyse, answer, s, clock, onEntry, onRound = () => {}, stop, replies = 6, rounds = 6 }) {
-    if (answer) rounds = 1; // a person's answer is decided once
+    // A person's answer is looked at twice: a quick look first, so the ghosts and the premove are there while the
+    // opponent is still thinking, then a longer one that may change it.
+    if (answer) rounds = 2;
     const first = await analyse(fen, { depth: s.depth, ms: 250, multipv: Math.max(replies, s.multipv || 0) });
     if (stop() || !first) return 0;
     const lines = (first.lines && first.lines.length ? first.lines : [first]).filter(l => l && l.pv && l.pv.length);
@@ -4589,7 +4616,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (option.book) continue;
         const lastMove = { from: option.uci.slice(0, 2), to: option.uci.slice(2, 4) };
         const result = answer
-          ? (round ? null : await answer(option.fen, { lastMove, ms: 1500 }))
+          ? await answer(option.fen, { lastMove, ms: round ? 1500 : 500, budget: round ? 1600 : 450 })
           : await analyse(option.fen, { depth: Math.min(depth, s.strength ? s.strength.depthCap : 99), ms: round ? 500 : 200, multipv: s.multipv || 4 });
         if (stop()) return entries.size;
         if (!result || !result.pv) continue;
@@ -4597,7 +4624,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!decision) continue;
         const key = repKey(option.fen), old = entries.get(key);
         if (old && old.depth > result.depth) continue;
-        const entry = { ...decision, pv: result.pv, fen: option.fen, topReply, replyCapture: option.capture, replyTo: option.to, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
+        // The line a ghost goes on to show is three moves; when the search left fewer, a quick look finishes it.
+        let pv = result.pv;
+        if (pv && pv.length < 3 && options.indexOf(option) < 4) pv = await extendLine(option.fen, pv, analyse);
+        if (stop()) return entries.size;
+        const entry = { ...decision, pv, fen: option.fen, topReply, replyCapture: option.capture, replyTo: option.to, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
         if (entry.forced) entry.crit = 0;
         entries.set(key, entry);
         onEntry(key, entry, old);

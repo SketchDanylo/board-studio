@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.13.0
+// @version      6.13.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1862,17 +1862,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .rng { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 4px 0; font-size: 12px; }
     .rng input { grid-column: 1 / -1; width: 100%; accent-color: #f7c045; margin: 0; }
     .rng b { font-weight: 600; color: #f7c045; }
-    .odds { padding: 6px 0 2px; font-size: 12px; }
-    .odds-top { display: flex; justify-content: space-between; }
-    .odds-top b { font-weight: 600; color: #f7c045; }
-    .odds-bar { position: relative; height: 10px; margin: 9px 7px 5px; border-radius: 5px; touch-action: none; --a: 60%; --b: 100%; background: linear-gradient(90deg, #96bc4b 0 var(--a), #8a8a8a var(--a) var(--b), #fa412d var(--b) 100%); }
-    .odds-bar .seg { display: none; }
-    .odds-bar .ball { position: absolute; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
+    .odds { padding: 8px 0 4px; }
+    .odds-bar { position: relative; display: flex; height: 22px; margin: 0 8px; border-radius: 11px; touch-action: none; --a: 60%; --b: 100%; }
+    .odds-bar .seg { display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font: 700 11px inherit; font-style: normal; color: rgba(0,0,0,.72); min-width: 0; }
+    .odds-bar .seg.w { background: #96bc4b; border-radius: 11px 0 0 11px; }
+    .odds-bar .seg.d { background: #9a9a9a; }
+    .odds-bar .seg.l { background: #fa412d; border-radius: 0 11px 11px 0; color: rgba(255,255,255,.92); }
+    .odds-bar .ball { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
     .odds-bar .ball[data-ball="0"] { left: var(--a); }
     .odds-bar .ball[data-ball="1"] { left: var(--b); }
-    .odds-key { display: flex; justify-content: space-between; font-size: 10px; opacity: .8; }
-    .odds-key .w::before, .odds-key .d::before, .odds-key .l::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 4px; border-radius: 50%; background: #96bc4b; }
-    .odds-key .d::before { background: #8a8a8a; } .odds-key .l::before { background: #fa412d; }
     .clutch-status { padding: 4px 0 2px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
     .status { padding: 8px 12px 4px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
     .status.paused { color: #f7c045; }
@@ -2162,11 +2160,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="100" max="3500" step="50" aria-label="Clutch Elo">
             <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo in the box"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
-            <div class="odds-top"><span>Result</span><b data-out="odds"></b></div>
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
-            <div class="odds-key"><span class="w">Win</span><span class="d">Draw</span><span class="l">Lose</span></div>
           </div>
-          <div class="clutch-status"></div>
         </div>
       </div>
       <div class="status"></div>
@@ -2206,16 +2201,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     });
     const bar = shadow.querySelector('.odds-bar');
     if (bar) {
-      const win = Math.max(0, Math.min(100, c.win)), draw = Math.max(0, Math.min(100 - win, c.draw));
+      const win = Math.max(0, Math.min(100, c.win)), draw = Math.max(0, Math.min(100 - win, c.draw)), lose = 100 - win - draw;
       bar.style.setProperty('--a', win + '%'); bar.style.setProperty('--b', (win + draw) + '%');
-      shadow.querySelector('.odds-top b').textContent = `Win ${win}  Draw ${draw}  Lose ${100 - win - draw}`;
+      // The numbers sit on their own colour; a share too narrow to hold one shows nothing.
+      [['w', win, 'Win'], ['d', draw, 'Draw'], ['l', lose, 'Lose']].forEach(([k, v, name]) => {
+        const seg = bar.querySelector('.seg.' + k);
+        seg.style.flex = v + ' 0 0';
+        seg.textContent = v < 9 ? '' : v < 24 ? String(v) : name + ' ' + v;
+      });
     }
     const eloInput = shadow.querySelector('.elo-input');
     if (eloInput && shadow.activeElement !== eloInput) eloInput.value = String(c.elo);
     const cs = shadow.querySelector('.clutch-status');
     if (cs) cs.textContent = clutchState.text;
     const status = shadow.querySelector('.panel > .status');
-    if (status) { status.textContent = paused ? 'Paused: Global is off, so nothing below is running.' : engineState.text; status.classList.toggle('paused', paused); }
+    if (status) { status.textContent = paused ? 'Paused: Global is off, so nothing below is running.' : ''; status.style.display = paused ? '' : 'none'; status.classList.toggle('paused', paused); }
     shadow.querySelectorAll('.item').forEach(item => {
       const g = item.dataset.group;
       item.classList.toggle('off', !rawSettings[g].on);

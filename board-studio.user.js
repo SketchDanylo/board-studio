@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      5.18.0
+// @version      6.0.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -78,6 +78,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     book: { on: true },
     crown: { on: true },
     ghosts: { on: true, opacity: 0.25, ai: false },
+    // Clutch: below `time` seconds on your clock the engine hunts for a forced mate. `eval` is the
+    // advantage (pawns) that counts as winning, `depth` the quick first look, `maxDepth` how deep it may
+    // go, `spare` the least clock that still makes a deep search worth it.
+    clutch: { on: false, time: 10, eval: 2, depth: 12, maxDepth: 28, spare: 2 },
     global: { on: true }
   };
 
@@ -551,6 +555,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }, e => console.warn('[Board Studio] Opening book unavailable:', e.message));
   }
 
+  const clutchState = { text: 'Clutch: off' }; // what the panel shows about Clutch
   const engineState = { text: 'Engine: not needed yet' }; // what the panel shows about Stockfish
   const setEngineState = text => { if (engineState.text !== text) { engineState.text = text; listeners.forEach(fn => fn()); } };
   let engineFiles = null;   // { script, wasm } once downloaded
@@ -642,7 +647,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // your own custom arrows, so they look and move exactly like them.
   const ENGINE_COLOR = '#f7c045';
   function addEngineArrows(seen) {
-    (this.engineArrows || []).forEach(spec => {
+    [...(this.engineArrows || []), ...(this.clutchArrows || [])].forEach(spec => {
       const m = MOVE.exec(spec.uci.slice(0, 4));
       if (!m) return;
       seen.add(spec.id);
@@ -1849,6 +1854,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .row > span { flex: 1; margin-left: 12px; padding-right: 4px; }
     .item.off .row > span, .item.off .row > svg { opacity: .55; }
     :host(.paused) .item:not([data-group="global"]) { opacity: .4; }
+    .rng { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 4px 0; font-size: 12px; }
+    .rng input { grid-column: 1 / -1; width: 100%; accent-color: #f7c045; margin: 0; }
+    .rng b { font-weight: 600; color: #f7c045; }
+    .clutch-status { padding: 4px 0 2px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
     .status { padding: 8px 12px 4px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
     .status.paused { color: #f7c045; }
     .body { padding: 2px 8px 8px 44px; }
@@ -2074,6 +2083,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // Flat, colorful 24px icons in the spirit of chess.com's menu icons.
   const ROW_ICONS = {
+    clutch: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 2L5 13.5h5.5L9.5 22 19 9.8h-5.7z" fill="#f7c045" stroke="#c47d12" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
     global: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><path d="M7.2 6.4a8 8 0 1 0 9.6 0" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" opacity=".85"/></svg>`,
     style: ICON('bs-grad-row'),
     marks: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="11" height="11" rx="3" fill="#7fd6a0"/><rect x="10.5" y="2.5" width="11" height="11" rx="3" fill="#f0827a" opacity=".92"/><rect x="10.5" y="6" width="3" height="7.5" fill="#c9a98a" opacity=".55"/></svg>`,
@@ -2130,6 +2140,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <div style="font-size:10px;line-height:1.7;opacity:.8">The top reply gets the arrow; every reply glows in the color of how good it is.</div>
         </div>
       </div>
+      <div class="item" data-group="clutch">${row('clutch', 'Clutch', 10)}
+        <div class="body flow" style="--i:11">
+          <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0.1" max="60" step="0.1"></label>
+          <label class="rng"><span>Eval</span><b data-out="eval"></b><input type="range" data-key="eval" min="0" max="10" step="0.1"></label>
+          <label class="rng"><span>Depth</span><b data-out="depth"></b><input type="range" data-key="depth" min="6" max="24" step="1"></label>
+          <label class="rng"><span>Max depth</span><b data-out="maxDepth"></b><input type="range" data-key="maxDepth" min="12" max="40" step="1"></label>
+          <label class="rng"><span>Spare</span><b data-out="spare"></b><input type="range" data-key="spare" min="0.5" max="10" step="0.1"></label>
+          <div class="clutch-status"></div>
+        </div>
+      </div>
       <div class="status"></div>
     </div>`;
   document.body.appendChild(host);
@@ -2159,6 +2179,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     host.classList.toggle('paused', paused);
     document.querySelector('[data-pin="board-studio"] a')?.classList.toggle('bs-paused', paused);
     fab.classList.toggle('bs-paused', paused);
+    const c = rawSettings.clutch;
+    shadow.querySelectorAll('.rng input').forEach(input => {
+      const key = input.dataset.key;
+      if (document.activeElement !== input && shadow.activeElement !== input) input.value = String(c[key]);
+      shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = key === 'eval' ? `+${c[key].toFixed(1)}` : key === 'depth' || key === 'maxDepth' ? String(c[key]) : c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
+    });
+    const cs = shadow.querySelector('.clutch-status');
+    if (cs) cs.textContent = clutchState.text;
     const status = shadow.querySelector('.panel > .status');
     if (status) { status.textContent = paused ? 'Paused: Global is off, so nothing below is running.' : engineState.text; status.classList.toggle('paused', paused); }
     shadow.querySelectorAll('.item').forEach(item => {
@@ -2196,6 +2224,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       setTimeout(placePanel, 360);
     }));
   });
+  shadow.querySelectorAll('.rng input').forEach(input => input.addEventListener('input', () => setSetting('clutch', input.dataset.key, +input.value)));
   listeners.add(renderPanel);
   renderPanel();
 
@@ -3356,6 +3385,245 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
   listeners.add(syncCrown);
   setInterval(syncCrown, 150);
+
+  // ---------- Clutch ----------
+
+  // Short on time? Once your clock is down to the Time setting, Clutch looks for a forced mate with
+  // the engine: a quick look first, a much deeper one when you are clearly winning and the clock
+  // allows it (deeper still the fewer pieces are left), then it plays the line out, premoving the
+  // moves that are certain. It only ever moves pieces in games against the computer; anywhere else
+  // it just draws the line it found.
+
+  const CLUTCH_COLOR = '#4cc2ff';
+  const clutchMayPlay = () => /^\/play\/computer/.test(location.pathname);
+  const setClutch = text => { if (clutchState.text !== text) { clutchState.text = text; listeners.forEach(fn => fn()); } };
+
+  // "1:23", "0:09.8", "9.8" or "1:02:03" in seconds; null when it is not a time.
+  function parseClock(text) {
+    const parts = String(text).trim().split(':');
+    if (parts.length > 3) return null;
+    let total = 0;
+    for (const part of parts) {
+      if (!/^\d+(\.\d+)?$/.test(part)) return null;
+      total = total * 60 + parseFloat(part);
+    }
+    return total;
+  }
+
+  // Your clock, in seconds: the one at the bottom of the board. window.__bsClutchClock overrides it
+  // so Clutch can be tried on pages without a clock.
+  function ownClock() {
+    if (typeof window.__bsClutchClock === 'number') return window.__bsClutchClock;
+    const selectors = ['.clock-bottom .clock-time-monospace', '.clock-bottom', '#board-layout-player-bottom .clock-time-monospace', '#board-layout-player-bottom .clock-component', '[data-cy="clock-bottom"]'];
+    for (const selector of selectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        const seconds = parseClock(el.textContent);
+        if (seconds !== null) return seconds;
+      }
+    }
+    return null;
+  }
+
+  const countPieces = fen => (String(fen).split(' ')[0].match(/[a-zA-Z]/g) || []).length;
+
+  // How long and how deep each look may be. Searching costs clock too, so the quick look stays tiny,
+  // the deep one is a small share of what is left, and both stretch as pieces come off the board
+  // (a sparse board searches much deeper per second).
+  function clutchBudget(clock, pieces, s) {
+    const scale = pieces <= 6 ? 3 : pieces <= 10 ? 2 : pieces <= 16 ? 1.4 : 1;
+    const ms = clock * 1000;
+    return {
+      stage1Ms: Math.max(120, Math.min(500, ms * 0.03)),
+      stage2Ms: Math.max(0, Math.min(ms * 0.12 * scale, 4000 * scale)),
+      maxDepth: Math.min(40, s.maxDepth + (pieces <= 6 ? 6 : pieces <= 10 ? 3 : 0)),
+      canDeepen: clock >= s.spare
+    };
+  }
+
+  // Winning enough to be worth a deep search: a mate, or at least the Eval setting in pawns.
+  const clutchWinning = (result, s) => result.mate > 0 || (result.cp !== undefined && result.cp >= s.eval * 100);
+
+  // The engine's line as steps. Our steps are sure when every opponent move before them was forced
+  // (their only legal move), so they can be played without seeing the reply, and premoved.
+  function mateLine(fen, pv) {
+    const game = new BoardStudioRules.Chess(fen);
+    const line = [];
+    let sure = true;
+    for (let i = 0; i < pv.length; i++) {
+      const ours = i % 2 === 0;
+      const legal = game.moves({ verbose: true });
+      const move = legal.find(m => m.from + m.to + (m.promotion || '') === pv[i]);
+      if (!move) break;
+      const step = { uci: pv[i], from: move.from, to: move.to, promotion: move.promotion || null, ours, sure: ours ? sure : legal.length === 1 };
+      if (!ours && legal.length !== 1) sure = false;
+      game.move(move);
+      step.fen = game.fen();
+      line.push(step);
+    }
+    return line;
+  }
+
+  const sameFen = (a, b) => String(a).split(' ').slice(0, 4).join(' ') === String(b).split(' ').slice(0, 4).join(' ');
+
+  // One Stockfish for Clutch, kept running. analyse() resolves with { depth, cp | mate, pv } or null
+  // when a newer request replaced it.
+  const clutchEngine = {
+    worker: null, starting: false, ready: false, job: null, pending: null,
+    start() {
+      if (this.worker || this.starting) return;
+      this.starting = true;
+      withEngineFiles(files => {
+        try {
+          const { worker } = createEngineWorker(files);
+          this.worker = worker;
+          worker.onmessage = e => String(e.data).split(/\r?\n/).forEach(line => this.receive(line));
+          worker.onerror = e => { setClutch('Clutch: engine failed (' + (e.message || 'worker error') + ')'); this.worker = null; this.starting = false; this.ready = false; };
+          this.send('uci');
+        } catch (e) { this.starting = false; setClutch('Clutch: engine failed (' + e.message + ')'); }
+      }, e => { this.starting = false; setClutch('Clutch: engine download failed (' + e.message + ')'); });
+    },
+    send(command) { this.worker?.postMessage(command); },
+    receive(line) {
+      if (line === 'uciok') { this.send('setoption name Hash value 64'); this.send('setoption name Threads value 1'); this.send('isready'); }
+      else if (line === 'readyok') { this.ready = true; this.next(); }
+      else if (line.startsWith('info ') && this.job && !/ (lower|upper)bound/.test(line)) {
+        const depth = /\bdepth (\d+)/.exec(line), score = /\bscore (cp|mate) (-?\d+)/.exec(line), pv = / pv (.+)$/.exec(line);
+        if (depth && score && pv) this.job.last = { depth: +depth[1], [score[1]]: +score[2], pv: pv[1].trim().split(/\s+/) };
+      } else if (line.startsWith('bestmove')) {
+        const job = this.job;
+        this.job = null;
+        if (job) job.resolve(job.cancelled || !job.last ? null : { ...job.last, best: line.split(' ')[1] });
+        this.next();
+      }
+    },
+    next() {
+      if (!this.ready || this.job || !this.pending) return;
+      const { fen, depth, ms, resolve } = this.pending;
+      this.pending = null;
+      this.job = { resolve, last: null, cancelled: false };
+      this.send('position fen ' + fen);
+      this.send(`go depth ${depth} movetime ${Math.round(ms)}`);
+    },
+    analyse(fen, { depth, ms }) {
+      this.start();
+      return new Promise(resolve => {
+        this.pending?.resolve(null);
+        this.pending = { fen, depth, ms, resolve };
+        if (this.job) { this.job.cancelled = true; this.send('stop'); } else this.next();
+      });
+    }
+  };
+
+  // A drag from one square to another, as a hand would do it. On your turn it is a move; on the
+  // opponent's turn chess.com takes it as a premove.
+  function dragPiece(board, from, to) {
+    const rect = board.getBoundingClientRect(), size = rect.width / 8;
+    const flipped = board.classList.contains('flipped');
+    const at = square => {
+      const f = square.charCodeAt(0) - 97, r = +square[1] - 1;
+      return { x: rect.left + ((flipped ? 7 - f : f) + .5) * size, y: rect.top + ((flipped ? r : 7 - r) + .5) * size };
+    };
+    const a = at(from), b = at(to), mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const fire = (type, point, buttons) => {
+      const el = document.elementFromPoint(point.x, point.y) || board;
+      const init = { bubbles: true, cancelable: true, composed: true, clientX: point.x, clientY: point.y, button: 0, buttons, pointerId: 1, pointerType: 'mouse', isPrimary: true, view: window };
+      el.dispatchEvent(new PointerEvent(type, init));
+      el.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), init));
+    };
+    fire('pointerdown', a, 1);
+    setTimeout(() => fire('pointermove', mid, 1), 30);
+    setTimeout(() => fire('pointermove', b, 1), 60);
+    setTimeout(() => fire('pointerup', b, 0), 90);
+  }
+
+  const clutch = { plan: null, searching: null, played: '', arrows: '' };
+
+  function clutchShow(ctl, specs) {
+    const key = JSON.stringify(specs);
+    if (clutch.arrows === key) return;
+    clutch.arrows = key;
+    ctl.clutchArrows = specs;
+    ctl.scheduleArrows?.();
+  }
+
+  async function clutchSearch(key, fen, clock, s) {
+    const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
+    setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
+    let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms });
+    if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0) {
+      setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
+      result = (await clutchEngine.analyse(fen, { depth: budget.maxDepth, ms: budget.stage2Ms })) || result;
+    }
+    return result;
+  }
+
+  function clutchTick() {
+    const s = settings.clutch;
+    const board = document.querySelector('wc-chess-board, chess-board');
+    const ctl = board && board.__cc;
+    if (!s.on || !board || !ctl || !board.game || typeof board.game.getFEN !== 'function') {
+      if (ctl) clutchShow(ctl, []);
+      clutch.plan = null;
+      setClutch(s.on ? 'Clutch: waiting for a board' : 'Clutch: off');
+      return;
+    }
+    let fen, own;
+    try {
+      fen = board.game.getFEN();
+      const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
+      own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
+    } catch (e) { return; }
+    if (!own) { setClutch('Clutch: waiting for a game you are playing'); return; }
+    const clock = ownClock();
+    if (clock === null) { setClutch('Clutch: no clock found on this page'); clutchShow(ctl, []); return; }
+    if (clock > s.time) {
+      setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at ${s.time.toFixed(1)} s`);
+      clutchShow(ctl, []);
+      clutch.plan = null;
+      return;
+    }
+    const turn = fen.split(' ')[1], key = fen.split(' ').slice(0, 4).join(' ');
+    // Follow a plan that is already made: where are we in it?
+    let rest = null;
+    if (clutch.plan) {
+      const at = clutch.plan.line.findIndex(step => sameFen(step.fen, fen));
+      if (sameFen(clutch.plan.start, fen)) rest = clutch.plan.line;
+      else if (at >= 0) rest = clutch.plan.line.slice(at + 1);
+      else clutch.plan = null;
+    }
+    if (rest) {
+      clutchShow(ctl, rest.filter(step => step.ours).map(step => ({ id: 'cl:' + step.uci, uci: step.uci, color: CLUTCH_COLOR })));
+      if (clutch.played === key) return;
+      let step = null, premove = false;
+      if (turn === own && rest[0]?.ours && rest[0].sure) step = rest[0];
+      else if (turn !== own && rest[0] && !rest[0].ours && rest[0].sure && rest[1]?.ours && rest[1].sure) { step = rest[1]; premove = true; }
+      if (!step) return;
+      if (!clutchMayPlay()) { setClutch('Clutch: mate line drawn (it only moves pieces in games against the computer)'); return; }
+      if (step.promotion) { setClutch('Clutch: the line promotes, that move is yours'); return; }
+      clutch.played = key;
+      setClutch(`Clutch: ${premove ? 'premoving' : 'playing'} ${step.from}-${step.to}`);
+      dragPiece(board, step.from, step.to);
+      return;
+    }
+    if (turn !== own || clutch.searching === key) return;
+    clutch.searching = key;
+    clutchSearch(key, fen, clock, s).then(result => {
+      if (clutch.searching === key) clutch.searching = null;
+      let current = null;
+      try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
+      if (!result || !current || !sameFen(current, fen)) return;
+      if (result.mate > 0 && result.pv) {
+        const line = mateLine(fen, result.pv);
+        if (line[0] && line[0].ours) {
+          clutch.plan = { start: fen, line };
+          setClutch(`Clutch: mate in ${result.mate} found at depth ${result.depth}`);
+          return;
+        }
+      }
+      setClutch(`Clutch: no forced mate found (depth ${result.depth}, ${result.mate ? 'mate against' : (result.cp / 100).toFixed(2)})`);
+    });
+  }
+  setInterval(clutchTick, 200);
 
   // ---------- boot ----------
 

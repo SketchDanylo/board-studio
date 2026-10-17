@@ -254,20 +254,16 @@ test('playing to lose on the clock: quick on the obvious, long on some quiet mov
   } finally { f.close(); }
 });
 
-test('the panel shows a crown, a half or a flag for the plan, each its own colour, and nothing outside a game', () => {
+test('the Styles panel carries no plan badge (it is beside the clock), and it scrolls on a short window', () => {
   const f = setup();
   try {
     const sh = [...f.w.document.body.children].find(x => x.shadowRoot).shadowRoot;
-    const plan = sh.querySelector('.plan'), badge = plan.firstElementChild;
-    assert.equal(plan.hidden, true, 'hidden before Clutch kicks in');
     f.api.setClutchMode('win');
-    assert.equal(plan.hidden, false); assert.equal(badge.dataset.kind, 'win'); assert.ok(badge.querySelector('path'), 'the crown');
-    f.api.setClutchMode('draw');
-    assert.equal(badge.dataset.kind, 'draw'); assert.ok(/189/.test(badge.innerHTML) || /½/.test(badge.textContent), 'the half');
-    f.api.setClutchMode('lose', 'time');
-    assert.equal(badge.dataset.kind, 'lose'); assert.ok(/on time/.test(badge.title), 'says it is going for the clock');
-    f.api.setClutchMode(null);
-    assert.equal(plan.hidden, true);
+    assert.equal(sh.querySelector('.plan'), null, 'no badge in the panel');
+    const css = sh.querySelector('style').textContent;
+    assert.ok(/\.panel \{[^}]*overflow-y: auto/.test(css), 'the panel scrolls vertically');
+    assert.ok(/max-height: calc\(100vh - 16px\)/.test(css), 'and never taller than the window');
+    assert.ok(/overscroll-behavior: contain/.test(css), 'without leaking the scroll to the page');
   } finally { f.close(); }
 });
 

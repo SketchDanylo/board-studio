@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.20.1
+// @version      6.20.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1836,13 +1836,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     :host { all: initial; }
     * { box-sizing: border-box; }
     .panel {
-      display: none; position: fixed; z-index: 2147483000; width: 300px; max-height: calc(100vh - 16px);
-      overflow: auto; padding: 8px; border-radius: 0 5px 5px 0;
+      display: none; position: fixed; z-index: 2147483000; width: 300px; max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px);
+      overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 8px; border-radius: 0 5px 5px 0;
       background: rgb(38, 36, 33);
       color: rgba(255, 255, 255, .85);
       font: 14px/20px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Helvetica, Arial, sans-serif;
-      scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.2) transparent;
+      scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.4) rgba(255,255,255,.06);
     }
+    .panel::-webkit-scrollbar { width: 8px; }
+    .panel::-webkit-scrollbar-track { background: rgba(255,255,255,.05); border-radius: 4px; }
+    .panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,.35); border-radius: 4px; }
+    .panel::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.55); }
     .panel.open { display: block; }
     .panel { transition: top 320ms cubic-bezier(.22, 1, .36, 1); }
     :host(.styled) .panel {
@@ -1890,16 +1894,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .odds-bar .seg.d { background: #9a9a9a; }
     .odds-bar .seg.l { background: #fa412d; border-radius: 0 11px 11px 0; color: rgba(255,255,255,.92); }
     .odds-bar .ball { box-sizing: border-box; position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
-    .plan { display: flex; justify-content: center; padding: 0 0 9px; }
-    .plan[hidden] { display: none; }
-    .plan-badge { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; --g: #96bc4b; background: linear-gradient(180deg, #a6cc5c, #7ea53a); box-shadow: 0 0 0 2px rgba(255,255,255,.18), 0 0 12px var(--g); animation: bs-plan-pulse 1.9s ease-in-out infinite; }
-    .plan-badge[data-kind="draw"] { --g: #c8c8c8; background: linear-gradient(180deg, #b4b4b4, #858585); }
-    .plan-badge[data-kind="lose"] { --g: #fa412d; background: linear-gradient(180deg, #ff7a66, #e4432f); }
-    .plan-badge svg { width: 18px; height: 18px; display: block; filter: drop-shadow(0 1px 1px rgba(0,0,0,.3)); }
-    .plan-badge.pop svg { animation: bs-plan-pop .45s cubic-bezier(.34, 1.56, .64, 1); }
-    @keyframes bs-plan-pop { from { transform: scale(.2) rotate(-25deg); opacity: 0; } to { transform: none; opacity: 1; } }
-    @keyframes bs-plan-pulse { 0%, 100% { box-shadow: 0 0 0 2px rgba(255,255,255,.18), 0 0 6px var(--g); } 50% { box-shadow: 0 0 0 2px rgba(255,255,255,.3), 0 0 16px 3px var(--g); } }
-    @media (prefers-reduced-motion: reduce) { .plan-badge, .plan-badge svg { animation: none !important; } }
     .odds[data-mode] .seg { opacity: .45; transition: opacity .4s ease; }
     .odds[data-mode="win"] .seg.w, .odds[data-mode="draw"] .seg.d, .odds[data-mode="lose"] .seg.l { opacity: 1; position: relative; z-index: 1; --g: #96bc4b; animation: bs-odds-glow 1.7s ease-in-out infinite; }
     .odds[data-mode="draw"] .seg.d { --g: #d0d0d0; }
@@ -2198,7 +2192,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="100" max="3500" step="50" aria-label="Clutch Elo">
             <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo in the box"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
-            <div class="plan" hidden><i class="plan-badge"></i></div>
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
           </div>
         </div>
@@ -2238,16 +2231,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (document.activeElement !== input && shadow.activeElement !== input) input.value = String(c[key]);
       shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
     });
-    const planBox = shadow.querySelector('.plan');
-    if (planBox) {
-      const mode = clutchState.mode, badge = planBox.firstElementChild;
-      planBox.hidden = !mode;
-      if (mode && badge.dataset.kind !== mode) {
-        badge.dataset.kind = mode; badge.innerHTML = PLAN_BADGES[mode];
-        badge.classList.remove('pop'); void badge.offsetWidth; badge.classList.add('pop');
-      }
-      if (mode) badge.title = mode === 'win' ? 'Clutch is playing to win' : mode === 'draw' ? 'Clutch is playing to draw' : clutchState.way === 'time' ? 'Clutch is playing to lose, on time if it can' : 'Clutch is playing to lose';
-    }
     const oddsBox = shadow.querySelector('.odds');
     if (oddsBox) { if (clutchState.mode) oddsBox.dataset.mode = clutchState.mode; else delete oddsBox.dataset.mode; }
     const bar = shadow.querySelector('.odds-bar');
@@ -2363,6 +2346,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     pinned = false;
   }
   const isOpen = () => panel.classList.contains('open');
+  // The menu is taller than a short window: the wheel and a touch swipe scroll it, and never reach the page behind.
+  ['wheel', 'touchmove'].forEach(type => panel.addEventListener(type, e => e.stopPropagation(), { passive: true }));
 
   // With the custom style on it opens on hover and goes away when the pointer leaves, like
   // chess.com's menus; a short grace lets the pointer cross from the item into the menu.

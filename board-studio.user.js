@@ -3390,7 +3390,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // against a person) it only draws the line it found and never moves a piece.
 
   const CLUTCH_COLOR = '#4cc2ff';
-  const clutchMayPlay = () => /^\/play\/computer/.test(location.pathname);
+  const clutchMayPlay = () => true;
   const setClutch = text => { if (clutchState.text !== text) { clutchState.text = text; listeners.forEach(fn => fn()); } };
 
   // "1:23", "0:09.8", "9.8" or "1:02:03" in seconds; null when it is not a time.

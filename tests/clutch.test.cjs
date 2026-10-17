@@ -214,3 +214,16 @@ test('premoves are only used where chess.com has them, and cancelling goes throu
     assert.equal(seen.join(), '2', 'a right-button press reaches the board');
   } finally { f.close(); }
 });
+
+test('only the trigger time is a setting; the rest is worked out from the position and the clock', () => {
+  const f = setup();
+  try {
+    assert.equal(Object.keys(f.api.settings.clutch).sort().join(), 'on,time');
+    const p = f.api.clutchParams;
+    const base = { on: true, time: 10 };
+    assert.ok(p(base, 40, 32).depth > p(base, 5, 32).depth, 'a draining clock shortens the quick look');
+    assert.ok(p(base, 8, 4).eval < p(base, 8, 30).eval, 'few pieces: a smaller edge already counts as winning');
+    assert.ok(p({ on: true, time: 30 }, 8, 20).spare > p({ on: true, time: 3 }, 8, 20).spare, 'the spare clock follows the trigger');
+    assert.equal(p(base, 8, 20).time, 10);
+  } finally { f.close(); }
+});

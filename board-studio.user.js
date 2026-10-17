@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.3.0
+// @version      6.4.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -78,10 +78,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     book: { on: true },
     crown: { on: true },
     ghosts: { on: true, opacity: 0.25, ai: false },
-    // Clutch: below `time` seconds on your clock the engine hunts for a forced mate. `eval` is the
-    // advantage (pawns) that counts as winning, `depth` the quick first look, `maxDepth` how deep it may
-    // go, `spare` the least clock that still makes a deep search worth it.
-    clutch: { on: false, time: 10, eval: 2, depth: 12, maxDepth: 28, spare: 2 },
+    // Clutch: from `time` seconds on your clock down, the engine takes over. Everything else (what
+    // counts as winning, how deep to look, how much clock a deep search may cost) it works out itself.
+    clutch: { on: false, time: 10 },
     global: { on: true }
   };
 
@@ -2143,10 +2142,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       <div class="item" data-group="clutch">${row('clutch', 'Clutch', 10)}
         <div class="body flow" style="--i:11">
           <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0.1" max="60" step="0.1"></label>
-          <label class="rng"><span>Eval</span><b data-out="eval"></b><input type="range" data-key="eval" min="0" max="10" step="0.1"></label>
-          <label class="rng"><span>Depth</span><b data-out="depth"></b><input type="range" data-key="depth" min="6" max="24" step="1"></label>
-          <label class="rng"><span>Max depth</span><b data-out="maxDepth"></b><input type="range" data-key="maxDepth" min="12" max="40" step="1"></label>
-          <label class="rng"><span>Spare</span><b data-out="spare"></b><input type="range" data-key="spare" min="0.5" max="10" step="0.1"></label>
           <div class="clutch-status"></div>
         </div>
       </div>
@@ -2183,7 +2178,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     shadow.querySelectorAll('.rng input').forEach(input => {
       const key = input.dataset.key;
       if (document.activeElement !== input && shadow.activeElement !== input) input.value = String(c[key]);
-      shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = key === 'eval' ? `+${c[key].toFixed(1)}` : key === 'depth' || key === 'maxDepth' ? String(c[key]) : c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
+      shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
     });
     const cs = shadow.querySelector('.clutch-status');
     if (cs) cs.textContent = clutchState.text;
@@ -3740,8 +3735,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     try { el.dispatchEvent(new PointerEvent('pointerdown', init)); } finally { synthetic = false; }
   }
 
+  // Everything but the trigger time is decided here from the position and the clock: what counts as
+  // winning (less is enough with few pieces, where mates are near), how deep the quick look goes (less
+  // as the clock drains), the deepest it may go, and the least clock that still allows a deep search.
+  function clutchParams(base, clock, pieces) {
+    return {
+      ...base,
+      eval: pieces <= 6 ? 1 : pieces <= 12 ? 1.5 : 2,
+      depth: clock >= 30 ? 14 : clock >= 10 ? 12 : clock >= 4 ? 10 : 8,
+      maxDepth: 28,
+      spare: Math.min(6, Math.max(0.8, base.time * 0.2))
+    };
+  }
+
   function clutchTick() {
-    const s = settings.clutch;
+    const base = settings.clutch;
+    let s = base;
     if (s.on && !clutch.wasOn) { clutch.suspended = false; }
     clutch.wasOn = s.on;
     const board = document.querySelector('wc-chess-board, chess-board');
@@ -3779,6 +3788,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       clutchShow(ctl, []);
       return;
     }
+    s = clutchParams(base, clock, countPieces(fen));
     clutch.acting = clutchMayPlay();
     const oppClock = readClock('opp');
     const turn = fen.split(' ')[1], key = repKey(fen);

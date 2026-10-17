@@ -62,20 +62,33 @@ test('Blunder Block ignores moves that are not real input (Clutch plays by synth
   } finally { f.close(); }
 });
 
-test('Blunder Block holds a move until the engine has judged it, then plays it for you if it is fine', async () => {
+test('Blunder Block never makes you wait: a move not judged yet, or too shallowly, goes straight through', () => {
   const f = setup();
   try {
+    // no verdict at all, then a shallow one that says blunder: neither is enough to refuse
     const search = { fen: initialFEN, depth: 1, error: null, moves: new Map(), stop() {} };
-    const { board, bb, seen, at } = rig(f, search);
-    let dragged = null;
-    // the replay is a synthetic drag; watch for its pointerdown at the origin square
-    board.addEventListener('pointerdown', e => { if (dragged === null) dragged = [e.clientX, e.clientY]; });
-    at('pointerdown', 450, 650); dragged = null; at('pointerup', 450, 450);
-    assert.ok(bb.pending, 'the move is held while the verdict is unknown');
-    search.depth = 20; search.moves.set('e2e4', { blunder: false });
-    bb.allowUntrusted = false; // from here on events are synthetic, like the site sees them from the script
-    bb.settle();
-    assert.equal(bb.pending, null, 'decided');
-    assert.ok(dragged, 'and made for the user after all');
+    const { bb, seen, at } = rig(f, search);
+    at('pointerdown', 450, 650); at('pointerup', 450, 450);
+    assert.equal(seen.up, 1, 'not judged yet: the move is simply made');
+    bb.blockUntil = 0;
+    search.moves.set('e2e3', { blunder: true });
+    at('pointerdown', 450, 650); at('pointerup', 450, 550);
+    assert.equal(seen.up, 2, 'a depth-1 guess is not trusted to refuse a move');
+    bb.blockUntil = 0;
+    search.depth = 20;
+    at('pointerdown', 450, 650); at('pointerup', 450, 550);
+    assert.equal(seen.up, 2, 'a real verdict refuses it');
+  } finally { f.close(); }
+});
+
+test('Blunder Block leaves a premove alone: it is not your turn, so nothing is judged or held', () => {
+  const f = setup();
+  try {
+    // black to move; the user is white and drags a white piece (a premove)
+    const search = { fen: initialFEN, depth: 20, error: null, moves: new Map([['e2e3', { blunder: true }]]), stop() {} };
+    const { board, seen, at } = rig(f, search);
+    board.game.getFEN = () => 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1';
+    at('pointerdown', 450, 650); at('pointerup', 450, 550);
+    assert.equal(seen.up, 1, 'a premove goes through at once');
   } finally { f.close(); }
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.18.0
+// @version      6.18.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3177,10 +3177,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // ---------- Blunder Block ----------
   // Refuses the USER's own move, dragged or clicked, when the engine calls it a blunder (the same verdict the
   // red crosses of Show Blunders use). Only real input is looked at: the moves Clutch makes are synthetic
-  // events, so Clutch is never blocked. A verdict not ready yet holds the move for a moment (up to 1.2 s),
-  // then plays it for you if it is fine.
+  // events, so Clutch is never blocked. Nothing ever waits: the engine starts looking the moment it is your
+  // turn, and a move whose verdict is not ready yet is simply played (as is any premove).
   const blunderBlock = {
-    search: null, down: null, selected: null, selectedFen: null, pending: null, blockUntil: 0, allowUntrusted: false, timer: null,
+    search: null, down: null, selected: null, selectedFen: null, blockUntil: 0, allowUntrusted: false,
     active() { return !!settings.danger.on && !!settings.danger.block; },
     real(e) { return e.isTrusted || this.allowUntrusted; },
     boardOf() { return document.querySelector('wc-chess-board, chess-board'); },
@@ -3196,7 +3196,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!fen) return null;
       if (this.search && this.search.fen === fen) return this.search;
       this.drop();
-      this.search = new BlunderSearch(fen, () => this.settle());
+      this.search = new BlunderSearch(fen, () => {});
       this.search.start();
       return this.search;
     },
@@ -3210,12 +3210,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       } catch (e) { return null; }
     },
     // true: a blunder; false: fine; null: not known yet.
-    verdict(uci, final) {
+    verdict(uci) {
       const search = this.search;
       if (!search || search.error) return false;
       const entry = search.moves.get(uci);
-      if (!entry) return final ? false : null;
-      if (search.depth < 10 && !final) return null;
+      if (!entry || search.depth < 10) return null;
       return !!entry.blunder;
     },
     flash(board, square) {
@@ -3252,28 +3251,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // Only the user's own side: a game against someone is played from one colour.
       try { const as = board.game.getPlayingAs && board.game.getPlayingAs(); if ((as === 1 && info.color !== 'w') || (as === 2 && info.color !== 'b')) return false; } catch (err) { /* analysis board */ }
       this.ensure(board);
-      const v = this.verdict(info.uci, false);
+      const v = this.verdict(info.uci);
       if (v === true) { this.refuse(board, from, to, drag); return true; }
-      if (v === false) return false;
-      // Not known yet: hold the move, and decide as soon as the engine has said.
-      this.pending = { board, from, to, drag, uci: info.uci, until: Date.now() + 1200 };
-      this.blockUntil = Date.now() + 1300;
-      if (drag) this.giveBack(board, from);
-      clearInterval(this.timer);
-      this.timer = setInterval(() => this.settle(), 80);
-      return true;
-    },
-    settle() {
-      const p = this.pending;
-      if (!p) { clearInterval(this.timer); return; }
-      const final = Date.now() >= p.until;
-      const v = this.verdict(p.uci, final);
-      if (v === null) return;
-      clearInterval(this.timer); this.pending = null; this.blockUntil = 0;
-      if (v) { this.flash(p.board, p.to); return; }
-      // Fine after all: make the move for them.
-      this.blockUntil = Date.now() + 400;
-      dragPiece(p.board, p.from, p.to, true);
+      return false; // fine, or not judged yet: the move is made, with no delay
     },
     onDown(e) {
       if (!this.active() || !this.real(e) || e.button > 0) return;
@@ -3320,10 +3300,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       window.addEventListener('click', e => this.onClick(e), true);
       // Nothing to look at once the position moves on, or the option is turned off.
       setInterval(() => {
-        if (!this.search) return;
         const board = this.boardOf();
-        if (!this.active() || !board || blunderFEN(board) !== this.search.fen) { this.drop(); this.pending = null; }
-      }, 1000);
+        if (!this.active() || !board) { this.drop(); return; }
+        const fen = blunderFEN(board);
+        if (!fen) return;
+        if (this.search && this.search.fen !== fen) this.drop();
+        // Start looking as soon as it is the user's turn, so the verdicts are there by the time a piece is picked up.
+        if (!this.search) {
+          let as = null; try { as = board.game.getPlayingAs && board.game.getPlayingAs(); } catch (e) { /* none */ }
+          const turn = fen.split(' ')[1];
+          if (!document.hidden && (as === null || as === undefined || (as === 1 && turn === 'w') || (as === 2 && turn === 'b'))) this.ensure(board);
+        }
+      }, 300);
     }
   };
 

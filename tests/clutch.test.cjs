@@ -233,6 +233,44 @@ test('the panel bar glows in the colour of the result Clutch rolled, and stops w
   } finally { f.close(); }
 });
 
+test('playing to lose on the clock: quick on the obvious, long on some quiet moves, and out of time at the end', () => {
+  const f = setup();
+  try {
+    const burn = f.api.clutchBurnMs;
+    const quiet = { uci: 'g1f3', check: false, capture: false, promotion: null };
+    const fens = Array.from({ length: 40 }, (_, i) => `rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - ${i} ${10 + i}`);
+    const holds = fens.map(fen => burn('lose', 'time', quiet, fen, 30));
+    assert.ok(holds.some(ms => ms > 0) && holds.some(ms => ms === 0), 'only some quiet moves are held');
+    assert.ok(holds.filter(ms => ms > 0).every(ms => ms >= 30 * 1000 * 0.25 && ms <= 30 * 1000 * 0.6), 'a quarter to six tenths of what is left');
+    assert.deepEqual(holds, fens.map(fen => burn('lose', 'time', quiet, fen, 30)), 'the same position always gets the same answer');
+    const held = fens.find(fen => burn('lose', 'time', quiet, fen, 30) > 0);
+    assert.equal(burn('lose', 'time', { ...quiet, capture: true }, held, 30), 0, 'a capture is played at once');
+    assert.equal(burn('lose', 'time', { ...quiet, check: true }, held, 30), 0, 'and a check');
+    assert.equal(burn('lose', 'board', quiet, held, 30), 0, 'losing on the board never holds');
+    assert.equal(burn('win', 'time', quiet, held, 30), 0, 'nor does winning');
+    assert.equal(burn('lose', 'time', quiet, 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 3', 30), 0, 'the opening is played quickly');
+    const late = fens.find(fen => burn('lose', 'time', quiet, fen, 3) > 0);
+    assert.ok(burn('lose', 'time', quiet, late, 3) > 3000, 'nearly out of time: it stays put until the flag falls');
+  } finally { f.close(); }
+});
+
+test('the panel shows a crown, a half or a flag for the plan, each its own colour, and nothing outside a game', () => {
+  const f = setup();
+  try {
+    const sh = [...f.w.document.body.children].find(x => x.shadowRoot).shadowRoot;
+    const plan = sh.querySelector('.plan'), badge = plan.firstElementChild;
+    assert.equal(plan.hidden, true, 'hidden before Clutch kicks in');
+    f.api.setClutchMode('win');
+    assert.equal(plan.hidden, false); assert.equal(badge.dataset.kind, 'win'); assert.ok(badge.querySelector('path'), 'the crown');
+    f.api.setClutchMode('draw');
+    assert.equal(badge.dataset.kind, 'draw'); assert.ok(/189/.test(badge.innerHTML) || /½/.test(badge.textContent), 'the half');
+    f.api.setClutchMode('lose', 'time');
+    assert.equal(badge.dataset.kind, 'lose'); assert.ok(/on time/.test(badge.title), 'says it is going for the clock');
+    f.api.setClutchMode(null);
+    assert.equal(plan.hidden, true);
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

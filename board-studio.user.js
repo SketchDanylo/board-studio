@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.19.0
+// @version      6.20.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -558,7 +558,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }, e => console.warn('[Board Studio] Opening book unavailable:', e.message));
   }
 
-  const clutchState = { text: 'Clutch: off', mode: null }; // what the panel shows about Clutch
+  // The plan Clutch has for the game, as chess.com-style round badges: a crown to win, a half to draw, a
+  // flag to lose, each in its own colour.
+  const PLAN_BADGES = {
+    win: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 17.5 3.5 7.5l4.6 3.4L12 4.5l3.9 6.4 4.6-3.4-1 10z" fill="#fff"/><rect x="5" y="18.8" width="14" height="2" rx="1" fill="#fff"/></svg>',
+    draw: '<svg viewBox="0 0 24 24" aria-hidden="true"><text x="12" y="17.5" text-anchor="middle" font-size="16" font-weight="800" fill="#fff" font-family="inherit">&#189;</text></svg>',
+    lose: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5v17" stroke="#fff" stroke-width="2" stroke-linecap="round"/><path d="M7.8 4.8h10.2l-3.2 3.9 3.2 3.9H7.8z" fill="#fff"/></svg>'
+  };
+  const clutchState = { text: 'Clutch: off', mode: null, way: null }; // what the panel shows about Clutch
   const engineState = { text: 'Engine: not needed yet' }; // what the panel shows about Stockfish
   const setEngineState = text => { if (engineState.text !== text) { engineState.text = text; listeners.forEach(fn => fn()); } };
   let engineFiles = null;   // { script, wasm } once downloaded
@@ -1874,6 +1881,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .odds-bar .seg.d { background: #9a9a9a; }
     .odds-bar .seg.l { background: #fa412d; border-radius: 0 11px 11px 0; color: rgba(255,255,255,.92); }
     .odds-bar .ball { box-sizing: border-box; position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
+    .plan { display: flex; justify-content: center; padding: 0 0 9px; }
+    .plan[hidden] { display: none; }
+    .plan-badge { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; --g: #96bc4b; background: linear-gradient(180deg, #a6cc5c, #7ea53a); box-shadow: 0 0 0 2px rgba(255,255,255,.18), 0 0 12px var(--g); animation: bs-plan-pulse 1.9s ease-in-out infinite; }
+    .plan-badge[data-kind="draw"] { --g: #c8c8c8; background: linear-gradient(180deg, #b4b4b4, #858585); }
+    .plan-badge[data-kind="lose"] { --g: #fa412d; background: linear-gradient(180deg, #ff7a66, #e4432f); }
+    .plan-badge svg { width: 18px; height: 18px; display: block; filter: drop-shadow(0 1px 1px rgba(0,0,0,.3)); }
+    .plan-badge.pop svg { animation: bs-plan-pop .45s cubic-bezier(.34, 1.56, .64, 1); }
+    @keyframes bs-plan-pop { from { transform: scale(.2) rotate(-25deg); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes bs-plan-pulse { 0%, 100% { box-shadow: 0 0 0 2px rgba(255,255,255,.18), 0 0 6px var(--g); } 50% { box-shadow: 0 0 0 2px rgba(255,255,255,.3), 0 0 16px 3px var(--g); } }
+    @media (prefers-reduced-motion: reduce) { .plan-badge, .plan-badge svg { animation: none !important; } }
     .odds[data-mode] .seg { opacity: .45; transition: opacity .4s ease; }
     .odds[data-mode="win"] .seg.w, .odds[data-mode="draw"] .seg.d, .odds[data-mode="lose"] .seg.l { opacity: 1; position: relative; z-index: 1; --g: #96bc4b; animation: bs-odds-glow 1.7s ease-in-out infinite; }
     .odds[data-mode="draw"] .seg.d { --g: #d0d0d0; }
@@ -2172,6 +2189,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="100" max="3500" step="50" aria-label="Clutch Elo">
             <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo in the box"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
+            <div class="plan" hidden><i class="plan-badge"></i></div>
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
           </div>
         </div>
@@ -2211,6 +2229,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (document.activeElement !== input && shadow.activeElement !== input) input.value = String(c[key]);
       shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
     });
+    const planBox = shadow.querySelector('.plan');
+    if (planBox) {
+      const mode = clutchState.mode, badge = planBox.firstElementChild;
+      planBox.hidden = !mode;
+      if (mode && badge.dataset.kind !== mode) {
+        badge.dataset.kind = mode; badge.innerHTML = PLAN_BADGES[mode];
+        badge.classList.remove('pop'); void badge.offsetWidth; badge.classList.add('pop');
+      }
+      if (mode) badge.title = mode === 'win' ? 'Clutch is playing to win' : mode === 'draw' ? 'Clutch is playing to draw' : clutchState.way === 'time' ? 'Clutch is playing to lose, on time if it can' : 'Clutch is playing to lose';
+    }
     const oddsBox = shadow.querySelector('.odds');
     if (oddsBox) { if (clutchState.mode) oddsBox.dataset.mode = clutchState.mode; else delete oddsBox.dataset.mode; }
     const bar = shadow.querySelector('.odds-bar');
@@ -3617,7 +3645,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   const CLUTCH_COLOR = '#4cc2ff';
   const clutchMayPlay = () => true;
   // The result Clutch rolled for this game (win, draw, lose), or null before it kicks in: the panel's bar glows in its colour.
-  const setClutchMode = mode => { if (clutchState.mode !== mode) { clutchState.mode = mode; listeners.forEach(fn => fn()); } };
+  const setClutchMode = (mode, way = null) => { if (clutchState.mode !== mode || clutchState.way !== way) { clutchState.mode = mode; clutchState.way = way; listeners.forEach(fn => fn()); } };
   const setClutch = text => { if (clutchState.text !== text) { clutchState.text = text; listeners.forEach(fn => fn()); } };
 
   // "1:23", "0:09.8", "9.8" or "1:02:03" in seconds; null when it is not a time.
@@ -4325,6 +4353,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // What one move may cost. The clock is spread over the moves still to come (a game runs to about move
   // 60, never fewer than 25 left in hand), at most a tenth of it on one move, and a different amount every
   // time, a quarter either way, so the thinking has no rhythm to read. A flash when it is nearly out.
+  // Playing to lose, one way is the clock: quick on the obvious moves (a capture, a check, a promotion, a
+  // forced move, the opening) but on some quiet ones it sits and thinks, a quarter to six tenths of what is
+  // left, and when little remains it stops altogether. Returns how long to hold this move, 0 for none. The
+  // position decides, so asking again about the same position gives the same answer.
+  function clutchBurnMs(mode, way, step, fen, clock) {
+    if (mode !== 'lose' || way !== 'time' || !step) return 0;
+    const full = +String(fen).split(' ')[5] || 1;
+    let forced = false;
+    try { forced = new BoardStudioRules.Chess(fen).moves().length === 1; } catch (e) { /* none */ }
+    if (step.capture || step.check || step.promotion || forced || full <= 6) return 0;
+    if (unitHash(fen + 'burn') >= 0.5) return 0;
+    if (clock < 4) return Math.round(clock * 1000 + 800);
+    return Math.round(clock * 1000 * (0.25 + 0.35 * unitHash(fen + 'hold')));
+  }
+
   function clutchMoveMs(clock, fen = '', random = Math.random) {
     const full = +String(fen).split(' ')[5] || 15;
     const left = Math.max(25, Math.min(45, 60 - full));
@@ -4596,7 +4639,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       fen = board.game.getFEN();
       if (fen !== clutch.curFen) {
         clutch.lastMove = inferLastMove(clutch.curFen, fen); clutch.curFen = fen;
-        if (/^rnbqkbnr\/pppppppp\/8\/8\/8\/8\/PPPPPPPP\/RNBQKBNR/.test(fen) && fen.split(' ')[5] === '1' && fen.split(' ')[1] === 'w') { clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; }
+        if (/^rnbqkbnr\/pppppppp\/8\/8\/8\/8\/PPPPPPPP\/RNBQKBNR/.test(fen) && fen.split(' ')[5] === '1' && fen.split(' ')[1] === 'w') { clutch.seen = {}; clutch.mode = null; clutch.way = null; clutch.burn = null; clutch.lastValue = null; }
         const k = fen.split(' ').slice(0, 3).join(' ');
         clutch.seen = clutch.seen || {};
         clutch.seen[k] = (clutch.seen[k] || 0) + 1;
@@ -4604,13 +4647,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
-    if (!own) { setClutchMode(null); clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
+    if (!own) { setClutchMode(null); clutch.burn = null; clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
     // The fast path: the opponent has just made a move the book was ready for and the answer is the premove
     // (or an opening-book or plain answer that needs no more thought). Nothing is read or worked out first:
     // the move goes out in the same breath as the board changing.
     if (clutch.engaged && clutch.book && fen.split(' ')[1] === own && clutchMayPlay()) {
       const quickKey = repKey(fen), e = clutch.book.entries.get(quickKey), prem = clutch.book.premove;
-      if (e && e.step && (e.book || !e.crit || (prem && prem.step.uci === e.step.uci)) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 700)) {
+      if (e && e.step && (e.book || !e.crit || (prem && prem.step.uci === e.step.uci)) && !clutchBurnMs(clutch.mode, clutch.way, e.step, fen, readClock('own') || 99) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 700)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
         if (e.plan) clutch.plan = e.plan;
         clutchMove(board, e.step, own, true);
@@ -4634,9 +4677,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     s = clutchStrengthen(clutchParams(base, clock, countPieces(fen)), elo);
     // Each game is played to win (six in ten) or, in the rest, to draw whatever the position is.
     const odds = base.win + '/' + base.draw;
-    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = clutchRollMode(base); clutch.odds = odds; }
+    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = clutchRollMode(base); clutch.odds = odds; clutch.way = clutch.mode === 'lose' && Math.random() < 0.4 ? 'time' : 'board'; }
     s.mode = clutch.mode;
-    setClutchMode(clutch.mode);
+    setClutchMode(clutch.mode, clutch.mode === 'lose' ? clutch.way : null);
     if (s.mode !== 'win') s.human = true; // a game not played to win goes through the human model at any rating
     s.seen = after => (clutch.seen && clutch.seen[String(after).split(' ').slice(0, 3).join(' ')]) || 0;
     clutch.acting = clutchMayPlay();
@@ -4645,6 +4688,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const mayPlay = clutchMayPlay();
     const act = (step, premove, note, instant) => {
       if (!mayPlay) { setClutch(`Clutch: ${note} (drawn only, it moves pieces in games against the computer)`); return; }
+      const hold = clutchBurnMs(clutch.mode, clutch.way, step, fen, clock);
+      if (hold > 0) {
+        if (!clutch.burn || clutch.burn.key !== key) clutch.burn = { key, until: Date.now() + hold };
+        if (Date.now() < clutch.burn.until) {
+          setClutch(`Clutch: taking its time (${((clutch.burn.until - Date.now()) / 1000).toFixed(0)} s)`);
+          clearTimeout(clutch.burn.timer);
+          clutch.burn.timer = setTimeout(clutchTick, clutch.burn.until - Date.now() + 40);
+          return;
+        }
+      }
       const stale = clutch.played === key && Date.now() - clutch.playedAt < (instant ? 700 : 1500);
       if (stale || (clutch.tries > 3 && clutch.played === key)) return;
       clutch.tries = clutch.played === key ? clutch.tries + 1 : 1;

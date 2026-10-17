@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.36.0
+// @version      6.37.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4331,6 +4331,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         job.depth = entry.depth;
         job.lines[rank - 1] = entry;
         if (rank === 1) job.last = { ...entry, lines: job.lines };
+        // Whoever asked to watch is told at once, each time a whole set of lines for a depth is in: the first ideas arrive at
+        // depth 1, and are replaced by better ones as the search goes deeper.
+        if (job.onInfo && rank >= job.multipv) { try { job.onInfo(job.lines.filter(Boolean), entry.depth); } catch (e) { /* display only */ } }
       } else if (line.startsWith('bestmove')) {
         const job = this.job;
         this.job = null;
@@ -4340,19 +4343,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     },
     next() {
       if (!this.ready || this.job || !this.pending) return;
-      const { fen, depth, ms, multipv, keepPartial, searchMoves, mate, fresh, resolve } = this.pending;
+      const { fen, depth, ms, multipv, keepPartial, searchMoves, mate, fresh, resolve, onInfo } = this.pending;
       this.pending = null;
-      this.job = { resolve, last: null, lines: [], depth: 0, cancelled: false, keepPartial };
+      this.job = { resolve, last: null, lines: [], depth: 0, cancelled: false, keepPartial, onInfo, multipv };
       if (fresh) this.send('ucinewgame'); // a clean hash: the same position gets the same answer every time
       this.send(`setoption name MultiPV value ${multipv}`);
       this.send('position fen ' + fen);
       this.send(`go ${mate ? 'mate ' + mate : 'depth ' + depth} movetime ${Math.round(ms)}${searchMoves && searchMoves.length ? ' searchmoves ' + searchMoves.join(' ') : ''}`);
     },
-    analyse(fen, { depth, ms, multipv = 1, keepPartial = false, searchMoves = null, mate = 0, fresh = false }) {
+    analyse(fen, { depth, ms, multipv = 1, keepPartial = false, searchMoves = null, mate = 0, fresh = false, onInfo = null }) {
       this.start();
       return new Promise(resolve => {
         this.pending?.resolve(null);
-        this.pending = { fen, depth, ms, multipv, keepPartial, searchMoves, mate, fresh, resolve };
+        this.pending = { fen, depth, ms, multipv, keepPartial, searchMoves, mate, fresh, resolve, onInfo };
         if (this.job) { this.job.cancelled = true; this.send('stop'); } else this.next();
       });
     },
@@ -4550,14 +4553,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return out;
   }
 
-  // How strong each step of a branch is drawn: the first at full, the next a quarter of it. A floor keeps it
-  // visible however faint the Ghosts opacity setting is.
-  const clutchStrength = k => Math.max(Math.max(settings.ghosts.opacity + 0.1, 0.8) * Math.pow(0.25, k), 0.2);
+  // How strong each step is drawn: the first is what the Ghosts opacity setting says, the one after it a quarter of that (and never
+  // quite invisible).
+  const clutchStrength = k => k ? Math.max(settings.ghosts.opacity * Math.pow(0.25, k), 0.1) : settings.ghosts.opacity;
 
-  // Items are branches: { fen (the position), line (moves from it: their possible move, our answer, theirs after that),
-  // color, premoveAt (the step that is the premove) }. Each step is a ghost of its piece, the one after the first a
-  // quarter as strong as it, and an arrow shows how it gets there (the move it makes). Several branches may share a ghost.
-  // (a ghost that belongs to the main line's branch: its colour is the one that claimed it)
+  // Items are ideas: { fen (the position), line ([a move]: the ghost), then (the next move of the same piece, from the square the ghost
+  // stands on, as a ghost at a quarter of it with an arrow from the ghost), answer (a move of ours to show as a ghost too: the premove),
+  // analysis (the moves to work out what is taken from), color, premoveAt }. Several ideas may share a ghost. The arrow is that piece's move
+  // from one ghost to the next, always legal, and no live piece ever starts one.
   const claimedBy = (m, main) => !!main && m.color === main.color;
 
   function showClutchGhosts(ctl, items) {
@@ -4566,8 +4569,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!items.length && !layer) return;
     if (!items.length && ctl.chainArrows && ctl.chainArrows.length) { ctl.chainArrows = []; ctl.scheduleArrows?.(); }
     if (!items.length) { ctl.clutchFallenIds = new Set(); ctl.clutchFallenSquares = new Set(); ctl.paintFallen?.(); (ctl.clutchBadges || new Map()).forEach(b => { b.el.classList.add('bs-leave'); setTimeout(() => b.el.remove(), 320); }); ctl.clutchBadges = new Map(); }
-    const lineOfItem = i => (i.line && i.line.length ? i.line : [i.uci]).slice(0, CLUTCH_DEPTH);
-    const key = JSON.stringify([ctl.flipped, settings.ghosts.opacity, settings.arrows.on, items.map(i => [lineOfItem(i), i.color, i.premoveAt, String(i.fen).split(' ')[0]])]);
+    const lineOfItem = i => (i.line && i.line.length ? i.line : [i.uci]).slice(0, 1);
+    const key = JSON.stringify([ctl.flipped, settings.ghosts.opacity, settings.arrows.on, items.map(i => [lineOfItem(i), i.then, i.answer, i.color, i.premoveAt, String(i.fen).split(' ')[0]])]);
     if (ctl.clutchGhostKey === key && layer && layer.isConnected) return;
     ctl.clutchGhostKey = key;
     if (!layer || !layer.isConnected) {
@@ -4588,68 +4591,64 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const live = ctl.clutchGhostItems, keep = new Set(), claimed = new Set(), links = new Map();
     const meta = new Map();            // ghost id -> what the ruleset needs to know of it
     let mainSteps = null;
+    // one ghost: made once, then moved to where it should be and given its strength
+    const place = (id, kind, from, to, strength, item, cls, title) => {
+      keep.add(id);
+      let entry = live.get(id);
+      if (!entry) {
+        const el = document.createElement('div');
+        el.className = cls;
+        el.dataset.uci = from + to; el.dataset.depth = cls.includes('sub') ? '1' : '0';
+        el.style.backgroundImage = imageFor(kind);
+        Object.assign(el.style, spot(from), { opacity: '0' });
+        layer.appendChild(el);
+        el.getBoundingClientRect();
+        entry = { el };
+        live.set(id, entry);
+      }
+      entry.el.classList.remove('cc-ghost-leave');
+      Object.assign(entry.el.style, spot(to), { opacity: String(strength) });
+      if (!claimed.has(id)) { claimed.add(id); entry.el.style.setProperty('--reply-color', item.color); entry.el.title = title; }
+      return entry;
+    };
     for (const item of items) {
-      const steps = clutchChain(item.fen, lineOfItem(item));
-      if (!mainSteps) mainSteps = steps;
-      steps.forEach((step, k) => {
-        // The first step, what they may play, is a ghost with no arrow. What follows from it (our answer) is drawn as an
-        // arrow, the move itself, and no ghost.
-        if (k > 0) {
-          const from = step.uci.slice(0, 2), to = step.uci.slice(2, 4), lid = `cc:${from}${to}:${k}`;
-          if (from !== to && !links.has(lid)) links.set(lid, { id: lid, from, to, color: item.color, opacity: Math.max(clutchStrength(k), 0.35) });
-          return;
+      const first = lineOfItem(item)[0];
+      const steps = clutchChain(item.fen, [first]);
+      const analysis = clutchChain(item.fen, (item.analysis || [first]).slice(0, 2));
+      if (!mainSteps) mainSteps = analysis;
+      const step = steps[0];
+      if (!step) continue;
+      const id = '0:' + step.uci;
+      const entry = place(id, step.kind, step.uci.slice(0, 2), step.uci.slice(2, 4), clutchStrength(0), item, 'cc-ghost',
+        item.premoveAt !== undefined ? (item.likely ? 'Premove: their likeliest move' : item.gamble ? 'Premove if they take' : 'Premove: certain') : item.theirs ? 'A move they may make' : 'Considering');
+      if (!meta.has(id) || item.premoveAt !== undefined) {
+        // (the premove is our answer to this move of theirs: it is the branch that is marked)
+        entry.el.dataset.premove = item.premoveAt !== undefined ? '1' : '';
+        entry.el.dataset.gamble = item.premoveAt !== undefined && item.gamble ? '1' : '';
+      }
+      if (!meta.has(id)) meta.set(id, { id, k: 0, entry, to: step.uci.slice(2, 4), kind: step.kind, color: item.color, takes: step.takes ? step.takes.kind : null });
+      // a castle brings its rook along
+      if (step.castle) {
+        const rook = place(id + ':rook', step.castle.kind, step.castle.from, step.castle.to, clutchStrength(0), item, 'cc-ghost cc-ghost-sub', 'Rook');
+        meta.get(id).rook = rook;
+      }
+      // the same piece's next move: a ghost of the ghost, a quarter as strong, with the arrow from the ghost to it
+      if (item.then && item.then.slice(0, 2) === step.uci.slice(2, 4)) {
+        const to = item.then.slice(2, 4), kind = step.kind;
+        place('1:' + item.then, kind, item.then.slice(0, 2), to, clutchStrength(1), item, 'cc-ghost cc-ghost-sub', 'Where it goes next');
+        const lid = `cc:${item.then}`;
+        if (!links.has(lid)) links.set(lid, { id: lid, from: item.then.slice(0, 2), to, color: item.color, opacity: Math.max(clutchStrength(1), 0.35) });
+      }
+      // our answer, when it is the premove: shown as a ghost too, so it can be seen where it will land
+      if (item.answer) {
+        const g = new BoardStudioRules.Chess(item.fen);
+        let mv = null;
+        try { g.move({ from: first.slice(0, 2), to: first.slice(2, 4), promotion: first[4] }); mv = g.moves({ verbose: true }).find(m => m.from + m.to + (m.promotion || '') === item.answer); } catch (e) { /* not legal */ }
+        if (mv) {
+          const entryA = place('a:' + item.answer, mv.color + (mv.promotion || mv.piece), mv.from, mv.to, clutchStrength(0) * 0.9, item, 'cc-ghost cc-ghost-sub', 'Premove');
+          entryA.el.dataset.premove = '1'; entryA.el.dataset.answer = '1';
         }
-        const id = k + ':' + step.uci;
-        keep.add(id);
-        let entry = live.get(id);
-        if (!entry) {
-          const el = document.createElement('div');
-          el.className = k ? 'cc-ghost cc-ghost-sub' : 'cc-ghost';
-          el.dataset.uci = step.uci; el.dataset.depth = String(k);
-          el.style.backgroundImage = imageFor(step.kind);
-          Object.assign(el.style, spot(step.uci.slice(0, 2)), { opacity: '0' });
-          layer.appendChild(el);
-          el.getBoundingClientRect();
-          entry = { el };
-          live.set(id, entry);
-        }
-        // a ghost several branches share takes the colour of the first one to claim it (the premove comes first)
-        if (!claimed.has(id)) {
-          claimed.add(id);
-          entry.el.style.setProperty('--reply-color', item.color);
-          // (the premove is our answer to this move of theirs: it is the branch that is marked)
-          entry.el.dataset.premove = item.premoveAt !== undefined ? '1' : '';
-          entry.el.dataset.gamble = item.premoveAt !== undefined && item.gamble ? '1' : '';
-          entry.el.title = item.premoveAt !== undefined ? (item.likely ? 'Premove: their likeliest move' : item.gamble ? 'Premove if they take' : 'Premove: certain') : item.theirs ? 'A move they may make' : 'Considering';
-        }
-        entry.el.classList.remove('cc-ghost-leave');
-        Object.assign(entry.el.style, spot(step.uci.slice(2, 4)), { opacity: String(clutchStrength(k)) });
-        if (!meta.has(id)) meta.set(id, { id, k, entry, to: step.uci.slice(2, 4), kind: step.kind, color: item.color, takes: step.takes ? step.takes.kind : null });
-        // a castle brings its rook along
-        if (step.castle) {
-          const rid = id + ':rook';
-          keep.add(rid);
-          let rook = live.get(rid);
-          if (!rook) {
-            const el = document.createElement('div');
-            el.className = 'cc-ghost cc-ghost-sub'; el.dataset.uci = step.castle.from + step.castle.to; el.dataset.depth = String(k);
-            el.style.backgroundImage = imageFor(step.castle.kind);
-            Object.assign(el.style, spot(step.castle.from), { opacity: '0' });
-            layer.appendChild(el); el.getBoundingClientRect();
-            rook = { el }; live.set(rid, rook);
-          }
-          rook.el.style.setProperty('--reply-color', item.color);
-          rook.el.classList.remove('cc-ghost-leave');
-          Object.assign(rook.el.style, spot(step.castle.to), { opacity: String(clutchStrength(k)) });
-          meta.get(id).rook = rook;
-        }
-        if (k > 0) {
-          // The arrow is the move itself, from the square the piece leaves to the one it lands on, so it is always a legal
-          // move (an arrow between two ghosts of different pieces was not).
-          const from = step.uci.slice(0, 2), to = step.uci.slice(2, 4), lid = `cc:${from}${to}:${k}`;
-          if (from !== to && !links.has(lid)) links.set(lid, { id: lid, from, to, color: item.color, opacity: clutchStrength(k) });
-        }
-      });
+      }
     }
     // What the main line takes: the hatch on real pieces, the stripes on a taken ghost's arrow, and a taken ghost goes away.
     let fallenIds = new Set(), fallenSquares = new Set();
@@ -4667,8 +4666,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     ctl.clutchFallenIds = fallenIds; ctl.clutchFallenSquares = fallenSquares;
     ctl.paintFallen?.();
-    // Possible moves that land on the same square (at the same step): the first one's ghost stays on it, the others
-    // shrink into a red list in the top-left corner and what they take goes into a gray list in the top-right.
+    // Possible moves that land on the same square: the first one's ghost stays on it, the others shrink into a red list in the top-left
+    // corner and what they take goes into a gray list in the top-right.
     const groups = new Map();
     meta.forEach(m => { const g = m.k + ':' + m.to; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(m); });
     const badges = ctl.clutchBadges || (ctl.clutchBadges = new Map());
@@ -4790,7 +4789,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // quick look now. (At any number of pieces: everything is played around the eval.)
       let evalNow = null;
       if (clock >= 3) {
-        const quick = await clutchEngine.analyse(fen, { depth: 8, ms: 60, multipv: 1, fresh: true });
+        const quick = await clutchEngine.analyse(fen, { depth: 8, ms: 80, multipv: 4, fresh: true, onInfo: lines => onIdea(lines.filter(l => l && l.pv && l.pv[0]).map(l => ({ uci: l.pv[0], pv: l.pv, cp: l.cp }))) });
         if (quick) evalNow = quick.mate !== undefined ? Math.sign(quick.mate) * 5000 : quick.cp;
       }
       const expected = clutch.lastValue === undefined ? null : clutch.lastValue;
@@ -4840,6 +4839,26 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // analyse(fen, options) is the engine call. onEntry(key, entry) hears every new or improved
   // answer; stop() says whether to give up (the position changed). Resolves with how many answers
   // the book ended with.
+  // The next move of the piece that a ghost shows, from the square the ghost stands on: after the ghost's move and the answer to it, the piece
+  // is where the ghost is, and this finds where it would go next (the line's own move when the line has one, else the best of its legal
+  // moves, asked of the engine). Null when the piece is taken, or cannot move. line: [the ghost's move, the answer, what follows ...].
+  async function pieceFollow(fen, line, analyse) {
+    try {
+      if (!line || line.length < 2) return null;
+      const game = new BoardStudioRules.Chess(fen);
+      const play = uci => { const m = game.moves({ verbose: true }).find(x => x.from + x.to + (x.promotion || '') === uci); if (!m) throw new Error('illegal'); game.move(m); return m; };
+      const first = play(line[0]), answer = play(line[1]);
+      if (answer.captured && answer.to === first.to) return null;           // the ghost's piece is taken
+      const at = first.to;
+      if (line[2] && line[2].slice(0, 2) === at && game.moves({ verbose: true }).some(m => m.from + m.to + (m.promotion || '') === line[2])) return line[2];
+      const ucis = game.moves({ verbose: true }).filter(m => m.from === at).map(m => m.from + m.to + (m.promotion || ''));
+      if (!ucis.length) return null;
+      if (ucis.length === 1) return ucis[0];
+      const r = await analyse(game.fen(), { depth: 8, ms: 80, multipv: 1, searchMoves: ucis });
+      return r && r.pv && ucis.includes(r.pv[0]) ? r.pv[0] : null;
+    } catch (e) { return null; }
+  }
+
   // Carries a line of moves on to three by asking for the best move after each, quickly. Stops where a move is not legal.
   async function extendLine(fen, pv, analyse) {
     const out = [];
@@ -4857,11 +4876,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return out;
   }
 
-  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, onRound = () => {}, onOptions = () => {}, onTop = async () => {}, stop, replies = 6, rounds = 6 }) {
+  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, onRound = () => {}, onOptions = () => {}, onIdeas = () => {}, onTop = async () => {}, stop, replies = 6, rounds = 6 }) {
     // A person's answer is looked at twice: a quick look first, so the ghosts and the premove are there while the
     // opponent is still thinking, then a longer one that may change it.
     if (answer) rounds = 2;
-    const first = await analyse(fen, { depth: s.depth, ms: 250, multipv: Math.max(replies, s.multipv || 0) });
+    // The first look streams: their possible moves are shown from its first depth and replaced as it gets deeper.
+    const first = await analyse(fen, { depth: s.depth, ms: 250, multipv: Math.max(replies, s.multipv || 0), onInfo: lines => onIdeas(lines.filter(l => l && l.pv && l.pv[0]).map(l => ({ uci: l.pv[0], pv: l.pv, cp: l.mate !== undefined ? Math.sign(l.mate) * (10000 - Math.abs(l.mate)) : l.cp }))) });
     if (stop() || !first) return 0;
     const lines = (first.lines && first.lines.length ? first.lines : [first]).filter(l => l && l.pv && l.pv.length);
     const options = lines.map(l => stepFor(fen, l.pv[0])).filter(Boolean)
@@ -4914,6 +4934,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (entry.forced) entry.crit = 0;
         entries.set(key, entry);
         onEntry(key, entry, old);
+        // The piece that moved: where it goes next, worked out for the branches that are shown, and the branch is told.
+        if (options.indexOf(option) < 4 && !entry.follow) {
+          entry.follow = await pieceFollow(fen, [option.uci, ...(pv || [])], analyse);
+          if (stop()) return entries.size;
+          if (entry.follow) onEntry(key, entry, entry);
+        }
         // The likeliest replies are answered: time to look for a premove that holds against them, before the others, and
         // one thing at a time (two searches at once would cancel each other).
         if (!topDone && entries.size >= Math.min(3, options.length)) { topDone = true; await onTop(entries); if (stop()) return entries.size; }
@@ -5212,7 +5238,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       clutch.working = key;
       showClutchGhosts(ctl, []);
       if (book && !opening) setClutch('Clutch: not a reply I was ready for, thinking');
-      clutchSearch(fen, clock, oppClock, s, ideas => showClutchGhosts(ctl, ideas.slice(0, 4).map(i => ({ fen, uci: i.uci, line: (i.pv && i.pv[0] === i.uci ? i.pv : [i.uci]).slice(0, CLUTCH_DEPTH), color: CLUTCH_BLUE })))).then(result => {
+      clutchSearch(fen, clock, oppClock, s, ideas => showClutchGhosts(ctl, ideas.slice(0, 4).map(i => ({ fen, uci: i.uci, line: [i.uci], then: i.pv && i.pv[2] && i.pv[2].slice(0, 2) === i.uci.slice(2, 4) ? i.pv[2] : null, analysis: i.pv ? i.pv.slice(0, 2) : [i.uci], color: CLUTCH_BLUE })))).then(result => {
         let current = null;
         try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
         if (clutch.working === key) clutch.working = null;
@@ -5220,7 +5246,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const decision = clutchDecide(fen, result, s);
         if (!decision) { setClutch('Clutch: no move found'); return; }
         // what it was weighing, in blue
-        showClutchGhosts(ctl, (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv[0]).slice(0, 4).map(l => ({ fen, uci: l.pv[0], line: l.pv.slice(0, CLUTCH_DEPTH), color: CLUTCH_BLUE })));
+        showClutchGhosts(ctl, (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv[0]).slice(0, 4).map(l => ({ fen, uci: l.pv[0], line: [l.pv[0]], then: l.pv[2] && l.pv[2].slice(0, 2) === l.pv[0].slice(2, 4) ? l.pv[2] : null, analysis: l.pv.slice(0, 2), color: CLUTCH_BLUE })));
         if (decision.plan) clutch.plan = decision.plan;
         clutchShow(ctl, [{ id: 'cl:' + decision.step.uci, uci: decision.step.uci, color: CLUTCH_COLOR }]);
         act(decision.step, false, decision.note, false);
@@ -5253,17 +5279,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // Each branch starts from what they may play (a reply it has prepared for), then our answer, then what follows.
       // The premove's branch (red) is the one for their best reply, the others (blue) the next likeliest replies.
       const entries = [...book.entries.values()].filter(e => e.reply);
-      const lineFor = e => [e.reply, ...(e.pv && e.pv[0] === e.step.uci ? e.pv : [e.step.uci])].slice(0, CLUTCH_DEPTH);
       const items = [];
       const lead = entries.find(e => e.reply === book.topReply) || entries[0];
-      if (prem && lead) items.push({ fen, line: [lead.reply, ...(lead.step.uci === prem.step.uci ? lineFor(lead).slice(1) : [prem.step.uci])].slice(0, CLUTCH_DEPTH), color: CLUTCH_RED, premoveAt: 1, gamble: prem.conditional, likely: prem.likely, theirs: true });
+      if (prem && lead) items.push({ fen, line: [lead.reply], then: lead.follow, answer: prem.step.uci, analysis: [lead.reply, prem.step.uci], color: CLUTCH_RED, premoveAt: 1, gamble: prem.conditional, likely: prem.likely, theirs: true });
       // Their possible moves come from the first look, so they show before any answer to them is worked out; an answer joins its
       // branch (as an arrow) the moment it exists, and a branch changes as deeper looks change it.
       const byReply = new Map(entries.map(e => [e.reply, e]));
       const order = (book.options && book.options.length ? book.options.map(o => o.uci) : entries.map(e => e.reply));
       order.filter(u => !(prem && lead && u === lead.reply)).slice(0, prem ? 3 : 4).forEach(u => {
         const e = byReply.get(u);
-        items.push({ fen, line: e ? lineFor(e) : [u], color: CLUTCH_BLUE, theirs: true });
+        items.push({ fen, line: [u], then: e && e.follow, analysis: e ? [u, e.step.uci] : [u], color: CLUTCH_BLUE, theirs: true });
       });
       showClutchGhosts(ctl, items);
       const native = premoveNative(board);
@@ -5285,6 +5310,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode, expected: clutch.lastValue === undefined ? null : clutch.lastValue, clock }, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
       onOptions: (n, list) => { book.total = n; book.options = list; refresh(); },
+      onIdeas: list => { if (!book.entries.size && stillTheirMove()) { book.options = list; book.topReply = book.topReply || (list[0] && list[0].uci); refresh(); } },
       onTop: async () => {
         if (book.wiggleRun || s.mode === 'lose') return;
         book.wiggleRun = true;

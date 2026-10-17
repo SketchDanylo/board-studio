@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.18.1
+// @version      6.19.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -558,7 +558,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }, e => console.warn('[Board Studio] Opening book unavailable:', e.message));
   }
 
-  const clutchState = { text: 'Clutch: off' }; // what the panel shows about Clutch
+  const clutchState = { text: 'Clutch: off', mode: null }; // what the panel shows about Clutch
   const engineState = { text: 'Engine: not needed yet' }; // what the panel shows about Stockfish
   const setEngineState = text => { if (engineState.text !== text) { engineState.text = text; listeners.forEach(fn => fn()); } };
   let engineFiles = null;   // { script, wasm } once downloaded
@@ -1874,6 +1874,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .odds-bar .seg.d { background: #9a9a9a; }
     .odds-bar .seg.l { background: #fa412d; border-radius: 0 11px 11px 0; color: rgba(255,255,255,.92); }
     .odds-bar .ball { box-sizing: border-box; position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
+    .odds[data-mode] .seg { opacity: .45; transition: opacity .4s ease; }
+    .odds[data-mode="win"] .seg.w, .odds[data-mode="draw"] .seg.d, .odds[data-mode="lose"] .seg.l { opacity: 1; position: relative; z-index: 1; --g: #96bc4b; animation: bs-odds-glow 1.7s ease-in-out infinite; }
+    .odds[data-mode="draw"] .seg.d { --g: #d0d0d0; }
+    .odds[data-mode="lose"] .seg.l { --g: #fa412d; }
+    @keyframes bs-odds-glow { 0%, 100% { box-shadow: 0 0 5px 0 var(--g), inset 0 0 6px rgba(255,255,255,.15); filter: brightness(1); } 50% { box-shadow: 0 0 16px 4px var(--g), inset 0 0 12px rgba(255,255,255,.35); filter: brightness(1.2); } }
+    @media (prefers-reduced-motion: reduce) { .odds[data-mode] .seg { animation: none !important; } }
     .odds-bar .ball[data-ball="0"] { left: var(--a); }
     .odds-bar .ball[data-ball="1"] { left: var(--b); }
     .clutch-status { padding: 4px 0 2px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
@@ -2205,6 +2211,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (document.activeElement !== input && shadow.activeElement !== input) input.value = String(c[key]);
       shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
     });
+    const oddsBox = shadow.querySelector('.odds');
+    if (oddsBox) { if (clutchState.mode) oddsBox.dataset.mode = clutchState.mode; else delete oddsBox.dataset.mode; }
     const bar = shadow.querySelector('.odds-bar');
     if (bar) {
       const win = Math.max(0, Math.min(100, c.win)), draw = Math.max(0, Math.min(100 - win, c.draw)), lose = 100 - win - draw;
@@ -3608,6 +3616,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   const CLUTCH_COLOR = '#4cc2ff';
   const clutchMayPlay = () => true;
+  // The result Clutch rolled for this game (win, draw, lose), or null before it kicks in: the panel's bar glows in its colour.
+  const setClutchMode = mode => { if (clutchState.mode !== mode) { clutchState.mode = mode; listeners.forEach(fn => fn()); } };
   const setClutch = text => { if (clutchState.text !== text) { clutchState.text = text; listeners.forEach(fn => fn()); } };
 
   // "1:23", "0:09.8", "9.8" or "1:02:03" in seconds; null when it is not a time.
@@ -3724,7 +3734,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function clutchThink(entry, clock, s) {
     if (!entry || entry.book || entry.plan || !entry.crit || clock < s.spare) return 0;
     if (entry.depth >= s.depth + 2 * entry.crit) return 0;
-    return Math.round(Math.min(clock * 1000 * 0.025 * entry.crit, clock * 1000 * 0.06, 1500));
+    return Math.round(Math.min(clock * 1000 * 0.025 * entry.crit, clock * 1000 * 0.06, 1500) * (0.75 + 0.5 * Math.random()));
   }
 
   // ---------- Clutch strength ----------
@@ -4312,13 +4322,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (e.key === 'Escape' && settings.clutch.on && clutch.acting) { clutch.suspended = true; clutch.acting = false; clutch.working = null; setClutch('Clutch: you have control, switch Clutch off and on to resume'); }
   }, true);
 
-  // Look at a position for our move: a quick look, then a deeper one when winning and the clock allows.
-  // What one move may cost: a few per cent of the clock, so that thirty moves still fit (a game on a
-  // minute is lost by spending 1.5 s a move at 40 s left), never more than 0.7 s, never less than a flash.
-  function clutchMoveMs(clock) {
-    return Math.max(45, Math.min(700, clock * 1000 * (clock < 3 ? 0.04 : clock < 10 ? 0.03 : 0.025)));
+  // What one move may cost. The clock is spread over the moves still to come (a game runs to about move
+  // 60, never fewer than 25 left in hand), at most a tenth of it on one move, and a different amount every
+  // time, a quarter either way, so the thinking has no rhythm to read. A flash when it is nearly out.
+  function clutchMoveMs(clock, fen = '', random = Math.random) {
+    const full = +String(fen).split(' ')[5] || 15;
+    const left = Math.max(25, Math.min(45, 60 - full));
+    let ms = Math.min(clock * 1000 / left, clock * 100, 4000);
+    if (clock < 3) ms = Math.min(ms, clock * 40);
+    return Math.max(45, Math.round(ms * (0.75 + 0.5 * random())));
   }
 
+  // Look at a position for our move: a quick look, then a deeper one when winning and the clock allows.
   async function clutchSearch(fen, clock, oppClock, s) {
     const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
@@ -4326,7 +4341,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
     if (s.human) {
       // Never more than a small share of what is left on the clock (and a flash when it is nearly gone).
-      const budgetMs = clutchMoveMs(clock);
+      const budgetMs = clutchMoveMs(clock, fen);
       // How well they just played: our own estimate of the position last time against a quick look now.
       let pressure = 0;
       if (pieces <= 10 && clock >= 3 && clutch.lastValue !== null && clutch.lastValue !== undefined) {
@@ -4340,7 +4355,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: s.multipv || 4 });
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0 && !(s.strength && s.strength.limited)) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
-      result = (await clutchEngine.analyse(fen, { depth: budget.maxDepth, ms: Math.min(budget.stage2Ms, clock * 1000 * 0.06) })) || result;
+      result = (await clutchEngine.analyse(fen, { depth: budget.maxDepth, ms: Math.min(budget.stage2Ms, clutchMoveMs(clock, fen) * 1.6) })) || result;
     } else if (result && !(result.mate > 0) && budget.canDeepen) {
       // Not winning, but a move that calls for care gets a longer look.
       const decision = clutchDecide(fen, result, s);
@@ -4561,7 +4576,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!s.on || !board || !ctl || !board.game || typeof board.game.getFEN !== 'function') {
       if (ctl) clutchClear(ctl);
       clutchStopBook();
-      clutch.plan = null; clutch.acting = false;
+      clutch.plan = null; clutch.acting = false; setClutchMode(null);
       setClutch(s.on ? 'Clutch: waiting for a board' : 'Clutch: off');
       return;
     }
@@ -4589,7 +4604,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
-    if (!own) { clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
+    if (!own) { setClutchMode(null); clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
     // The fast path: the opponent has just made a move the book was ready for and the answer is the premove
     // (or an opening-book or plain answer that needs no more thought). Nothing is read or worked out first:
     // the move goes out in the same breath as the board changing.
@@ -4610,6 +4625,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const clock = readClock('own');
     if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchClear(ctl); return; }
     if (!clutchEngages(clutch, base.time, clock)) {
+      setClutchMode(null);
       clutch.acting = false; clutch.plan = null; clutchStopBook();
       setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at about ${base.time.toFixed(1)} s, Elo ${elo}${base.auto && opponentElo ? ' (opponent)' : ''}`);
       clutchClear(ctl);
@@ -4620,6 +4636,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const odds = base.win + '/' + base.draw;
     if (!clutch.mode || clutch.odds !== odds) { clutch.mode = clutchRollMode(base); clutch.odds = odds; }
     s.mode = clutch.mode;
+    setClutchMode(clutch.mode);
     if (s.mode !== 'win') s.human = true; // a game not played to win goes through the human model at any rating
     s.seen = after => (clutch.seen && clutch.seen[String(after).split(' ').slice(0, 3).join(' ')]) || 0;
     clutch.acting = clutchMayPlay();

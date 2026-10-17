@@ -201,15 +201,35 @@ test('a premove with room: a winning position gets one even when the answers dif
   } finally { kill(); f.close(); }
 });
 
-test('a move costs a few per cent of the clock, so a whole game fits', () => {
+test('a move is paced over the game, never the same amount twice, and the whole game fits the clock', () => {
   const f = setup();
   try {
-    const ms = f.api.clutchMoveMs;
-    assert.ok(ms(40) <= 700 && ms(40) >= 600, 'a long clock still caps at 0.7 s');
-    assert.equal(ms(20), 500); assert.equal(ms(8), 240); assert.ok(ms(2) <= 80, 'nearly out: a flash'); assert.ok(ms(0.2) >= 45);
-    // thirty moves at the worst rate leave most of the clock
-    let clock = 40; for (let i = 0; i < 30; i++) clock -= ms(clock) / 1000;
-    assert.ok(clock > 12, 'thirty moves later ' + clock.toFixed(1) + ' s are left');
+    const ms = f.api.clutchMoveMs, start = 'x x x x 0 1';
+    const at = (clock, full, r) => ms(clock, `x x x x 0 ${full}`, () => r);
+    assert.equal(at(60, 1, 0.5), 1333, 'a minute at the start: a forty-fifth of it');
+    assert.ok(at(60, 1, 0) === 1000 && at(60, 1, 1) === 1667, 'a quarter either way');
+    const seen = new Set(); for (let i = 0; i < 30; i++) seen.add(ms(30, 'x x x x 0 10'));
+    assert.ok(seen.size > 10, 'different every time');
+    assert.ok(at(2, 40, 1) <= 100 && at(0.2, 40, 0) >= 45, 'nearly out: a flash');
+    assert.ok(at(40, 40, 1) <= 40 * 100 * 1.25, 'never above a tenth of the clock, plus the spread');
+    // a whole game on a minute at the worst rate (always a quarter over): 60 moves, the opponent instant
+    let clock = 60; for (let move = 1; move <= 60; move++) clock -= ms(clock, `x x x x 0 ${move}`, () => 1) / 1000;
+    assert.ok(clock > 4, 'sixty moves later ' + clock.toFixed(1) + ' s are left');
+  } finally { f.close(); }
+});
+
+test('the panel bar glows in the colour of the result Clutch rolled, and stops when Clutch is not in a game', () => {
+  const f = setup();
+  try {
+    const host = [...f.w.document.body.children].find(x => x.shadowRoot);
+    const odds = host.shadowRoot.querySelector('.odds');
+    assert.equal(odds.dataset.mode, undefined, 'no glow before Clutch kicks in');
+    f.api.setClutchMode('draw');
+    assert.equal(odds.dataset.mode, 'draw');
+    f.api.setClutchMode('lose');
+    assert.equal(odds.dataset.mode, 'lose');
+    f.api.setClutchMode(null);
+    assert.equal(odds.dataset.mode, undefined, 'and it stops');
   } finally { f.close(); }
 });
 

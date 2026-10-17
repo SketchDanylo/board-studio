@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.17.4
+// @version      6.18.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -74,7 +74,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     marks: { on: true, c1: '#7fd6a0b8', c2: '#f0827ab8' },
     arrows: { on: true, color: '#ffaa00cc', aim: true },
     arrowEval: { on: false },
-    danger: { on: true, blunders: false },
+    danger: { on: true, blunders: false, block: false },
     book: { on: true },
     crown: { on: true },
     ghosts: { on: true, opacity: 0.25, ai: false },
@@ -297,6 +297,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     [data-bs-blunder] { visibility: hidden !important; }
     .bs-blunder-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+    .bs-block-flash { position: absolute; width: 12.5%; height: 12.5%; z-index: 7; pointer-events: none; background: rgba(250, 65, 45, .6); border-radius: 4px; animation: bs-block-flash .55s ease-out forwards; }
+    @keyframes bs-block-flash { 0% { opacity: 1; transform: scale(.82); } 35% { opacity: 1; transform: scale(1.04); } 100% { opacity: 0; transform: scale(1.12); } }
     .bs-blunder-cross {
       position: absolute; width: 12.5%; height: 12.5%; color: rgba(220, 45, 45, .42);
       transition: color 240ms ease;
@@ -2146,6 +2148,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       <div class="item" data-group="danger">${row('danger', 'Take squares', 6)}
         <div class="body flow" style="--i:7">
           <div class="sub" data-key="blunders" title="Conservative Stockfish estimates; Chess.com review labels may differ. Keep a piece selected for deeper analysis."><span>Show Blunders</span><button class="sw" role="switch" type="button" aria-label="Show Blunders"></button></div>
+          <div class="sub" data-key="block" title="Refuses a move of yours (dragged or clicked) that the engine calls a blunder: the piece goes back and the square flashes red. Only for you; Clutch ignores it."><span>Blunder Block</span><button class="sw" role="switch" type="button" aria-label="Blunder Block"></button></div>
           <div class="demo"><span><b></b></span><span><b class="red"></b></span><span><b></b></span><span><i class="cap"></i></span><span><b class="red"></b></span></div>
         </div>
       </div>
@@ -3168,6 +3171,159 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (Object.prototype.hasOwnProperty.call(h, 'bsRenderable') && !h.sprite._destroyed) h.sprite.renderable = h.bsRenderable;
         delete h.bsRenderable;
       });
+    }
+  };
+
+  // ---------- Blunder Block ----------
+  // Refuses the USER's own move, dragged or clicked, when the engine calls it a blunder (the same verdict the
+  // red crosses of Show Blunders use). Only real input is looked at: the moves Clutch makes are synthetic
+  // events, so Clutch is never blocked. A verdict not ready yet holds the move for a moment (up to 1.2 s),
+  // then plays it for you if it is fine.
+  const blunderBlock = {
+    search: null, down: null, selected: null, selectedFen: null, pending: null, blockUntil: 0, allowUntrusted: false, timer: null,
+    active() { return !!settings.danger.on && !!settings.danger.block; },
+    real(e) { return e.isTrusted || this.allowUntrusted; },
+    boardOf() { return document.querySelector('wc-chess-board, chess-board'); },
+    squareAt(board, x, y) {
+      const r = board.getBoundingClientRect(), size = r.width / 8;
+      if (!size || x < r.left || y < r.top || x >= r.right || y >= r.bottom) return null;
+      const flipped = board.classList.contains('flipped');
+      const f = Math.floor((x - r.left) / size), row = Math.floor((y - r.top) / size);
+      return String.fromCharCode(97 + (flipped ? 7 - f : f)) + (flipped ? row + 1 : 8 - row);
+    },
+    ensure(board) {
+      const fen = blunderFEN(board);
+      if (!fen) return null;
+      if (this.search && this.search.fen === fen) return this.search;
+      this.drop();
+      this.search = new BlunderSearch(fen, () => this.settle());
+      this.search.start();
+      return this.search;
+    },
+    drop() { this.search?.stop(); this.search = null; },
+    // The move from -> to if it is legal in the position, else null.
+    legal(fen, from, to) {
+      try {
+        const game = new BoardStudioRules.Chess(fen);
+        const move = game.moves({ verbose: true }).find(m => m.from === from && m.to === to);
+        return move ? { move, uci: from + to + (move.promotion ? 'q' : ''), color: game.turn() } : null;
+      } catch (e) { return null; }
+    },
+    // true: a blunder; false: fine; null: not known yet.
+    verdict(uci, final) {
+      const search = this.search;
+      if (!search || search.error) return false;
+      const entry = search.moves.get(uci);
+      if (!entry) return final ? false : null;
+      if (search.depth < 10 && !final) return null;
+      return !!entry.blunder;
+    },
+    flash(board, square) {
+      const ctl = board.__cc, target = sqOf(square), xy = squareXY(target.f + 1, target.r + 1, ctl ? ctl.flipped : board.classList.contains('flipped'));
+      const el = document.createElement('div');
+      el.className = 'bs-block-flash';
+      el.style.left = `${xy.x * 12.5}%`; el.style.top = `${xy.y * 12.5}%`;
+      board.appendChild(el);
+      setTimeout(() => el.remove(), 700);
+    },
+    fire(type, x, y, buttons) {
+      const el = (document.elementFromPoint && document.elementFromPoint(x, y)) || this.boardOf();
+      const init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons, pointerId: 1, pointerType: 'mouse', isPrimary: true, view: window };
+      el.dispatchEvent(new PointerEvent(type, init));
+      el.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), init));
+    },
+    center(board, square) {
+      const r = board.getBoundingClientRect(), size = r.width / 8, flipped = board.classList.contains('flipped');
+      const f = square.charCodeAt(0) - 97, rank = +square[1] - 1;
+      return { x: r.left + ((flipped ? 7 - f : f) + .5) * size, y: r.top + ((flipped ? rank : 7 - rank) + .5) * size };
+    },
+    // Put a dragged piece back on its square (the drop lands where it came from).
+    giveBack(board, from) { const c = this.center(board, from); this.fire('pointerup', c.x, c.y, 0); },
+    refuse(board, from, to, drag) {
+      this.blockUntil = Date.now() + 500;
+      if (drag) this.giveBack(board, from);
+      this.flash(board, to);
+    },
+    // A move is being made by the user: what to do with it. Returns true when the event must be swallowed.
+    judge(e, board, from, to, drag) {
+      const fen = blunderFEN(board);
+      const info = fen && this.legal(fen, from, to);
+      if (!info || info.color !== (fen.split(' ')[1])) return false;
+      // Only the user's own side: a game against someone is played from one colour.
+      try { const as = board.game.getPlayingAs && board.game.getPlayingAs(); if ((as === 1 && info.color !== 'w') || (as === 2 && info.color !== 'b')) return false; } catch (err) { /* analysis board */ }
+      this.ensure(board);
+      const v = this.verdict(info.uci, false);
+      if (v === true) { this.refuse(board, from, to, drag); return true; }
+      if (v === false) return false;
+      // Not known yet: hold the move, and decide as soon as the engine has said.
+      this.pending = { board, from, to, drag, uci: info.uci, until: Date.now() + 1200 };
+      this.blockUntil = Date.now() + 1300;
+      if (drag) this.giveBack(board, from);
+      clearInterval(this.timer);
+      this.timer = setInterval(() => this.settle(), 80);
+      return true;
+    },
+    settle() {
+      const p = this.pending;
+      if (!p) { clearInterval(this.timer); return; }
+      const final = Date.now() >= p.until;
+      const v = this.verdict(p.uci, final);
+      if (v === null) return;
+      clearInterval(this.timer); this.pending = null; this.blockUntil = 0;
+      if (v) { this.flash(p.board, p.to); return; }
+      // Fine after all: make the move for them.
+      this.blockUntil = Date.now() + 400;
+      dragPiece(p.board, p.from, p.to, true);
+    },
+    onDown(e) {
+      if (!this.active() || !this.real(e) || e.button > 0) return;
+      if (Date.now() < this.blockUntil) { e.stopImmediatePropagation(); e.preventDefault(); return; }
+      const board = this.boardOf();
+      if (!board || !e.composedPath().includes(board) || e.composedPath().some(n => n.classList && n.classList.contains('promotion-window'))) return;
+      const fen = blunderFEN(board);
+      if (!fen) return;
+      if (this.selectedFen !== fen) { this.selected = null; this.selectedFen = fen; }
+      const square = this.squareAt(board, e.clientX, e.clientY);
+      if (!square) return;
+      const piece = blunderPosition(board)[square.charCodeAt(0) - 97]?.[+square[1] - 1];
+      if (piece && piece.c === fen.split(' ')[1]) {
+        this.down = { square, board };
+        this.ensure(board);                    // start looking while the piece is being picked up
+        return;
+      }
+      this.down = null;
+      // A click on a destination, with a piece already selected.
+      if (this.selected && this.selected !== square && this.judge(e, board, this.selected, square, false)) { e.stopImmediatePropagation(); e.preventDefault(); }
+    },
+    onUp(e) {
+      if (!this.active() || !this.real(e)) return;
+      if (Date.now() < this.blockUntil) { e.stopImmediatePropagation(); e.preventDefault(); this.down = null; return; }
+      const down = this.down; this.down = null;
+      if (!down) return;
+      const board = down.board;
+      const square = this.squareAt(board, e.clientX, e.clientY);
+      if (!square) return;
+      if (square === down.square) { this.selected = this.selected === square ? null : square; return; }
+      if (this.judge(e, board, down.square, square, true)) { e.stopImmediatePropagation(); e.preventDefault(); }
+      else this.selected = null;
+    },
+    onClick(e) {
+      if (this.active() && this.real(e) && Date.now() < this.blockUntil) { e.stopImmediatePropagation(); e.preventDefault(); }
+    },
+    install() {
+      if (this.installed) return;
+      this.installed = true;
+      window.addEventListener('pointerdown', e => this.onDown(e), true);
+      window.addEventListener('mousedown', e => { if (this.active() && this.real(e) && Date.now() < this.blockUntil) { e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+      window.addEventListener('pointerup', e => this.onUp(e), true);
+      window.addEventListener('mouseup', e => { if (this.active() && this.real(e) && Date.now() < this.blockUntil) { e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+      window.addEventListener('click', e => this.onClick(e), true);
+      // Nothing to look at once the position moves on, or the option is turned off.
+      setInterval(() => {
+        if (!this.search) return;
+        const board = this.boardOf();
+        if (!this.active() || !board || blunderFEN(board) !== this.search.fen) { this.drop(); this.pending = null; }
+      }, 1000);
     }
   };
 
@@ -4623,6 +4779,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   applySettings();
   applyStyle();
   playFlow();
+  blunderBlock.install();
   const tick = () => {
     document.querySelectorAll('svg.arrows').forEach(svg => { if (!svg.__cc) new Controller(svg); });
     document.querySelectorAll('svg.cc-arrows:not(.bs-canvas)').forEach(o => {

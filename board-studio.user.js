@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.17.2
+// @version      6.17.3
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1871,7 +1871,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .odds-bar .seg.w { background: #96bc4b; border-radius: 11px 0 0 11px; }
     .odds-bar .seg.d { background: #9a9a9a; }
     .odds-bar .seg.l { background: #fa412d; border-radius: 0 11px 11px 0; color: rgba(255,255,255,.92); }
-    .odds-bar .ball { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
+    .odds-bar .ball { box-sizing: border-box; position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
     .odds-bar .ball[data-ball="0"] { left: var(--a); }
     .odds-bar .ball[data-ball="1"] { left: var(--b); }
     .clutch-status { padding: 4px 0 2px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }

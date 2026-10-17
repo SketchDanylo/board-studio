@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.34.1
+// @version      6.35.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4615,7 +4615,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           // (the premove is our answer to this move of theirs: it is the branch that is marked)
           entry.el.dataset.premove = item.premoveAt !== undefined ? '1' : '';
           entry.el.dataset.gamble = item.premoveAt !== undefined && item.gamble ? '1' : '';
-          entry.el.title = item.premoveAt !== undefined ? (item.gamble ? 'Premove if they take' : 'Premove: certain') : item.theirs ? 'A move they may make' : 'Considering';
+          entry.el.title = item.premoveAt !== undefined ? (item.likely ? 'Premove: their likeliest move' : item.gamble ? 'Premove if they take' : 'Premove: certain') : item.theirs ? 'A move they may make' : 'Considering';
         }
         entry.el.classList.remove('cc-ghost-leave');
         Object.assign(entry.el.style, spot(step.uci.slice(2, 4)), { opacity: String(clutchStrength(k)) });
@@ -4921,7 +4921,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // A premove that need not be the very best move: one that, against every reply it has prepared, stays
   // good enough to keep the result (a win stays a win, just a little less; an even game stays even).
   // Null when no answer qualifies. Searches on the opponent's time.
-  async function wigglePremove(entries, analyse, stop) {
+  async function wigglePremove(entries, analyse, stop, mode = 'win') {
     const list = [...entries.values()].filter(e => !e.forced);
     if (list.length < 2) return null;
     const val = e => e.mate !== undefined ? Math.sign(e.mate) * (10000 - Math.abs(e.mate)) : e.cp;
@@ -4940,9 +4940,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const best = val(e);
         if (!line || best === undefined) { ok = false; break; }
         const got = line.mate !== undefined ? Math.sign(line.mate) * (10000 - Math.abs(line.mate)) : line.cp;
-        // how much may be given up: a lot when far ahead (it stays winning), nothing when it is close
-        const allowed = best >= 150 ? 80 : best > -150 ? 35 : 20;
-        const fine = best >= 400 ? got >= Math.max(250, best * 0.5) : got >= best - allowed;
+        // how much may be given up: a lot when far ahead (it stays winning), little when it is close. Drawing, it must
+        // stay level or what the best reply allows.
+        const allowed = best >= 150 ? 120 : best > -150 ? 60 : 30;
+        const fine = mode === 'draw' ? got >= Math.min(best, Math.max(-30, best - 60)) : best >= 400 ? got >= Math.max(250, best * 0.5) : got >= best - allowed;
         if (!fine) { ok = false; break; }
       }
       if (ok) return { step: cand.step, fen: top.fen, line: cand.line, conditional: false, wiggle: true, why: 'good enough against every reply' };
@@ -5017,7 +5018,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // prepared (when they have only one move, that is trivially so), or a trade it is counting on: they
   // are about to take on a square and every taking is answered by taking back there. A premove is only
   // ever named once the first full round of replies has been worked out. Null when there is none.
-  function clutchPremove(entries, topReply, complete, allowGamble = true) {
+  function clutchPremove(entries, topReply, complete, allowGamble = true, allowLikely = false) {
     const list = [...entries.values()];
     // Clearly lost whatever they play (a deep minus, or mated): nothing is risked, so the answer to their best reply is
     // premoved at once, even before the other replies are worked out. Speed is the only chance left.
@@ -5028,7 +5029,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!complete || !list.length) return null;
     const robust = robustMove(entries);
     const top = list.find(e => e.reply === topReply) || list[0];
+    // (the value of each reply for us; the lowest is their best)
+    const worth = e => e.mate !== undefined ? Math.sign(e.mate) * (10000 - Math.abs(e.mate)) : e.cp;
     if (robust) return { step: robust, fen: top.fen, line: lineOf(list.find(e => e.step.uci === robust.uci), robust), conditional: false, why: list.length === 1 ? 'their only move' : 'the same answer to every reply' };
+    // Their best reply stands clear of the others (it is worth them at least 0.8 pawn more): the answer to it is premoved, in
+    // the hope they play it. Where it turns out illegal or bad the answer is decided afresh, so this only ever saves time.
+    if (allowLikely && top && list.length >= 3 && worth(top) !== undefined) {
+      const rest = Math.min(...list.filter(e => e !== top && worth(e) !== undefined).map(worth));
+      if (rest - worth(top) >= 80) return { step: top.step, fen: top.fen, line: lineOf(top, top.step), conditional: false, likely: true, why: 'their best move stands clear' };
+    }
     if (top.replyCapture) {
       const takes = list.filter(e => e.replyCapture && e.replyTo === top.replyTo);
       if (takes.every(e => e.step.capture && e.step.to === top.replyTo)) return { step: top.step, fen: top.fen, line: lineOf(top, top.step), conditional: true, why: `if they take on ${top.replyTo}` };
@@ -5224,9 +5233,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const refresh = entry => {
       // The answers to the three likeliest replies are enough to name a premove; waiting for all of them was why they were rare.
       if (!book.complete && book.total && book.entries.size >= Math.min(3, book.total)) book.complete = true;
-      const certain = clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw');
+      const certain = clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw');
       // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
-      const sticky = book.premove && (book.premove.wiggle || book.premove.gamble);
+      const sticky = book.premove && (book.premove.wiggle || book.premove.gamble || book.premove.likely);
       const now = sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (certain || book.wiggle || null);
       if (book.premove && (!now || now.step.uci !== book.premove.step.uci)) {
         if (book.premoveSet) cancelPremove(board);
@@ -5240,7 +5249,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const lineFor = e => [e.reply, ...(e.pv && e.pv[0] === e.step.uci ? e.pv : [e.step.uci])].slice(0, CLUTCH_DEPTH);
       const items = [];
       const lead = entries.find(e => e.reply === book.topReply) || entries[0];
-      if (prem && lead) items.push({ fen, line: [lead.reply, ...(lead.step.uci === prem.step.uci ? lineFor(lead).slice(1) : [prem.step.uci])].slice(0, CLUTCH_DEPTH), color: CLUTCH_RED, premoveAt: 1, gamble: prem.conditional, theirs: true });
+      if (prem && lead) items.push({ fen, line: [lead.reply, ...(lead.step.uci === prem.step.uci ? lineFor(lead).slice(1) : [prem.step.uci])].slice(0, CLUTCH_DEPTH), color: CLUTCH_RED, premoveAt: 1, gamble: prem.conditional, likely: prem.likely, theirs: true });
       entries.filter(e => !(prem && lead && e === lead)).slice(0, prem ? 3 : 4).forEach(e => items.push({ fen, line: lineFor(e), color: CLUTCH_BLUE, theirs: true }));
       showClutchGhosts(ctl, items);
       const native = premoveNative(board);
@@ -5248,7 +5257,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${depth}. Premove: ${prem ? `${prem.step.from}-${prem.step.to} (${prem.why})` : book.complete ? 'none, the replies need different answers' : 'working it out'}${native ? '' : '. No premoves in this game: answers are held and played the instant they move'}`);
       // Where chess.com has premoves, a certain one is set for real (a trade is not: it must not
       // run if they do not take).
-      if (native && mayPlay && prem && book.fullRound && !book.premoveSet) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
+      if (native && mayPlay && prem && !prem.likely && book.fullRound && !book.premoveSet) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
     };
     const stillTheirMove = () => {
       if (book.token.stop) return false;
@@ -5263,9 +5272,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
       onOptions: n => { book.total = n; },
       onTop: async () => {
-        if (book.wiggleRun || s.mode !== 'win') return;
+        if (book.wiggleRun || s.mode === 'lose') return;
         book.wiggleRun = true;
-        const w = await wigglePremove(book.entries, (x, y) => clutchEngine.analyse(x, y), () => !stillTheirMove());
+        const w = await wigglePremove(book.entries, (x, y) => clutchEngine.analyse(x, y), () => !stillTheirMove(), s.mode);
         if (w && clutch.book === book && stillTheirMove()) { book.wiggle = w; refresh(); }
       },
       onRound: () => { book.complete = true; book.fullRound = true; refresh(); }

@@ -786,6 +786,20 @@ test('slips are logical and bounded, and they depend on the outcome: a win may s
   } finally { f.close(); }
 });
 
+test('their clearly best reply gets a premove for its answer (not in a draw), and a draw also gets a premove that holds', () => {
+  const f = setup();
+  try {
+    const step = uci => ({ uci, from: uci.slice(0, 2), to: uci.slice(2, 4), capture: false });
+    const mk = (reply, uci, cp) => [reply, { reply, topReply: 'e7e5', fen: 'f-' + reply, step: step(uci), cp, replyCapture: false, replyTo: reply.slice(2, 4) }];
+    const clear = new Map([mk('e7e5', 'g1f3', -60), mk('c7c5', 'd2d4', 40), mk('e7e6', 'b1c3', 30), mk('g8f6', 'e4e5', 50)]);
+    const p = f.api.clutchPremove(clear, 'e7e5', true, true, true);
+    assert.ok(p && p.likely && p.step.uci === 'g1f3', 'their best stands clear: its answer is premoved');
+    assert.equal(f.api.clutchPremove(clear, 'e7e5', true, true, false), null, 'not when it may not guess (a draw)');
+    const close = new Map([mk('e7e5', 'g1f3', -60), mk('c7c5', 'd2d4', -40), mk('e7e6', 'b1c3', -50)]);
+    assert.equal(f.api.clutchPremove(close, 'e7e5', true, true, true), null, 'replies that are close: no guess');
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

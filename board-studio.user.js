@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.13.1
+// @version      6.14.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3495,7 +3495,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const ms = clock * 1000;
     return {
       stage1Ms: Math.max(80, Math.min(500, ms * 0.03)),
-      stage2Ms: Math.max(0, Math.min(ms * 0.12 * scale, 4000 * scale)),
+      stage2Ms: Math.max(0, Math.min(ms * 0.12 * scale, 4000 * scale, ms * 0.25)),
       maxDepth: Math.min(40, s.maxDepth + (pieces <= 6 ? 6 : pieces <= 10 ? 3 : 0)),
       canDeepen: clock >= s.spare
     };
@@ -3798,7 +3798,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return r < win ? 'win' : r < win + draw ? 'draw' : 'lose';
   }
 
-  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win' } = {}, elo, analyse) {
+  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0 } = {}, elo, analyse) {
+    // The whole decision is held to a budget: a move that costs the game on time is worth nothing.
+    const deadline = Date.now() + budget, left = () => deadline - Date.now();
+    // In an ending the play should match or beat what the opponent shows: better when playing to win,
+    // level when playing to draw, and more so when they have just found a really good move. Not an engine
+    // at a low rating, a step up from it.
+    if (countPieces(fen) <= 10 && mode !== 'lose') elo = Math.min(2600, elo + (mode === 'win' ? 350 : 180) + (pressure ? 300 : 0));
     const p = humanProfile(elo, fen);
     const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
     if (!legal.length) return null;
@@ -3809,7 +3815,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // (a weaker player gets there more slowly: the reach grows with the rating)
     const technique = Math.round(Math.min(countPieces(fen) <= 4 ? 14 : 10, Math.max(5, 4 + elo / 150)));
     const reach = countPieces(fen) <= 6 ? Math.max(p.mateReach, technique) : p.mateReach;
-    const mateLook = await analyse(fen, { mate: reach, depth: 2 * reach + 2, ms: reach > 4 ? 1500 : 220, multipv: 1, fresh: true });
+    const mateLook = await analyse(fen, { mate: reach, depth: 2 * reach + 2, ms: Math.max(40, Math.min(reach > 4 ? 1500 : 220, left() * 0.3)), multipv: 1, fresh: true });
     if (!mateLook) return null;
     // (playing for the draw, a mate that is plainly there is still played: stalemating a won ending would be
     // absurd. Only a deeper one, in a fuller position, may be let go. Playing to lose, no mate is taken.)
@@ -3844,16 +3850,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const filler = legal.map(m => m.from + m.to + (m.promotion || '')).find(u => u !== wanted[0]);
         if (filler) wanted.push(filler);
       }
+      if (left() < 40 && rated.length) break; // out of time: what has been rated decides
       const depth = p.quietDepth + extra;
       // `ms` is a ceiling: a shallow look takes little time, a deep one (a strong player in an ending) what it needs
-      const result = await analyse(fen, { depth, ms: Math.min(ms, Math.round((100 + 8 * depth * depth) * Math.max(1, wanted.length / 2))), multipv: wanted.length, searchMoves: wanted, fresh: true });
+      const result = await analyse(fen, { depth, ms: Math.max(30, Math.min(ms, left() * 0.5, Math.round((100 + 8 * depth * depth) * Math.max(1, wanted.length / 2)))), multipv: wanted.length, searchMoves: wanted, fresh: true });
       if (!result) return null;
       for (const line of result.lines || [result]) {
         const c = group.find(x => x.uci === line.pv[0]);
         if (c) rated.push({ c, line });
       }
     }
-    if (!rated.length) return { ...mateLook, human: true, lines: [mateLook] };
+    if (!rated.length) return cands.length ? { depth: 1, cp: 0, pv: [cands[0].uci], human: true, lines: [] } : { ...mateLook, human: true, lines: [mateLook] };
     // Clearly winning: convert. No taste for checks, a position seen before is avoided (that is how a won
     // game gets drawn), and when the fifty moves loom, a capture or a pawn move is progress.
     const halfmove = +String(fen).split(' ')[4] || 0;
@@ -3864,12 +3871,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Far ahead on material yet nothing noticed holds it (a queen up, and every move it saw is a check
     // that throws the queen away): it was looking at the wrong moves, so it looks at the others.
     const holdsNothing = ahead >= 4 && topValue < Math.min(150, ahead * 30);
-    if ((winning && rated.filter(r => value(r.line) >= topValue - 150).every(r => { const st = stepFor(fen, r.c.uci); return st && seen(st.fen); })) || holdsNothing) {
+    if (left() > 300 && ((winning && rated.filter(r => value(r.line) >= topValue - 150).every(r => { const st = stepFor(fen, r.c.uci); return st && seen(st.fen); })) || holdsNothing)) {
       const have = new Set(rated.map(r => r.c.uci));
       const rest = legal.map(m => m.from + m.to + (m.promotion || '')).filter(u => !have.has(u) && !seen((stepFor(fen, u) || {}).fen));
       if (rest.length) {
         if (rest.length === 1) { const f = legal.map(m => m.from + m.to + (m.promotion || '')).find(u => u !== rest[0]); if (f) rest.push(f); }
-        const more = await analyse(fen, { depth: p.quietDepth, ms: Math.min(ms, 600), multipv: rest.length, searchMoves: rest, fresh: true });
+        const more = await analyse(fen, { depth: p.quietDepth, ms: Math.min(ms, 600, left() * 0.4), multipv: rest.length, searchMoves: rest, fresh: true });
         for (const line of (more && (more.lines || [more])) || []) {
           const move = legal.find(m => m.from + m.to + (m.promotion || '') === line.pv[0]);
           if (move && !move.captured && !have.has(line.pv[0])) {
@@ -3893,8 +3900,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Never walk into a mate: the few best moves are each checked for a mate by the other side.
     for (const r of mode === 'lose' ? [] : rated.slice(0, 5)) {
       const after = stepFor(fen, r.c.uci);
-      if (!after) continue;
-      const reply = await analyse(after.fen, { mate: 3, depth: 8, ms: 150, multipv: 1, fresh: true });
+      if (!after || left() < 80) continue;
+      const reply = await analyse(after.fen, { mate: 3, depth: 8, ms: Math.max(30, Math.min(150, left() / 6)), multipv: 1, fresh: true });
       if (reply && reply.mate > 0) r.score -= 20000 - 100 * reply.mate;
     }
     rated.sort((a, b) => b.score - a.score);
@@ -4157,7 +4164,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
     const hurry = oppClock !== null && oppClock < clock * 0.7 ? 0.5 : 1;
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
-    if (s.human) return humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(200, Math.min(1500, clock * 1000 * 0.1)), seen: s.seen, mode: s.mode }, s.elo, (f, o) => clutchEngine.analyse(f, o));
+    if (s.human) {
+      // Never more than a small share of what is left on the clock (and a flash when it is nearly gone).
+      const budgetMs = Math.max(45, Math.min(1800, clock * 1000 * (clock < 3 ? 0.05 : 0.08)));
+      // How well they just played: our own estimate of the position last time against a quick look now.
+      let pressure = 0;
+      if (pieces <= 10 && clock >= 3 && clutch.lastValue !== null && clutch.lastValue !== undefined) {
+        const quick = await clutchEngine.analyse(fen, { depth: 8, ms: 60, multipv: 1, fresh: true });
+        if (quick) { const now = quick.mate !== undefined ? Math.sign(quick.mate) * 5000 : quick.cp; if (now < clutch.lastValue - 60) pressure = 1; }
+      }
+      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, pressure, seen: s.seen, mode: s.mode }, s.elo, (f, o) => clutchEngine.analyse(f, o));
+      if (result) clutch.lastValue = result.mate !== undefined ? Math.sign(result.mate) * 5000 : result.cp;
+      return result;
+    }
     let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: s.multipv || 4 });
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0 && !(s.strength && s.strength.limited)) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
@@ -4253,6 +4272,38 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       onRound(round);
     }
     return entries.size;
+  }
+
+  // A premove that need not be the very best move: one that, against every reply it has prepared, stays
+  // good enough to keep the result (a win stays a win, just a little less; an even game stays even).
+  // Null when no answer qualifies. Searches on the opponent's time.
+  async function wigglePremove(entries, analyse, stop) {
+    const list = [...entries.values()].filter(e => !e.forced);
+    if (list.length < 2) return null;
+    const val = e => e.mate !== undefined ? Math.sign(e.mate) * (10000 - Math.abs(e.mate)) : e.cp;
+    const top = list[0];
+    for (const cand of clutchAnswers(entries).slice(0, 3)) {
+      let ok = true;
+      for (const e of list) {
+        if (e.step.uci === cand.step.uci) continue;
+        const legal = new BoardStudioRules.Chess(e.fen).moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
+        if (!legal.includes(cand.step.uci)) { ok = false; break; }
+        const filler = legal.find(u => u !== cand.step.uci);
+        const wanted = filler ? [cand.step.uci, filler] : [cand.step.uci];
+        const res = await analyse(e.fen, { depth: 8, ms: 120, multipv: wanted.length, searchMoves: wanted, fresh: true });
+        if (stop()) return null;
+        const line = res && (res.lines || [res]).find(l => l.pv && l.pv[0] === cand.step.uci);
+        const best = val(e);
+        if (!line || best === undefined) { ok = false; break; }
+        const got = line.mate !== undefined ? Math.sign(line.mate) * (10000 - Math.abs(line.mate)) : line.cp;
+        // how much may be given up: a lot when far ahead (it stays winning), nothing when it is close
+        const allowed = best >= 150 ? 80 : best > -150 ? 35 : 20;
+        const fine = best >= 400 ? got >= Math.max(250, best * 0.5) : got >= best - allowed;
+        if (!fine) { ok = false; break; }
+      }
+      if (ok) return { step: cand.step, fen: top.fen, conditional: false, wiggle: true, why: 'good enough against every reply' };
+    }
+    return null;
   }
 
   // One move that is the answer to every reply in the book: that one is safe to premove for real.
@@ -4364,7 +4415,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       fen = board.game.getFEN();
       if (fen !== clutch.curFen) {
         clutch.lastMove = inferLastMove(clutch.curFen, fen); clutch.curFen = fen;
-        if (/^rnbqkbnr\/pppppppp\/8\/8\/8\/8\/PPPPPPPP\/RNBQKBNR/.test(fen) && fen.split(' ')[5] === '1' && fen.split(' ')[1] === 'w') { clutch.seen = {}; clutch.mode = null; }
+        if (/^rnbqkbnr\/pppppppp\/8\/8\/8\/8\/PPPPPPPP\/RNBQKBNR/.test(fen) && fen.split(' ')[5] === '1' && fen.split(' ')[1] === 'w') { clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; }
         const k = fen.split(' ').slice(0, 3).join(' ');
         clutch.seen = clutch.seen || {};
         clutch.seen[k] = (clutch.seen[k] || 0) + 1;
@@ -4372,7 +4423,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
-    if (!own) { clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
+    if (!own) { clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
     // Auto plays at the opponent's rating when it can be read; otherwise, and with Auto off, the field's.
     const opponentElo = readOpponentElo();
     const elo = clutchEloFor(base, opponentElo);
@@ -4485,7 +4536,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Show what is ready. The premove (red) is only a move Clutch is certain of, named once, and taken
     // back rather than swapped for another if it stops being certain; the other answers it weighs are blue.
     const refresh = entry => {
-      const now = clutchPremove(book.entries, book.topReply, book.complete);
+      const certain = clutchPremove(book.entries, book.topReply, book.complete);
+      // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
+      const now = book.premove && book.premove.wiggle ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (certain || book.wiggle || null);
       if (book.premove && (!now || now.step.uci !== book.premove.step.uci)) {
         if (book.premoveSet) cancelPremove(board);
         book.premove = null; book.premoveSet = false; book.spent = true;
@@ -4515,7 +4568,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       analyse: (f, o) => clutchEngine.analyse(f, o),
       answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode }, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
-      onRound: () => { book.complete = true; refresh(); }
+      onRound: () => {
+        book.complete = true; refresh();
+        if (!book.wiggleRun && s.mode !== 'lose') {
+          book.wiggleRun = true;
+          wigglePremove(book.entries, (x, y) => clutchEngine.analyse(x, y), () => !stillTheirMove()).then(w => { if (w && clutch.book === book && stillTheirMove()) { book.wiggle = w; refresh(); } });
+        }
+      }
     }).then(count => {
       if (clutch.book === book && book.entries.size === 0 && stillTheirMove()) setClutch('Clutch: no answers prepared');
     });

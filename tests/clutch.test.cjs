@@ -170,6 +170,37 @@ test('the response book holds an answer for each likely reply, trades included',
   } finally { kill(); f.close(); }
 });
 
+test('a decision is held to its time budget, even in an ending where mates are searched', { timeout: 60000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    const ask = (fen, mode, budget) => f.api.humanAnalyse(fen, { ms: 1500, budget, mode }, 1800, (x, y) => engine.analyse(x, y));
+    for (const [fen, mode] of [['8/8/8/2k5/8/8/p7/4K2Q w - - 0 1', 'win'], ['r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4', 'win'], ['4k3/8/8/8/8/8/8/R3K2Q w - - 0 1', 'draw']]) {
+      const t0 = Date.now(); const r = await ask(fen, mode, 120);
+      assert.ok(r && r.pv && r.pv.length, 'a move comes back');
+      assert.ok(Date.now() - t0 < 900, 'within the budget (took ' + (Date.now() - t0) + ' ms)');
+    }
+  } finally { kill(); f.close(); }
+});
+
+test('a premove with room: a winning position gets one even when the answers differ, a close one does not', { timeout: 120000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    const build = async fen => {
+      const entries = new Map();
+      await f.api.bookBuild({ fen, s: { eval: 2, depth: 8, maxDepth: 12, spare: 2 }, clock: 20, rounds: 1, replies: 4, analyse: (x, o) => engine.analyse(x, o), stop: () => false, onEntry: (k, e) => entries.set(k, e) });
+      return entries;
+    };
+    // a queen and a rook up: any sensible move keeps the win, so some answer is safe against every reply
+    const won = await build('4k3/8/8/8/8/8/8/R3K2Q b - - 0 1');
+    const w = await f.api.wigglePremove(won, (x, o) => engine.analyse(x, o), () => false);
+    assert.ok(w && w.wiggle && w.step.uci, 'a premove with room is found when winning');
+    // a sharp middlegame: nothing is safe against every reply
+    const sharp = await build('r1bq1rk1/pp3ppp/2n1pn2/2bp4/2B1P3/2N2N2/PPP2PPP/R1BQ1RK1 b - - 0 1');
+    const x = await f.api.wigglePremove(sharp, (y, o) => engine.analyse(y, o), () => false);
+    assert.ok(x === null || x.wiggle, 'no promise in a sharp position beyond what holds');
+  } finally { kill(); f.close(); }
+});
+
 test('the book gives up as soon as the position changes', { timeout: 60000 }, async () => {
   const f = setup(); const { engine, kill } = realEngine(f);
   try {

@@ -325,6 +325,53 @@ test('the plan badge also finds the clock of a live game (other markup than the 
   } finally { f.close(); }
 });
 
+test('a premove is played exactly as indicated, not decided again once their move is known', () => {
+  const f = setup();
+  try {
+    const after = new Chess(); after.move('e4');            // they played 1.e4 ... wait: this is the position after White's e4, Black to move
+    const fen = after.fen();
+    const g = new Chess(fen); g.move('e5');                // Black replied ...e5; White is to move: Nf3 and d4 are both legal
+    const here = g.fen();
+    const prem = { step: { uci: 'g1f3' }, conditional: false };
+    const entry = { step: { uci: 'd2d4' } };                // what the book would answer to this reply
+    assert.equal(f.api.clutchAuthenticStep(prem, here, entry).uci, 'g1f3', 'the premove goes, not the book answer');
+    assert.equal(f.api.clutchAuthenticStep(prem, here, null).uci, 'g1f3', 'even to a reply the book never saw');
+    assert.equal(f.api.clutchAuthenticStep({ step: { uci: 'a1a5' }, conditional: false }, here, entry), null, 'an illegal premove falls back');
+    assert.equal(f.api.clutchAuthenticStep({ step: { uci: 'g1f3' }, conditional: true }, here, entry), null, 'a trade premove only when they did take');
+    assert.equal(f.api.clutchAuthenticStep({ step: { uci: 'd2d4' }, conditional: true }, here, entry).uci, 'd2d4', 'and then it goes');
+    assert.equal(f.api.clutchAuthenticStep(null, here, entry), null);
+  } finally { f.close(); }
+});
+
+test('a Clutch ghost goes three deep: each next move a ghost of the one before, half as strong, joined by an arrow', () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const board = f.board(fen);
+    board.innerHTML = '<svg class="arrows"></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    assert.deepEqual(Array.from(f.api.clutchChain(fen, ['e2e4', 'e7e5', 'g1f3', 'b8c6']), s => s.uci), ['e2e4', 'e7e5', 'g1f3'], 'three steps, however long the line');
+    assert.deepEqual(Array.from(f.api.clutchChain(fen, ['e2e4', 'e2e4']), s => s.uci), ['e2e4'], 'it stops where the line stops being legal');
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#ff4d4d', line: ['e2e4', 'e7e5', 'g1f3', 'b8c6'] }]);
+    const layer = board.querySelector('.bs-ghost-clutch');
+    const ghosts = [...layer.querySelectorAll('.cc-ghost:not(.cc-ghost-leave)')];
+    assert.equal(ghosts.length, 3, 'the answer and the next two moves');
+    const op = el => +el.style.opacity;
+    const [first, second, third] = ['e2e4', 'e7e5', 'g1f3'].map(u => ghosts.find(g => g.dataset.uci === u));
+    assert.ok(first && second && third);
+    assert.ok(Math.abs(op(second) - op(first) / 2) < 1e-9, 'the next ghost is half as strong as the one before');
+    assert.ok(Math.abs(op(third) - op(second) / 2) < 1e-9, 'and the one after that half again');
+    assert.equal(second.style.left, '50%'); assert.equal(second.style.top, '37.5%', 'it sits where its piece lands (e5)');
+    const arrows = layer.querySelectorAll('svg.cc-chain g');
+    assert.equal(arrows.length, 2, 'an arrow from each ghost to the next');
+    assert.ok(Math.abs(+arrows[0].getAttribute('opacity') - op(second)) < 1e-9 && Math.abs(+arrows[1].getAttribute('opacity') - op(third)) < 1e-9, 'each arrow as strong as the ghost it leads to');
+    // a ghost with no further line is just the one ghost
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'd2d4', color: '#4cc2ff' }]);
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)').length, 1);
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch svg.cc-chain g').length, 0);
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

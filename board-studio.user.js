@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.22.0
+// @version      6.23.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -281,6 +281,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .bs-ghost-ai svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
     .bs-ghost-ai .cc-ghost, .bs-ghost-clutch .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)) drop-shadow(0 0 2px var(--reply-color)); }
     .bs-ghost-clutch .cc-ghost { transition: filter 260ms ease, left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1), opacity 320ms ease, transform 320ms cubic-bezier(.34, 1.4, .64, 1); }
+    .bs-ghost-clutch svg.cc-chain { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
     .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave, .bs-ghost-clutch .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
                   opacity 320ms ease, transform 320ms cubic-bezier(.34, 1.4, .64, 1); }
     .bs-ghost-ai .reply-arrow { transition: opacity 320ms ease; }
@@ -4285,6 +4286,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }, 40);
   }
 
+  // The move to make when the opponent has just moved. A premove is a move fixed in advance, so it is played as
+  // shown, not re-decided now that their move is known: whatever the book would answer, the premove goes, as long
+  // as it is legal (a trade premove only when they did take). Null when there is no premove to play.
+  function clutchAuthenticStep(prem, fen, entry) {
+    if (!prem || !prem.step) return null;
+    const step = stepFor(fen, prem.step.uci);
+    if (!step) return null;
+    if (prem.conditional && !(entry && entry.step && entry.step.uci === prem.step.uci)) return null;
+    return step;
+  }
+
   function clutchMove(board, step, own, instant = false) {
     dragPiece(board, step.from, step.to, instant);
     if (step.promotion) setTimeout(() => choosePromotion(own, step.promotion), instant ? 20 : 160);
@@ -4311,11 +4323,28 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     } catch (e) { return null; }
   }
 
+  // How many moves a Clutch ghost shows: the answer and the next two of the line. Displayed only; the
+  // line itself is whatever the engine had already worked out.
+  const CLUTCH_DEPTH = 3;
+  function clutchChain(fen, line) {
+    const out = [];
+    try {
+      const game = new BoardStudioRules.Chess(fen);
+      for (const uci of (line || []).slice(0, CLUTCH_DEPTH)) {
+        const move = game.moves({ verbose: true }).find(m => m.from + m.to + (m.promotion || '') === uci);
+        if (!move) break;
+        out.push({ uci, kind: move.color + (move.promotion || move.piece) });
+        game.move(move);
+      }
+    } catch (e) { /* the line stops where it stops being legal */ }
+    return out;
+  }
+
   function showClutchGhosts(ctl, items) {
     const board = ctl.board;
     let layer = ctl.clutchGhostLayer;
     if (!items.length && !layer) return;
-    const key = JSON.stringify([ctl.flipped, items.map(i => [i.uci, i.color, String(i.fen).split(' ')[0]])]);
+    const key = JSON.stringify([ctl.flipped, settings.ghosts.opacity, items.map(i => [i.uci, i.color, String(i.fen).split(' ')[0], (i.line || []).slice(0, CLUTCH_DEPTH)])]);
     if (ctl.clutchGhostKey === key && layer && layer.isConnected) return;
     ctl.clutchGhostKey = key;
     if (!layer || !layer.isConnected) {
@@ -4334,6 +4363,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       return { left: `${q.x * 12.5}%`, top: `${q.y * 12.5}%` };
     };
     const live = ctl.clutchGhostItems, keep = new Set();
+    const chains = [];
     for (const item of items) {
       const id = item.uci;
       keep.add(id);
@@ -4357,7 +4387,41 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       entry.el.title = item.color === CLUTCH_RED ? (item.gamble ? 'Premove if they take' : 'Premove: certain') : 'Considering';
       entry.el.classList.remove('cc-ghost-leave');
       Object.assign(entry.el.style, spot(item.uci.slice(2, 4)), { opacity: String(settings.ghosts.opacity + 0.1) });
+      // The branch it leads to: the next moves of the line, each a ghost of the one before, half as strong, joined
+      // by an arrow from ghost to ghost. Only what is shown: the line was already worked out.
+      const steps = clutchChain(item.fen, item.line || [item.uci]);
+      for (let k = 1; k < steps.length; k++) {
+        const step = steps[k], sid = item.uci + '>' + k + ':' + step.uci;
+        keep.add(sid);
+        let sub = live.get(sid);
+        if (!sub) {
+          const el = document.createElement('div');
+          el.className = 'cc-ghost cc-ghost-sub';
+          el.dataset.uci = step.uci; el.dataset.depth = String(k);
+          el.style.backgroundImage = imageFor(step.kind);
+          Object.assign(el.style, spot(step.uci.slice(0, 2)), { opacity: '0' });
+          layer.appendChild(el);
+          el.getBoundingClientRect();
+          sub = { el };
+          live.set(sid, sub);
+        }
+        const strength = (settings.ghosts.opacity + 0.1) * Math.pow(0.5, k);
+        sub.el.style.setProperty('--reply-color', item.color);
+        sub.el.classList.remove('cc-ghost-leave');
+        Object.assign(sub.el.style, spot(step.uci.slice(2, 4)), { opacity: String(strength) });
+        chains.push({ from: steps[k - 1].uci.slice(2, 4), to: step.uci.slice(2, 4), color: item.color, opacity: strength });
+      }
     }
+    // the arrows between the ghosts, one drawing for all of them (board squares as units)
+    let arrows = layer.querySelector('svg.cc-chain');
+    if (!arrows) { arrows = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); arrows.setAttribute('class', 'cc-chain'); arrows.setAttribute('viewBox', '0 0 8 8'); layer.appendChild(arrows); }
+    arrows.innerHTML = chains.filter(c => c.from !== c.to).map(c => {
+      const a = squareXY(c.from.charCodeAt(0) - 96, +c.from[1], ctl.flipped), b = squareXY(c.to.charCodeAt(0) - 96, +c.to[1], ctl.flipped);
+      const x1 = a.x + .5, y1 = a.y + .5, x2 = b.x + .5, y2 = b.y + .5, len = Math.hypot(x2 - x1, y2 - y1) || 1, ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+      // stop short of the centres, so the arrow sits between the two ghosts
+      const sx = x1 + ux * .32, sy = y1 + uy * .32, ex = x2 - ux * .36, ey = y2 - uy * .36, hx = ex - ux * .2, hy = ey - uy * .2;
+      return `<g opacity="${c.opacity}" fill="${c.color}" stroke="${c.color}"><line class="cc-chain-line" x1="${sx}" y1="${sy}" x2="${hx}" y2="${hy}" stroke-width=".11" stroke-linecap="round"/><polygon points="${ex},${ey} ${hx - uy * .14},${hy + ux * .14} ${hx + uy * .14},${hy - ux * .14}" stroke="none"/></g>`;
+    }).join('');
     for (const [id, entry] of live) {
       if (keep.has(id)) continue;
       live.delete(id);
@@ -4513,7 +4577,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!hit) continue;
       option.book = true;
       const key = repKey(option.fen);
-      const entry = { plan: null, step: hit.step, note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, replyCapture: option.capture, replyTo: option.to, book: true, fen: option.fen, topReply };
+      const entry = { plan: null, step: hit.step, pv: [hit.step.uci], note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, replyCapture: option.capture, replyTo: option.to, book: true, fen: option.fen, topReply };
       entries.set(key, entry);
       onEntry(key, entry);
     }
@@ -4533,7 +4597,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!decision) continue;
         const key = repKey(option.fen), old = entries.get(key);
         if (old && old.depth > result.depth) continue;
-        const entry = { ...decision, fen: option.fen, topReply, replyCapture: option.capture, replyTo: option.to, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
+        const entry = { ...decision, pv: result.pv, fen: option.fen, topReply, replyCapture: option.capture, replyTo: option.to, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
         if (entry.forced) entry.crit = 0;
         entries.set(key, entry);
         onEntry(key, entry, old);
@@ -4570,7 +4634,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const fine = best >= 400 ? got >= Math.max(250, best * 0.5) : got >= best - allowed;
         if (!fine) { ok = false; break; }
       }
-      if (ok) return { step: cand.step, fen: top.fen, conditional: false, wiggle: true, why: 'good enough against every reply' };
+      if (ok) return { step: cand.step, fen: top.fen, line: cand.line, conditional: false, wiggle: true, why: 'good enough against every reply' };
     }
     return null;
   }
@@ -4584,10 +4648,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // The answers in the book grouped: which move answers how many of the replies, most first.
+  const lineOf = (entry, step) => (entry && entry.pv && entry.pv[0] === step.uci ? entry.pv : [step.uci]).slice(0, 3);
   function clutchAnswers(entries) {
     const by = new Map();
     for (const entry of entries.values()) {
-      const answer = by.get(entry.step.uci) || { step: entry.step, fen: entry.fen, replies: [] };
+      const answer = by.get(entry.step.uci) || { step: entry.step, fen: entry.fen, replies: [], line: lineOf(entry, entry.step) };
       answer.replies.push(entry.reply);
       by.set(entry.step.uci, answer);
     }
@@ -4647,15 +4712,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // premoved at once, even before the other replies are worked out. Speed is the only chance left.
     const lead = list.find(e => e.reply === topReply);
     if (lead && !lead.forced && (lead.mate < 0 || (lead.cp !== undefined && lead.cp <= -500))) {
-      return { step: lead.step, fen: lead.fen, conditional: false, gamble: true, why: 'lost anyway: playing for their best reply' };
+      return { step: lead.step, fen: lead.fen, line: lineOf(lead, lead.step), conditional: false, gamble: true, why: 'lost anyway: playing for their best reply' };
     }
     if (!complete || !list.length) return null;
     const robust = robustMove(entries);
     const top = list.find(e => e.reply === topReply) || list[0];
-    if (robust) return { step: robust, fen: top.fen, conditional: false, why: list.length === 1 ? 'their only move' : 'the same answer to every reply' };
+    if (robust) return { step: robust, fen: top.fen, line: lineOf(list.find(e => e.step.uci === robust.uci), robust), conditional: false, why: list.length === 1 ? 'their only move' : 'the same answer to every reply' };
     if (top.replyCapture) {
       const takes = list.filter(e => e.replyCapture && e.replyTo === top.replyTo);
-      if (takes.every(e => e.step.capture && e.step.to === top.replyTo)) return { step: top.step, fen: top.fen, conditional: true, why: `if they take on ${top.replyTo}` };
+      if (takes.every(e => e.step.capture && e.step.to === top.replyTo)) return { step: top.step, fen: top.fen, line: lineOf(top, top.step), conditional: true, why: `if they take on ${top.replyTo}` };
     }
     return null;
   }
@@ -4704,12 +4769,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // the move goes out in the same breath as the board changing.
     if (clutch.engaged && clutch.book && fen.split(' ')[1] === own && clutchMayPlay()) {
       const quickKey = repKey(fen), e = clutch.book.entries.get(quickKey), prem = clutch.book.premove;
-      if (e && e.step && (e.book || !e.crit || (prem && prem.step.uci === e.step.uci)) && !clutchBurnMs(clutch.mode, clutch.way, e.step, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 700)) {
+      const fixed = clutchAuthenticStep(prem, fen, e);                       // the premove, as indicated
+      const chosen = fixed || (e && e.step && (e.book || !e.crit) ? e.step : null);
+      if (chosen && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 700)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
-        if (e.plan) clutch.plan = e.plan;
-        clutchMove(board, e.step, own, true);
+        if (!fixed && e.plan) clutch.plan = e.plan;
+        clutchMove(board, chosen, own, true);
         clutchStopBook(); showClutchGhosts(ctl, []);
-        setClutch(`Clutch: playing ${e.step.from}-${e.step.to}, prepared answer to ${e.reply}`);
+        setClutch(fixed ? `Clutch: premove ${chosen.from}-${chosen.to} played` : `Clutch: playing ${chosen.from}-${chosen.to}, prepared answer to ${e.reply}`);
         return;
       }
     }
@@ -4782,6 +4849,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         act(opening.step, false, `opening book, ${opening.games} games`, true);
         return;
       }
+      const fixedStep = clutchAuthenticStep(book && book.premove, fen, entry);
+      if (fixedStep) { act(fixedStep, false, 'the premove, as indicated', true); return; }
       if (entry) {
         const think = clutchThink(entry, clock, s);
         if (!think) {
@@ -4849,8 +4918,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const answers = clutchAnswers(book.entries);
       const prem = book.premove;
       const items = [];
-      if (prem) items.push({ fen: prem.fen, uci: prem.step.uci, color: CLUTCH_RED, gamble: prem.conditional });
-      answers.filter(x => !prem || x.step.uci !== prem.step.uci).slice(0, 3).forEach(x => items.push({ fen: x.fen, uci: x.step.uci, color: CLUTCH_BLUE }));
+      if (prem) items.push({ fen: prem.fen, uci: prem.step.uci, color: CLUTCH_RED, gamble: prem.conditional, line: prem.line });
+      answers.filter(x => !prem || x.step.uci !== prem.step.uci).slice(0, 3).forEach(x => items.push({ fen: x.fen, uci: x.step.uci, color: CLUTCH_BLUE, line: x.line }));
       showClutchGhosts(ctl, items.filter(i => i.fen));
       const native = premoveNative(board);
       const depth = entry ? entry.depth : [...book.entries.values()].reduce((d, e) => Math.max(d, e.depth), 0);

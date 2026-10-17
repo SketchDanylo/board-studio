@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.31.0
+// @version      6.32.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4062,12 +4062,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Everything is played around the eval bar. With it against us (and an aim to win or draw) the moves have to be
     // really good, so the rating is lifted, as it is when they have just played better than was reckoned on. Lifted,
     // not made an engine: a low rating stays stretched, the best move is simply likelier.
+    // The eval bar: when the caller did not bring it, take a quick look. Every decision is made against it.
+    if (evalNow === null && left() > 150) {
+      const q = await analyse(fen, { depth: 8, ms: 60, multipv: 1, fresh: true });
+      if (q) evalNow = q.mate !== undefined ? Math.sign(q.mate) * 5000 : q.cp;
+    }
     const played = evalNow !== null && expected !== null && evalNow - expected < -60;
     let boost = countPieces(fen) <= 10 && mode !== 'lose' ? (mode === 'win' ? 350 : 180) : 0;
     if (mode !== 'lose' && evalNow !== null && evalNow <= -150) boost = Math.max(boost, 400);
     if (mode !== 'lose' && (pressure || played)) boost += 300;
     elo = Math.min(2600, elo + boost);
     const p = humanProfile(elo, fen);
+    // A piece under attack is always noticed when the aim is to win or draw: the outcome does not wait on a rating.
+    if (mode !== 'lose') p.notice = 1;
     const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
     if (!legal.length) return null;
     // A mate within reach is simply played.
@@ -4190,12 +4197,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         + (winning && halfmove >= 16 && (r.c.capture || r.c.move.piece === 'p') ? 80 : 0);
     }
     rated.sort((a, b) => b.score - a.score);
-    // Never walk into a mate: the few best moves are each checked for a mate by the other side.
+    // Never walk into a refutation. Each of the best moves is looked at from the other side, a few plies deeper than the
+    // rating would look: if the position after it is clearly worse for us than the move was rated (it hangs something,
+    // walks into a mate), it is struck out. The rating decides which of the safe moves is chosen, never whether it is safe.
+    const checkMs = left() > 900 ? 130 : 60;
+    let checked = 0;
     for (const r of mode === 'lose' ? [] : rated.slice(0, 6)) {
       const after = stepFor(fen, r.c.uci);
-      if (!after || left() < 80) continue;
-      const reply = await analyse(after.fen, { mate: 4, depth: 10, ms: Math.max(30, Math.min(160, left() / 7)), multipv: 1, fresh: true });
-      if (reply && reply.mate > 0) r.score -= 20000 - 100 * reply.mate;
+      if (!after || left() < 90 || checked >= (left() > 900 ? 6 : 3)) continue;
+      checked++;
+      const reply = await analyse(after.fen, { depth: 10, ms: Math.max(40, Math.min(checkMs, left() / 5)), multipv: 1, fresh: true });
+      if (!reply) continue;
+      const ours = reply.mate !== undefined ? -Math.sign(reply.mate) * (10000 - Math.abs(reply.mate)) : -reply.cp;
+      if (ours < Math.min(value(r.line), topValue) - 150) r.score -= 6000 + (reply.mate > 0 ? 14000 : 0);
     }
     rated.sort((a, b) => b.score - a.score);
     let best = rated[0];
@@ -4717,7 +4731,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (s.human) {
       // Never more than a small share of what is left on the clock (and a flash when it is nearly gone).
       // (the hand takes its share of the move's time: about half a second)
-      const budgetMs = Math.max(45, clutchMoveMs(clock, fen) - 450);
+      const budgetMs = Math.max(clock > 5 ? 450 : 80, clutchMoveMs(clock, fen) - 200);
       // Where the eval bar stands now, and how well they just played: our own estimate of the position last time against a
       // quick look now. (At any number of pieces: everything is played around the eval.)
       let evalNow = null;
@@ -5018,7 +5032,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // the move goes out in the same breath as the board changing.
     if (clutch.engaged && clutch.book && fen.split(' ')[1] === own && clutchMayPlay()) {
       const quickKey = repKey(fen), e = clutch.book.entries.get(quickKey), prem = clutch.book.premove;
-      const fixed = clutchAuthenticStep(prem, fen, e);                       // the premove, as indicated
+      let fixed = clutchAuthenticStep(prem, fen, e);                         // the premove, as indicated
+      // Made blind, a premove can meet a reply nobody prepared for. If it would leave material hanging in the position that
+      // really came (and the prepared answer would not), it is not played: the aim comes before the show.
+      if (fixed && s.mode !== 'lose' && materialAtRisk(fen, fixed.uci) >= 300 && !(e && e.step && materialAtRisk(fen, e.step.uci) >= 300)) fixed = null;
       const chosen = fixed || (e && e.step && (e.book || !e.crit) ? e.step : null);
       if (chosen && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
@@ -5098,7 +5115,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         act(opening.step, false, `opening book, ${opening.games} games`, false);
         return;
       }
-      const fixedStep = clutchAuthenticStep(book && book.premove, fen, entry);
+      let fixedStep = clutchAuthenticStep(book && book.premove, fen, entry);
+      if (fixedStep && s.mode !== 'lose' && materialAtRisk(fen, fixedStep.uci) >= 300 && !(entry && entry.step && materialAtRisk(fen, entry.step.uci) >= 300)) fixedStep = null;
       if (fixedStep) { act(fixedStep, false, 'the premove, as indicated', true); return; }
       if (entry) {
         const think = clutchThink(entry, clock, s);
@@ -5181,7 +5199,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${depth}. Premove: ${prem ? `${prem.step.from}-${prem.step.to} (${prem.why})` : book.complete ? 'none, the replies need different answers' : 'working it out'}${native ? '' : '. No premoves in this game: answers are held and played the instant they move'}`);
       // Where chess.com has premoves, a certain one is set for real (a trade is not: it must not
       // run if they do not take).
-      if (native && mayPlay && prem && !book.premoveSet) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
+      if (native && mayPlay && prem && book.fullRound && !book.premoveSet) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
     };
     const stillTheirMove = () => {
       if (book.token.stop) return false;
@@ -5201,7 +5219,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const w = await wigglePremove(book.entries, (x, y) => clutchEngine.analyse(x, y), () => !stillTheirMove());
         if (w && clutch.book === book && stillTheirMove()) { book.wiggle = w; refresh(); }
       },
-      onRound: () => { book.complete = true; refresh(); }
+      onRound: () => { book.complete = true; book.fullRound = true; refresh(); }
     }).then(count => {
       if (clutch.book === book && book.entries.size === 0 && stillTheirMove()) setClutch('Clutch: no answers prepared');
     });

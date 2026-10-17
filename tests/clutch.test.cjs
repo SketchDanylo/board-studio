@@ -456,6 +456,7 @@ function ratedBy(values) {
   const order = [];
   return async (fen, o) => {
     if (o.mate) return { depth: 4, cp: 0, pv: [] };
+    if (!o.searchMoves) return { depth: 8, cp: o.ms === 60 ? values[0] : -values[0], pv: [] };   // the eval bar, and a look from the other side that agrees
     const moves = o.searchMoves || [];
     const lines = moves.map(uci => { if (!order.includes(uci)) order.push(uci); return { depth: 6, cp: values[order.indexOf(uci)] ?? -900, pv: [uci] }; })
       .sort((a, b) => b.cp - a.cp);
@@ -639,7 +640,7 @@ test('the outcome comes first: a drawing game never gives material away or drops
   const f = setup();
   try {
     // White queen and king against a king and a knight: Qb5 puts the queen where the knight takes it
-    const fen = '4k3/2n5/8/3p4/8/8/8/3QK3 w - - 0 1';
+    const fen = '4k3/8/8/2n5/8/8/8/3QK3 w - - 0 1';
     // an engine that, as a shallow one can, rates the queen move best and the quiet ones a little worse
     const eng = vals => async (x, o) => {
       if (o.mate) return { depth: 4, cp: 0, pv: [] };
@@ -649,11 +650,12 @@ test('the outcome comes first: a drawing game never gives material away or drops
     };
     for (const mode of ['draw', 'win']) {
       for (const elo of [400, 1200, 2400]) {
-        const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode }, elo, eng({ d1b5: 20, d1d2: 0, d1e2: -10, d1d3: 5 }));
-        assert.notEqual(r.pv[0], 'd1b5', mode + ' at ' + elo + ': the queen is not put where it is taken');
+        const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode }, elo, eng({ d1d3: 20, d1d2: 0, d1e2: -10, d1c1: 5 }));
+        assert.notEqual(r.pv[0], 'd1d3', mode + ' at ' + elo + ': the queen is not put where it is taken');
       }
     }
-    assert.ok(f.api.materialAtRisk ? true : true);
+    // the static count agrees: the queen move gives material away, the quiet one does not
+    assert.ok(f.api.materialAtRisk(fen, 'd1d3') >= 800 && f.api.materialAtRisk(fen, 'd1d2') < 200);
   } finally { f.close(); }
 });
 
@@ -681,6 +683,55 @@ test('a drawing game keeps the eval from falling below level when it can, and pl
       const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'draw' }, elo, eng(worse));
       assert.ok(r.cp >= -260, 'worse at ' + elo + ': ' + r.cp);
     }
+  } finally { f.close(); }
+});
+
+test('every move is checked from the other side before it is played, and the eval bar is always looked at', async () => {
+  const f = setup();
+  try {
+    const fen = '4k3/8/8/2n5/8/8/8/3QK3 w - - 0 1';
+    const hangs = f.api.stepFor(fen, 'd1d3').fen;     // the position after Qd3, where Nxd3 wins the queen
+    const calls = { probe: 0, check: 0 };
+    // the first look rates Qb5 best (a shallow search misses Nxb5); the look from the other side knows better
+    const eng = async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      if (o.searchMoves) {
+        const v = { d1d3: 30, d1d2: 0, d1e2: -10, d1c1: 5 };
+        const lines = o.searchMoves.map(u => ({ depth: 6, cp: v[u] ?? -40, pv: [u] })).sort((a, b) => b.cp - a.cp);
+        return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
+      }
+      if (o.depth === 8 && o.ms === 60) { calls.probe++; return { depth: 8, cp: 10, pv: ['d1d2'] }; }   // the eval bar
+      calls.check++;
+      return x === hangs ? { depth: 10, cp: 700, pv: ['c5d3'] } : { depth: 10, cp: 5, pv: ['e8d8'] };
+    };
+    for (const mode of ['draw', 'win']) {
+      calls.probe = 0; calls.check = 0;
+        const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode }, 400, eng);
+      assert.notEqual(r.pv[0], 'd1d3', mode + ': the move the deeper look refutes is not played');
+      assert.equal(calls.probe, 1, mode + ': the eval bar was looked at once');
+      assert.ok(calls.check >= 1, mode + ': candidates were checked from the other side');
+    }
+  } finally { f.close(); }
+});
+
+test('a prepared answer is also made against the eval bar: when the moves noticed fall short of it, all moves are looked at', async () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2';
+    const asked = [];
+    // the eval bar says +300, yet every move noticed is rated about -50: the position holds more
+    const eng = async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      if (o.searchMoves) {
+        asked.push(o.searchMoves.length);
+        const lines = o.searchMoves.map(u => ({ depth: 6, cp: u === 'e2e4' ? 120 : -50, pv: [u] })).sort((a, b) => b.cp - a.cp);
+        return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
+      }
+      if (o.depth === 8 && o.ms === 60) return { depth: 8, cp: 300, pv: ['e2e4'] };
+      return { depth: 10, cp: 0, pv: [] };
+    };
+    const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'draw' }, 400, eng);
+    assert.ok(Math.max(...asked) > 8, 'every move was looked at, not only the few noticed (' + asked.join(',') + ')');
   } finally { f.close(); }
 });
 

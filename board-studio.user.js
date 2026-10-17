@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.29.0
+// @version      6.30.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -696,7 +696,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Arrows of taken pieces are striped; the pieces that are out of play carry a hatch.
   function paintFallen(ids, squares) {
     if (ids) { this.fallenIds = ids; this.fallenSquares = squares; }
-    const gone = this.fallenIds, hatched = this.fallenSquares;
+    // what the ghosts you draw take, and what Clutch's ghosts take, both show
+    const merge = (a, b) => (a || b) ? new Set([...(a || []), ...(b || [])]) : a;
+    const gone = merge(this.fallenIds, this.clutchFallenIds), hatched = merge(this.fallenSquares, this.clutchFallenSquares);
     this.arrows.forEach(arrow => {
       const on = !!gone && gone.has(arrow.id);
       if (on) {
@@ -4422,10 +4424,38 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       for (const uci of (line || []).slice(0, CLUTCH_DEPTH)) {
         const move = game.moves({ verbose: true }).find(m => m.from + m.to + (m.promotion || '') === uci);
         if (!move) break;
-        out.push({ uci, kind: move.color + (move.promotion || move.piece), side: move.color });
+        const takes = move.captured ? { kind: (move.color === 'w' ? 'b' : 'w') + move.captured, at: move.flags.includes('e') ? move.to[0] + move.from[1] : move.to } : null;
+        const castle = move.flags.includes('k') ? { from: 'h' + move.from[1], to: 'f' + move.from[1], kind: move.color + 'r' } : move.flags.includes('q') ? { from: 'a' + move.from[1], to: 'd' + move.from[1], kind: move.color + 'r' } : null;
+        out.push({ uci, kind: move.color + (move.promotion || move.piece), side: move.color, takes, castle });
         game.move(move);
       }
     } catch (e) { /* the line stops where it stops being legal */ }
+    return out;
+  }
+
+  // What the main line takes, as the ghosts you draw show it: a real piece taken gets the hatch; a ghost taken by a later
+  // step goes away, its arrow gets the stripes, and the real piece it came from gets the hatch. Pure: from the position
+  // and the steps. Only the main line counts; the others are just being considered.
+  function clutchTaking(steps, position) {
+    const out = { fallen: new Set(), liveTaken: new Set(), hatch: new Set(), arrows: new Set() };
+    const stand = new Map(), vacated = new Set();   // where a ghost stands (square -> step); real pieces that moved away
+    const live = sq => { const p = position && position[sq.charCodeAt(0) - 97] && position[sq.charCodeAt(0) - 97][+sq[1] - 1]; return p || null; };
+    steps.forEach((step, k) => {
+      const from = step.uci.slice(0, 2), to = step.uci.slice(2, 4);
+      const fromLive = !stand.has(from);
+      if (step.takes) {
+        const at = step.takes.at;
+        if (stand.has(at)) {
+          const j = stand.get(at);
+          out.fallen.add(j);
+          if (steps[j].fromLive) out.hatch.add(steps[j].uci.slice(0, 2));
+          if (j > 0) out.arrows.add(`cc:${steps[j].uci.slice(0, 2)}${steps[j].uci.slice(2, 4)}:${j}`);
+        } else if (live(at) && !vacated.has(at)) out.liveTaken.add(at);
+      }
+      step.fromLive = fromLive;
+      if (fromLive) vacated.add(from); else stand.delete(from);
+      stand.set(to, k);
+    });
     return out;
   }
 
@@ -4436,11 +4466,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Items are branches: { fen (the position), line (moves from it: their possible move, our answer, theirs after that),
   // color, premoveAt (the step that is the premove) }. Each step is a ghost of its piece, the one after the first a
   // quarter as strong as it, and an arrow shows how it gets there (the move it makes). Several branches may share a ghost.
+  // (a ghost that belongs to the main line's branch: its colour is the one that claimed it)
+  const claimedBy = (m, main) => !!main && m.color === main.color;
+
   function showClutchGhosts(ctl, items) {
     const board = ctl.board;
     let layer = ctl.clutchGhostLayer;
     if (!items.length && !layer) return;
     if (!items.length && ctl.chainArrows && ctl.chainArrows.length) { ctl.chainArrows = []; ctl.scheduleArrows?.(); }
+    if (!items.length) { ctl.clutchFallenIds = new Set(); ctl.clutchFallenSquares = new Set(); ctl.paintFallen?.(); (ctl.clutchBadges || new Map()).forEach(b => b.el.remove()); ctl.clutchBadges = new Map(); }
     const lineOfItem = i => (i.line && i.line.length ? i.line : [i.uci]).slice(0, CLUTCH_DEPTH);
     const key = JSON.stringify([ctl.flipped, settings.ghosts.opacity, settings.arrows.on, items.map(i => [lineOfItem(i), i.color, i.premoveAt, String(i.fen).split(' ')[0]])]);
     if (ctl.clutchGhostKey === key && layer && layer.isConnected) return;
@@ -4461,8 +4495,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       return { left: `${q.x * 12.5}%`, top: `${q.y * 12.5}%` };
     };
     const live = ctl.clutchGhostItems, keep = new Set(), claimed = new Set(), links = new Map();
+    const meta = new Map();            // ghost id -> what the ruleset needs to know of it
+    let mainSteps = null;
     for (const item of items) {
       const steps = clutchChain(item.fen, lineOfItem(item));
+      if (!mainSteps) mainSteps = steps;
       steps.forEach((step, k) => {
         const id = k + ':' + step.uci;
         keep.add(id);
@@ -4488,6 +4525,25 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         }
         entry.el.classList.remove('cc-ghost-leave');
         Object.assign(entry.el.style, spot(step.uci.slice(2, 4)), { opacity: String(clutchStrength(k)) });
+        if (!meta.has(id)) meta.set(id, { id, k, entry, to: step.uci.slice(2, 4), kind: step.kind, color: item.color, takes: step.takes ? step.takes.kind : null });
+        // a castle brings its rook along
+        if (step.castle) {
+          const rid = id + ':rook';
+          keep.add(rid);
+          let rook = live.get(rid);
+          if (!rook) {
+            const el = document.createElement('div');
+            el.className = 'cc-ghost cc-ghost-sub'; el.dataset.uci = step.castle.from + step.castle.to; el.dataset.depth = String(k);
+            el.style.backgroundImage = imageFor(step.castle.kind);
+            Object.assign(el.style, spot(step.castle.from), { opacity: '0' });
+            layer.appendChild(el); el.getBoundingClientRect();
+            rook = { el }; live.set(rid, rook);
+          }
+          rook.el.style.setProperty('--reply-color', item.color);
+          rook.el.classList.remove('cc-ghost-leave');
+          Object.assign(rook.el.style, spot(step.castle.to), { opacity: String(clutchStrength(k)) });
+          meta.get(id).rook = rook;
+        }
         if (k > 0) {
           // The arrow is the move itself, from the square the piece leaves to the one it lands on, so it is always a legal
           // move (an arrow between two ghosts of different pieces was not).
@@ -4496,6 +4552,48 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         }
       });
     }
+    // What the main line takes: the hatch on real pieces, the stripes on a taken ghost's arrow, and a taken ghost goes away.
+    let fallenIds = new Set(), fallenSquares = new Set();
+    if (mainSteps && mainSteps.length) {
+      let position = null;
+      try { position = blunderPosition(board); } catch (e) { /* none */ }
+      const taking = clutchTaking(mainSteps.map(x => ({ ...x })), position);
+      taking.liveTaken.forEach(q => fallenSquares.add(q)); taking.hatch.forEach(q => fallenSquares.add(q)); taking.arrows.forEach(i => fallenIds.add(i));
+      const main = items[0];
+      mainSteps.forEach((step, j) => {
+        if (!taking.fallen.has(j)) return;
+        const m = meta.get(j + ':' + step.uci);
+        if (m && m.entry && claimedBy(m, main)) { m.entry.el.style.opacity = '0'; if (m.rook) m.rook.el.style.opacity = '0'; m.taken = true; }
+      });
+    }
+    ctl.clutchFallenIds = fallenIds; ctl.clutchFallenSquares = fallenSquares;
+    ctl.paintFallen?.();
+    // Possible moves that land on the same square (at the same step): the first one's ghost stays on it, the others
+    // shrink into a red list in the top-left corner and what they take goes into a gray list in the top-right.
+    const groups = new Map();
+    meta.forEach(m => { const g = m.k + ':' + m.to; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(m); });
+    const badges = ctl.clutchBadges || (ctl.clutchBadges = new Map());
+    groups.forEach((list, g) => {
+      const visible = list.filter(m => !m.taken);
+      const rest = visible.slice(1);
+      visible.forEach((m, n) => { if (n > 0) { m.entry.el.style.opacity = '0'; if (m.rook) m.rook.el.style.opacity = '0'; } });
+      let badge = badges.get(g);
+      if (!rest.length) { if (badge) { badge.el.remove(); badges.delete(g); } return; }
+      const takenKinds = [...new Set(list.map(m => m.takes).filter(Boolean))];
+      const key = JSON.stringify([ctl.flipped, rest.map(m => [m.kind, m.color]), takenKinds]);
+      if (!badge) { const el = document.createElement('div'); el.className = 'bs-badge'; layer.appendChild(el); badge = { el, key: '' }; badges.set(g, badge); }
+      Object.assign(badge.el.style, spot(list[0].to));
+      if (badge.key === key) return;
+      badge.key = key;
+      const makeList = (kinds, cls) => {
+        const box = document.createElement('div'); box.className = 'bs-list ' + cls;
+        kinds.forEach(([kind, color]) => { const icon = document.createElement('i'); icon.style.backgroundImage = imageFor(kind); if (color) icon.style.setProperty('--c', color); box.appendChild(icon); });
+        return box;
+      };
+      badge.el.replaceChildren(makeList(rest.map(m => [m.kind, m.color]), 'bs-alt'));
+      if (takenKinds.length) badge.el.appendChild(makeList(takenKinds.map(k => [k, null]), 'bs-taken'));
+    });
+    for (const [g, badge] of badges) if (!groups.has(g) || !layer.contains(badge.el)) { badge.el.remove(); badges.delete(g); }
     // The arrows between ghosts. With custom arrows on they are the board's own arrows, the same style and
     // movement as the ones you draw; otherwise plain ones in the ghost layer.
     const chains = [...links.values()];

@@ -571,6 +571,70 @@ test('the hand slips now and then: a tenth of a per cent when slow, up to half a
   } finally { f.close(); }
 });
 
+// a position as the script reads it: position[file][rank] = { c, t }
+function positionOf(fen) {
+  const pos = Array.from({ length: 8 }, () => Array(8).fill(null));
+  fen.split(' ')[0].split('/').forEach((rank, i) => { let file = 0; for (const ch of rank) { if (/[1-8]/.test(ch)) file += +ch; else pos[file++][7 - i] = { c: ch === ch.toUpperCase() ? 'w' : 'b', t: ch.toLowerCase() }; } });
+  return pos;
+}
+
+test('Clutch ghosts follow the ruleset of ghosts you draw: what is taken is hatched, a taken ghost goes away, shared squares share a corner list', () => {
+  const f = setup();
+  try {
+    // what the main line takes, worked out from the position
+    const fen = 'rnbqkbnr/ppp2ppp/4p3/3p4/8/2N5/PPPPPPPP/R1BQKBNR w KQkq - 0 1';
+    const steps = Array.from(f.api.clutchChain(fen, ['c3d5', 'e6d5']), s => ({ ...s }));
+    assert.equal(steps[0].takes.kind, 'bp'); assert.equal(steps[0].takes.at, 'd5');
+    assert.equal(steps[1].takes.kind, 'wn');
+    const t = f.api.clutchTaking(steps, positionOf(fen));
+    assert.ok(t.liveTaken.has('d5'), 'the real pawn on d5 is taken');
+    assert.ok(t.fallen.has(0) && !t.fallen.has(1), 'the knight ghost is taken by the recapture');
+    assert.ok(t.hatch.has('c3'), 'and the real knight it came from is out of play');
+    // castling brings its rook, an en passant capture takes the pawn beside
+    const castle = f.api.clutchChain('r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1', ['e1g1']);
+    assert.equal(castle[0].castle.kind, 'wr'); assert.equal(castle[0].castle.to, 'f1');
+    const ep = f.api.clutchChain('4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1', ['e5d6']);
+    assert.equal(ep[0].takes.at, 'd5', 'the pawn taken en passant stands on d5');
+    // in the DOM: the board hatches what is taken, and the taken ghost is gone
+    const board = f.board(fen);
+    board.innerHTML = '<svg class="arrows"></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    f.api.showClutchGhosts(ctl, [{ fen, line: ['c3d5', 'e6d5'], color: '#ff4d4d' }]);
+    const gh = u => [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost')].find(g => g.dataset.uci === u);
+    assert.equal(gh('c3d5').style.opacity, '0', 'the taken ghost goes away');
+    assert.ok(+gh('e6d5').style.opacity > 0, 'the one that took it stays');
+    assert.ok(ctl.clutchFallenSquares.has('d5') && ctl.clutchFallenSquares.has('c3'), 'the hatch squares are handed to the board');
+    f.api.showClutchGhosts(ctl, []);
+    assert.equal(ctl.clutchFallenSquares.size, 0, 'cleared with the ghosts');
+  } finally { f.close(); }
+});
+
+test('moves that land on one square share it: the first stays on it, the others go into a list in the corner, with what they take', () => {
+  const f = setup();
+  try {
+    // Black to move; both ...exd4 and ...Nxd4 are possible
+    const fen = 'r1bqkbnr/pppp1ppp/2n5/4p3/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 3';
+    const board = f.board(fen);
+    board.innerHTML = '<svg class="arrows"></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    f.api.showClutchGhosts(ctl, [
+      { fen, line: ['e5d4'], color: '#ff4d4d' },
+      { fen, line: ['c6d4'], color: '#4cc2ff' }
+    ]);
+    const gh = u => [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost')].find(g => g.dataset.uci === u);
+    assert.ok(+gh('e5d4').style.opacity > 0, 'the first stays on d4');
+    assert.equal(gh('c6d4').style.opacity, '0', 'the other gives way');
+    const badge = board.querySelector('.bs-ghost-clutch .bs-badge');
+    assert.ok(badge, 'a corner list on the square');
+    assert.equal(badge.querySelectorAll('.bs-alt i').length, 1, 'the knight that could also take is listed');
+    assert.equal(badge.querySelectorAll('.bs-taken i').length, 1, 'with the pawn taken there');
+    assert.ok(ctl.clutchFallenSquares.has('d4'), 'and the real pawn on d4 is hatched');
+    // one move only: no list
+    f.api.showClutchGhosts(ctl, [{ fen, line: ['e5d4'], color: '#ff4d4d' }]);
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch .bs-badge').length, 0);
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

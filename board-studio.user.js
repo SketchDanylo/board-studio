@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.24.0
+// @version      6.25.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4287,19 +4287,78 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // The move to make when the opponent has just moved. A premove is a move fixed in advance, so it is played as
-  // shown, not re-decided now that their move is known: whatever the book would answer, the premove goes, as long
-  // as it is legal (a trade premove only when they did take). Null when there is no premove to play.
+  // as shown, not re-decided now that their move is known: whatever the book would answer, the premove goes, as long
+  // as it is legal. A trade premove is no different: it counts on their taking, and if they did not, the board itself
+  // refuses it (it is not a legal move) and the move is decided afresh. Null when there is no premove to play.
   function clutchAuthenticStep(prem, fen, entry) {
     if (!prem || !prem.step) return null;
     const step = stepFor(fen, prem.step.uci);
     if (!step) return null;
-    if (prem.conditional && !(entry && entry.step && entry.step.uci === prem.step.uci)) return null;
     return step;
   }
 
-  function clutchMove(board, step, own, instant = false) {
-    dragPiece(board, step.from, step.to, instant);
-    if (step.promotion) setTimeout(() => choosePromotion(own, step.promotion), instant ? 20 : 160);
+  // Where the pointer is: the last place a real mouse was seen, then wherever a move of Clutch's left it.
+  const hand = { x: null, y: null };
+  window.addEventListener('pointermove', e => { if (e.isTrusted) { hand.x = e.clientX; hand.y = e.clientY; } }, true);
+
+  // How long a hand takes to cover a distance (Fitts's law: a short start, then more the further it goes relative
+  // to the size of the target). times: the leg to the piece and the leg with it. 'fast' is the hurry of a low clock.
+  function mouseTimes(toPiece, withPiece, size, fast = false, random = Math.random) {
+    const leg = d => (d > 1 ? 110 + 125 * Math.log2(d / size + 1) : 0) * (0.85 + 0.3 * random()) * (fast ? 0.6 : 1);
+    return { toPiece: Math.round(leg(toPiece)), withPiece: Math.round(leg(withPiece) * 0.85 + (withPiece > 1 ? 40 : 0)) };
+  }
+
+  // Moves a piece the way a hand does, taking the time it takes: the pointer runs from where it is to the piece, a
+  // beat, down, across to the square on a slightly bent path that starts and ends slowly, up. Returns how long it will
+  // take in ms. Where the pointer was and where the piece goes both matter, so a capture on the far side of the board
+  // takes longer than one beside the hand.
+  function humanDrag(board, from, to, fast = false, random = Math.random) {
+    const rect = board.getBoundingClientRect(), size = rect.width / 8, flipped = board.classList.contains('flipped');
+    const at = square => {
+      const f = square.charCodeAt(0) - 97, r = +square[1] - 1;
+      return { x: rect.left + ((flipped ? 7 - f : f) + .5) * size, y: rect.top + ((flipped ? r : 7 - r) + .5) * size };
+    };
+    const a = at(from), b = at(to);
+    const start = hand.x === null ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : { x: hand.x, y: hand.y };
+    const times = mouseTimes(Math.hypot(a.x - start.x, a.y - start.y), Math.hypot(b.x - a.x, b.y - a.y), size, fast, random);
+    const beat = Math.round((fast ? 25 : 45) + 40 * random());
+    const total = times.toPiece + beat + times.withPiece + 30;
+    const fire = (type, p, buttons) => {
+      const el = document.elementFromPoint(p.x, p.y) || board;
+      const init = { bubbles: true, cancelable: true, composed: true, clientX: p.x, clientY: p.y, button: 0, buttons, pointerId: 1, pointerType: 'mouse', isPrimary: true, view: window };
+      el.dispatchEvent(new PointerEvent(type, init));
+      el.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), init));
+    };
+    const ease = t => t * t * t * (10 - 15 * t + 6 * t * t);
+    const bend = (random() - .5) * 0.16;
+    // points along a leg, a few every frame
+    const path = (p, q, ms, buttons, t0) => {
+      const steps = Math.max(1, Math.round(ms / 14));
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps, e = ease(t), k = Math.sin(Math.PI * t) * bend;
+        const dx = q.x - p.x, dy = q.y - p.y;
+        const point = { x: p.x + dx * e - dy * k, y: p.y + dy * e + dx * k };
+        setTimeout(() => { fire('pointermove', point, buttons); hand.x = point.x; hand.y = point.y; }, t0 + ms * t);
+      }
+    };
+    path(start, a, times.toPiece, 0, 0);
+    setTimeout(() => fire('pointerdown', a, 1), times.toPiece + beat);
+    path(a, b, times.withPiece, 1, times.toPiece + beat);
+    setTimeout(() => { fire('pointerup', b, 0); hand.x = b.x; hand.y = b.y; }, total - 30);
+    return total;
+  }
+
+  // A premove already stands when their move comes, so it is made at once; every other move is made by hand.
+  function clutchMove(board, step, own, instant = false, clock = null) {
+    let total = 0;
+    if (instant) {
+      dragPiece(board, step.from, step.to, true);
+      const r = board.getBoundingClientRect(), size = r.width / 8, flipped = board.classList.contains('flipped');
+      const f = step.to.charCodeAt(0) - 97, rank = +step.to[1] - 1;
+      hand.x = r.left + ((flipped ? 7 - f : f) + .5) * size; hand.y = r.top + ((flipped ? rank : 7 - rank) + .5) * size;
+    } else total = humanDrag(board, step.from, step.to, clock !== null && clock < 5);
+    clutch.moveUntil = Date.now() + total + 300;
+    if (step.promotion) setTimeout(() => choosePromotion(own, step.promotion), total + (instant ? 20 : 160));
   }
 
   // Clutch starts at the Time setting give or take 0.4 s, a new throw each time it disarms, so it never
@@ -4507,7 +4566,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
     if (s.human) {
       // Never more than a small share of what is left on the clock (and a flash when it is nearly gone).
-      const budgetMs = clutchMoveMs(clock, fen);
+      // (the hand takes its share of the move's time: about half a second)
+      const budgetMs = Math.max(45, clutchMoveMs(clock, fen) - 450);
       // How well they just played: our own estimate of the position last time against a quick look now.
       let pressure = 0;
       if (pieces <= 10 && clock >= 3 && clutch.lastValue !== null && clutch.lastValue !== undefined) {
@@ -4757,6 +4817,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   function clutchTick() {
+    if (Date.now() < (clutch.moveUntil || 0)) return;   // a move is being made by hand
     const base = settings.clutch;
     let s = base;
     if (s.on && !clutch.wasOn) { clutch.suspended = false; requestBook(); }
@@ -4802,10 +4863,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const quickKey = repKey(fen), e = clutch.book.entries.get(quickKey), prem = clutch.book.premove;
       const fixed = clutchAuthenticStep(prem, fen, e);                       // the premove, as indicated
       const chosen = fixed || (e && e.step && (e.book || !e.crit) ? e.step : null);
-      if (chosen && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 700)) {
+      if (chosen && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
         if (!fixed && e.plan) clutch.plan = e.plan;
-        clutchMove(board, chosen, own, true);
+        clutchMove(board, chosen, own, !!fixed, readClock('own'));
         clutchStopBook(); showClutchGhosts(ctl, []);
         setClutch(fixed ? `Clutch: premove ${chosen.from}-${chosen.to} played` : `Clutch: playing ${chosen.from}-${chosen.to}, prepared answer to ${e.reply}`);
         return;
@@ -4847,12 +4908,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           return;
         }
       }
-      const stale = clutch.played === key && Date.now() - clutch.playedAt < (instant ? 700 : 1500);
+      const stale = clutch.played === key && Date.now() - clutch.playedAt < (instant ? 700 : 2500);
       if (stale || (clutch.tries > 3 && clutch.played === key)) return;
       clutch.tries = clutch.played === key ? clutch.tries + 1 : 1;
       clutch.played = key; clutch.playedAt = Date.now();
       setClutch(`Clutch: ${premove ? 'premoving' : 'playing'} ${step.from}-${step.to}, ${note}`);
-      clutchMove(board, step, own, instant);
+      clutchMove(board, step, own, instant, clock);
     };
 
     // 1. A mate plan already made: where are we in it?
@@ -4865,7 +4926,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     if (rest) {
       clutchShow(ctl, rest.filter(step => step.ours).map(step => ({ id: 'cl:' + step.uci, uci: step.uci, color: CLUTCH_COLOR })));
-      if (turn === own && rest[0]?.ours && rest[0].sure) { clutchStopBook(); act(rest[0], false, 'following the mate', true); return; }
+      if (turn === own && rest[0]?.ours && rest[0].sure) { clutchStopBook(); act(rest[0], false, 'following the mate', false); return; }
     }
 
     // 2. Our move. If the opponent played something the book was ready for, answer at once.
@@ -4877,7 +4938,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const opening = s.elo >= 800 ? clutchBookStep(fen) : null;
       if (opening && !(entry && !entry.book && entry.plan)) {
         clutchShow(ctl, [{ id: 'cl:' + opening.step.uci, uci: opening.step.uci, color: CLUTCH_COLOR }]);
-        act(opening.step, false, `opening book, ${opening.games} games`, true);
+        act(opening.step, false, `opening book, ${opening.games} games`, false);
         return;
       }
       const fixedStep = clutchAuthenticStep(book && book.premove, fen, entry);
@@ -4887,7 +4948,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!think) {
           if (entry.plan) clutch.plan = entry.plan;
           clutchShow(ctl, [{ id: 'cl:' + entry.step.uci, uci: entry.step.uci, color: CLUTCH_COLOR }]);
-          act(entry.step, false, `prepared answer to ${entry.reply} (${entry.note})`, true);
+          act(entry.step, false, `prepared answer to ${entry.reply} (${entry.note})`, false);
           return;
         }
         // The answer was only looked at shallowly and the move calls for care: think a bit more first.
@@ -4957,7 +5018,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${depth}. Premove: ${prem ? `${prem.step.from}-${prem.step.to} (${prem.why})` : book.complete ? 'none, the replies need different answers' : 'working it out'}${native ? '' : '. No premoves in this game: answers are held and played the instant they move'}`);
       // Where chess.com has premoves, a certain one is set for real (a trade is not: it must not
       // run if they do not take).
-      if (native && mayPlay && prem && !prem.conditional && !book.premoveSet) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
+      if (native && mayPlay && prem && !book.premoveSet) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
     };
     const stillTheirMove = () => {
       if (book.token.stop) return false;

@@ -337,8 +337,8 @@ test('a premove is played exactly as indicated, not decided again once their mov
     assert.equal(f.api.clutchAuthenticStep(prem, here, entry).uci, 'g1f3', 'the premove goes, not the book answer');
     assert.equal(f.api.clutchAuthenticStep(prem, here, null).uci, 'g1f3', 'even to a reply the book never saw');
     assert.equal(f.api.clutchAuthenticStep({ step: { uci: 'a1a5' }, conditional: false }, here, entry), null, 'an illegal premove falls back');
-    assert.equal(f.api.clutchAuthenticStep({ step: { uci: 'g1f3' }, conditional: true }, here, entry), null, 'a trade premove only when they did take');
-    assert.equal(f.api.clutchAuthenticStep({ step: { uci: 'd2d4' }, conditional: true }, here, entry).uci, 'd2d4', 'and then it goes');
+    assert.equal(f.api.clutchAuthenticStep({ step: { uci: 'g1f3' }, conditional: true }, here, entry).uci, 'g1f3', 'a trade premove goes whenever it is legal, as a real premove does');
+    assert.equal(f.api.clutchAuthenticStep({ step: { uci: 'a2a5' }, conditional: true }, here, entry), null, 'and when it is not legal (they did not take) the board refuses it and the move is decided afresh');
     assert.equal(f.api.clutchAuthenticStep(null, here, entry), null);
   } finally { f.close(); }
 });
@@ -412,6 +412,26 @@ test('answers for a person are looked at quickly first so the ghosts are up earl
     assert.ok(budgets.includes(450) && budgets.includes(1600), 'a quick look, then a longer one');
     assert.ok(budgets.indexOf(450) < budgets.indexOf(1600), 'the quick one first');
     assert.ok(calls.every(c => c[0] <= 1600), 'never an unbounded look');
+  } finally { f.close(); }
+});
+
+test('a hand takes time by distance: far from the piece or far across the board is slower, hurry is faster', () => {
+  const f = setup();
+  try {
+    const t = (a, b, fast) => f.api.mouseTimes(a, b, 70, fast, () => 0.5);
+    const near = t(70, 70), far = t(500, 350);
+    assert.ok(far.toPiece > near.toPiece && far.withPiece > near.withPiece, 'further takes longer');
+    assert.ok(t(0, 70).toPiece === 0, 'a hand already on the piece does not travel to it');
+    assert.ok(t(500, 350, true).toPiece < far.toPiece && t(500, 350, true).withPiece < far.withPiece, 'in a hurry it is quicker');
+    assert.ok(far.toPiece > 300 && far.toPiece < 900 && far.withPiece > 250 && far.withPiece < 800, 'about as long as a person: tenths of a second, not seconds');
+    // the whole move
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const board = f.board(fen);
+    board.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 800, right: 800, bottom: 800 });
+    f.w.document.elementFromPoint = () => board;
+    const nearMove = f.api.humanDrag(board, 'e2', 'e3', false, () => 0.5);
+    const farMove = f.api.humanDrag(board, 'a1', 'h8', false, () => 0.5);
+    assert.ok(farMove > nearMove, 'a move across the whole board takes longer than one square (' + farMove + ' vs ' + nearMove + ' ms)');
   } finally { f.close(); }
 });
 

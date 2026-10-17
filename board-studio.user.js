@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.16.0
+// @version      6.16.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2213,7 +2213,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const seg = bar.querySelector('.seg.' + k);
         seg.style.flex = v + ' 0 0';
         // a share too narrow to hold a number (the balls cover its edges) shows nothing; a narrow one just the number
-        seg.innerHTML = v < 16 ? '' : v < 28 ? `<span class="n">${v}</span>` : `<span class="n">${v}<sup>%</sup></span><span class="t">${name}</span>`;
+        seg.innerHTML = v < 20 ? '' : v < 36 ? `<span class="n">${v}</span>` : `<span class="n">${v}<sup>%</sup></span><span class="t">${name}</span>`;
       });
     }
     const eloInput = shadow.querySelector('.elo-input');

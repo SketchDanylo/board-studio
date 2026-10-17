@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.4.0
+// @version      6.5.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3470,7 +3470,44 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const move = game.moves({ verbose: true }).find(m => m.from + m.to + (m.promotion || '') === uci);
     if (!move) return null;
     game.move(move);
-    return { uci, from: move.from, to: move.to, promotion: move.promotion || null, ours: true, sure: true, check: /[+#]/.test(move.san), fen: game.fen() };
+    return { uci, from: move.from, to: move.to, promotion: move.promotion || null, ours: true, sure: true, check: /[+#]/.test(move.san), capture: !!move.captured, fen: game.fen() };
+  }
+
+  // The opening book: the most played move of the position, if it is in the book. Nothing to search.
+  function clutchBookStep(fen) {
+    const moves = bookMoves(fen);
+    if (!moves.length) return null;
+    const total = moves.reduce((sum, m) => sum + m.count, 0);
+    for (const m of [...moves].sort((a, b) => b.count - a.count)) {
+      const step = stepFor(fen, m.uci);
+      if (step) return { step, games: m.count, share: m.count / total };
+    }
+    return null;
+  }
+
+  // How much a move deserves thought, 0 to 3, from the engine's lines: a close call (the best two moves
+  // near each other), a capture or a check, and an even middlegame all call for care; a lone sensible
+  // move or a clearly won position does not.
+  function clutchCritical(fen, result, step) {
+    const lines = (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv.length);
+    if (lines.length < 2 || lines[0].mate > 0) return { crit: 0, gap: Infinity };
+    const value = l => l.mate !== undefined ? Math.sign(l.mate) * 10000 : l.cp;
+    const best = value(lines[0]), gap = best - value(lines[1]);
+    if (best >= 500 && gap >= 100) return { crit: 0, gap };
+    let crit = 0;
+    if (gap < 60) crit++;
+    if (gap < 25) crit++;
+    if (step && (step.check || step.capture)) crit++;
+    if (Math.abs(best) <= 120 && countPieces(fen) >= 10) crit++;
+    return { crit: Math.min(3, crit), gap };
+  }
+
+  // How long still to think about a move at hand, in ms (0 = play it now): only for moves that call for
+  // care and have not been looked at deeply enough, and never more than a small share of the clock.
+  function clutchThink(entry, clock, s) {
+    if (!entry || entry.book || entry.plan || !entry.crit || clock < s.spare) return 0;
+    if (entry.depth >= s.depth + 2 * entry.crit) return 0;
+    return Math.round(Math.min(clock * 1000 * 0.06 * entry.crit, clock * 1000 * 0.2, 3000));
   }
 
   // The move to play when there is no mate: the best one, except when losing, when a move that
@@ -3633,6 +3670,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
       result = (await clutchEngine.analyse(fen, { depth: budget.maxDepth, ms: budget.stage2Ms })) || result;
+    } else if (result && !(result.mate > 0) && budget.canDeepen) {
+      // Not winning, but a move that calls for care gets a longer look.
+      const decision = clutchDecide(fen, result, s);
+      const ms = decision ? clutchThink({ crit: decision.crit, depth: result.depth }, clock, s) : 0;
+      if (ms > 0) {
+        setClutch(`Clutch: this move needs care (${decision.crit}), thinking ${(ms / 1000).toFixed(1)} s`);
+        result = (await clutchEngine.analyse(fen, { depth: Math.min(budget.maxDepth, s.depth + 2 * decision.crit + 4), ms, multipv: 4 })) || result;
+      }
     }
     return result;
   }
@@ -3646,7 +3691,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const step = clutchPick(fen, result, s);
     if (!step) return null;
     const score = result.mate !== undefined ? `mate ${result.mate}` : (result.cp / 100).toFixed(2);
-    return { plan: null, step, note: `${step.check && clutchLosing(result, s) ? 'perpetual try' : 'best move'} ${step.from}-${step.to} (${score}, depth ${result.depth})` };
+    const { crit, gap } = clutchCritical(fen, result, step);
+    return { plan: null, step, crit, gap, note: `${step.check && clutchLosing(result, s) ? 'perpetual try' : 'best move'} ${step.from}-${step.to} (${score}, depth ${result.depth}${crit ? ', care ' + crit : ''})` };
   }
 
   // ---------- Clutch response book ----------
@@ -3679,11 +3725,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       game.undo();
     }
     const entries = new Map();
+    // Replies that lead into the opening book need no search: the book move is the answer.
+    for (const option of options) {
+      const hit = clutchBookStep(option.fen);
+      if (!hit) continue;
+      option.book = true;
+      const key = repKey(option.fen);
+      const entry = { plan: null, step: hit.step, note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, book: true };
+      entries.set(key, entry);
+      onEntry(key, entry);
+    }
     for (let round = 0; round < rounds; round++) {
       const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
       const depth = Math.min(budget.maxDepth + 4, s.depth + 4 * round);
       for (const option of options) {
         if (stop()) return entries.size;
+        if (option.book) continue;
         const result = await analyse(option.fen, { depth, ms: round ? 500 : 200, multipv: 4 });
         if (stop()) return entries.size;
         if (!result || !result.pv) continue;
@@ -3691,7 +3748,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!decision) continue;
         const key = repKey(option.fen), old = entries.get(key);
         if (old && old.depth > result.depth) continue;
-        const entry = { ...decision, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate };
+        const entry = { ...decision, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
+        if (entry.forced) entry.crit = 0;
         entries.set(key, entry);
         onEntry(key, entry, old);
       }
@@ -3751,7 +3809,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function clutchTick() {
     const base = settings.clutch;
     let s = base;
-    if (s.on && !clutch.wasOn) { clutch.suspended = false; }
+    if (s.on && !clutch.wasOn) { clutch.suspended = false; requestBook(); }
     clutch.wasOn = s.on;
     const board = document.querySelector('wc-chess-board, chess-board');
     const ctl = board && board.__cc;
@@ -3821,15 +3879,40 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const book = clutch.book;
       const entry = book && book.entries.get(key);
       clutchStopBook();
+      const opening = clutchBookStep(fen);
+      if (opening && !(entry && !entry.book && entry.plan)) {
+        clutchShow(ctl, [{ id: 'cl:' + opening.step.uci, uci: opening.step.uci, color: CLUTCH_COLOR }]);
+        act(opening.step, false, `opening book, ${opening.games} games`, true);
+        return;
+      }
       if (entry) {
-        if (entry.plan) clutch.plan = entry.plan;
-        clutchShow(ctl, [{ id: 'cl:' + entry.step.uci, uci: entry.step.uci, color: CLUTCH_COLOR }]);
-        act(entry.step, false, `prepared answer to ${entry.reply} (${entry.note})`, true);
+        const think = clutchThink(entry, clock, s);
+        if (!think) {
+          if (entry.plan) clutch.plan = entry.plan;
+          clutchShow(ctl, [{ id: 'cl:' + entry.step.uci, uci: entry.step.uci, color: CLUTCH_COLOR }]);
+          act(entry.step, false, `prepared answer to ${entry.reply} (${entry.note})`, true);
+          return;
+        }
+        // The answer was only looked at shallowly and the move calls for care: think a bit more first.
+        if (clutch.working === key) return;
+        clutch.working = key;
+        setClutch(`Clutch: prepared answer needs care (${entry.crit}), thinking ${(think / 1000).toFixed(1)} s`);
+        clutchEngine.analyse(fen, { depth: Math.min(28, s.depth + 2 * entry.crit + 4), ms: think, multipv: 4 }).then(result => {
+          let current = null;
+          try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
+          if (clutch.working === key) clutch.working = null;
+          if (!current || !sameFen(current, fen)) return;
+          const decision = result && clutchDecide(fen, result, s);
+          const use = decision || { plan: entry.plan, step: entry.step, note: entry.note };
+          if (use.plan) clutch.plan = use.plan;
+          clutchShow(ctl, [{ id: 'cl:' + use.step.uci, uci: use.step.uci, color: CLUTCH_COLOR }]);
+          act(use.step, false, use.note, false);
+        });
         return;
       }
       if (clutch.working === key) return;
       clutch.working = key;
-      if (book) setClutch('Clutch: not a reply I was ready for, thinking');
+      if (book && !opening) setClutch('Clutch: not a reply I was ready for, thinking');
       clutchSearch(fen, clock, oppClock, s).then(result => {
         let current = null;
         try { current = board.game.getFEN(); } catch (e) { /* board gone */ }

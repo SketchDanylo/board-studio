@@ -227,3 +227,40 @@ test('only the trigger time is a setting; the rest is worked out from the positi
     assert.equal(p(base, 8, 20).time, 10);
   } finally { f.close(); }
 });
+
+test('the opening book answers at once: the most played move of a book position', async () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const f = setup();
+  try {
+    const book = fs.readFileSync(path.join(__dirname, '../assets/opening-book.txt'), 'utf8');
+    f.w.fetch = async () => ({ ok: true, status: 200, text: async () => book, arrayBuffer: async () => new ArrayBuffer(0) });
+    const start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    assert.equal(f.api.clutchBookStep(start), null, 'not loaded yet: no book move, and the book is requested');
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const hit = f.api.clutchBookStep(start);
+    assert.ok(hit); assert.ok(['e2e4', 'd2d4', 'g1f3', 'c2c4'].includes(hit.step.uci)); assert.ok(hit.games > 0);
+    assert.equal(f.api.clutchBookStep('4k3/8/8/8/8/8/8/4K2R w - - 0 1'), null, 'a position outside the book');
+  } finally { f.close(); }
+});
+
+test('moves that call for care get thinking time, easy ones are played fast', () => {
+  const f = setup();
+  try {
+    const s = { depth: 12, spare: 2 };
+    const fen = 'r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 2 3';
+    const line = (move, cp) => ({ pv: [move], cp });
+    // a close call between two moves: care
+    const close = f.api.clutchCritical(fen, { lines: [line('g8f6', 20), line('f8c5', 15)], pv: ['g8f6'], cp: 20 }, { check: false, capture: false });
+    assert.ok(close.crit >= 2);
+    // a lone clear move, or a won position: no care
+    assert.equal(f.api.clutchCritical(fen, { lines: [line('g8f6', 20)], pv: ['g8f6'], cp: 20 }, {}).crit, 0);
+    assert.equal(f.api.clutchCritical(fen, { lines: [line('g8f6', 900), line('f8c5', 600)], pv: ['g8f6'], cp: 900 }, {}).crit, 0);
+    // thinking time: only for care, not already deep, and a small share of the clock
+    assert.equal(f.api.clutchThink({ crit: 0, depth: 12 }, 20, s), 0);
+    assert.equal(f.api.clutchThink({ crit: 2, depth: 20 }, 20, s), 0, 'already deep enough');
+    assert.equal(f.api.clutchThink({ crit: 2, depth: 12, book: true }, 20, s), 0, 'a book move never waits');
+    assert.equal(f.api.clutchThink({ crit: 2, depth: 12 }, 1, s), 0, 'no clock to spare');
+    const ms = f.api.clutchThink({ crit: 3, depth: 12 }, 20, s);
+    assert.ok(ms > 0 && ms <= 3000 && ms <= 20 * 1000 * 0.2);
+  } finally { f.close(); }
+});

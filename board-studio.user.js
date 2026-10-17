@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.28.1
+// @version      6.29.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4336,6 +4336,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return { toPiece: Math.round(leg(toPiece)), withPiece: Math.round(leg(withPiece) * 0.85 + (withPiece > 1 ? 20 : 0)) };
   }
 
+  // How likely the hand is to slip and let the piece go one square from where it was meant: rarely when it is slow
+  // and careful (a tenth of a per cent), more when it is quick (up to half a per cent). Premoves, made ahead and
+  // never by a hurried hand, are left out of this.
+  const slipChance = totalMs => 0.001 + 0.004 * Math.min(1, Math.max(0, (600 - totalMs) / 450));
+  // A square one step from the target, on the board, picked by chance.
+  function slipSquare(to, random = Math.random) {
+    const f = to.charCodeAt(0) - 97, r = +to[1] - 1, near = [];
+    for (let df = -1; df <= 1; df++) for (let dr = -1; dr <= 1; dr++) {
+      if ((df || dr) && f + df >= 0 && f + df < 8 && r + dr >= 0 && r + dr < 8) near.push(String.fromCharCode(97 + f + df) + (r + dr + 1));
+    }
+    return near[Math.floor(random() * near.length) % near.length];
+  }
+
   // Makes a move after the time a hand would have taken for it: the pointer's trip from where it is to the piece, a beat,
   // and the trip with the piece to the square. Nothing is shown of the trip; the time is simply waited out and then the
   // move is made at once. Where the pointer was and where the piece goes both matter, so a capture on the far side of
@@ -4354,8 +4367,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     setTimeout(() => {
       // only if the board is still as it was when the move was decided
       if (fen && blunderFEN(board) !== fen) return;
-      dragPiece(board, from, to, true);
-      hand.x = b.x; hand.y = b.y;
+      // now and then the piece is let go a square off; if that is not a legal move the board puts it back and it is tried again
+      const slipped = random() < slipChance(total);
+      const aim = slipped ? slipSquare(to, random) : to;
+      dragPiece(board, from, aim, true);
+      const landed = at(aim);
+      hand.x = landed.x; hand.y = landed.y;
+      if (slipped) { clutch.playedAt = 0; clutch.tries = 0; clutch.slips = (clutch.slips || 0) + 1; }
     }, total);
     return total;
   }
@@ -4417,7 +4435,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // Items are branches: { fen (the position), line (moves from it: their possible move, our answer, theirs after that),
   // color, premoveAt (the step that is the premove) }. Each step is a ghost of its piece, the one after the first a
-  // quarter as strong as it, and an arrow runs from the ghost to the next. Several branches may share a ghost.
+  // quarter as strong as it, and an arrow shows how it gets there (the move it makes). Several branches may share a ghost.
   function showClutchGhosts(ctl, items) {
     const board = ctl.board;
     let layer = ctl.clutchGhostLayer;
@@ -4471,7 +4489,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         entry.el.classList.remove('cc-ghost-leave');
         Object.assign(entry.el.style, spot(step.uci.slice(2, 4)), { opacity: String(clutchStrength(k)) });
         if (k > 0) {
-          const from = steps[k - 1].uci.slice(2, 4), to = step.uci.slice(2, 4), lid = `cc:${from}${to}:${k}`;
+          // The arrow is the move itself, from the square the piece leaves to the one it lands on, so it is always a legal
+          // move (an arrow between two ghosts of different pieces was not).
+          const from = step.uci.slice(0, 2), to = step.uci.slice(2, 4), lid = `cc:${from}${to}:${k}`;
           if (from !== to && !links.has(lid)) links.set(lid, { id: lid, from, to, color: item.color, opacity: clutchStrength(k) });
         }
       });

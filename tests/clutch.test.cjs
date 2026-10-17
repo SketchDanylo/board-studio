@@ -362,7 +362,7 @@ test('a Clutch ghost shows one step after the first: a ghost at a quarter of the
     assert.ok(Math.abs(op(second) - op(first) / 4) < 1e-9, 'the next ghost is a quarter of the one before');
     assert.equal(second.style.left, '50%'); assert.equal(second.style.top, '37.5%', 'it sits where its piece lands (e5)');
     assert.equal(ctl.chainArrows.length, 1, 'an arrow from the ghost to the next');
-    assert.equal(ctl.chainArrows[0].uci, 'e4e5');
+    assert.equal(ctl.chainArrows[0].uci, 'e7e5', 'the move itself, not a line between two ghosts');
     assert.ok(Math.abs(ctl.chainArrows[0].opacity - op(second)) < 1e-9, 'as strong as the ghost it leads to');
     f.api.settings.arrows.on = false;
     f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#4cc2ff', line: ['e2e4', 'e7e5'] }]);
@@ -446,7 +446,8 @@ test('a branch starts from what they may play: their ghost, then our answer, the
     assert.equal(by(1, 'g1f3').dataset.premove, '1', 'the answer of the premove branch is the premove');
     assert.equal(by(1, 'g1f3').style.getPropertyValue('--reply-color'), '#ff4d4d', 'a shared ghost takes the premove colour');
     assert.ok(Math.abs(+by(0, 'e7e5').style.opacity - 4 * +by(1, 'g1f3').style.opacity) < 1e-9, 'their move is the strongest, our answer a quarter of it');
-    assert.equal(ctl.chainArrows.length, 2, 'e5>Nf3 and c5>Nf3');
+    assert.equal(ctl.chainArrows.length, 1, 'the shared answer Nf3 is one arrow: g1f3');
+    assert.equal(ctl.chainArrows[0].uci, 'g1f3');
   } finally { f.close(); }
 });
 
@@ -509,6 +510,64 @@ test('the premove search runs once the three likeliest replies have answers, bef
     });
     assert.equal(topAt, 3, 'after the third answer, before the fourth');
     assert.equal(overlapped, false, 'nothing else was asked of the engine while it ran');
+  } finally { f.close(); }
+});
+
+test('every arrow a branch draws is a legal move in the position it is made in', () => {
+  const f = setup();
+  try {
+    const fens = ['rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', 'r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4'];
+    for (const fen of fens) {
+      const board = f.board(fen);
+      board.innerHTML = '<svg class="arrows"></svg>';
+      const ctl = new f.api.Controller(board.querySelector('svg'));
+      const game = new Chess(fen);
+      const moves = game.moves({ verbose: true });
+      // every line of two legal moves, tried from the position
+      for (const first of moves.slice(0, 14)) {
+        const g = new Chess(fen); g.move(first);
+        for (const second of g.moves({ verbose: true }).slice(0, 6)) {
+          const line = [first.from + first.to + (first.promotion || ''), second.from + second.to + (second.promotion || '')];
+          f.api.showClutchGhosts(ctl, [{ fen, line, color: '#4cc2ff' }]);
+          for (const arrow of ctl.chainArrows) {
+            const k = line.indexOf(arrow.uci);
+            assert.ok(k >= 0, 'an arrow that is no move of the line: ' + arrow.uci);
+            const h = new Chess(fen); if (k > 0) h.move(first);
+            assert.ok(h.moves({ verbose: true }).some(m => m.from + m.to + (m.promotion || '') === arrow.uci), arrow.uci + ' is legal where it is made');
+          }
+        }
+      }
+    }
+  } finally { f.close(); }
+});
+
+test('the hand slips now and then: a tenth of a per cent when slow, up to half a per cent when quick, one square off', async () => {
+  const f = setup();
+  try {
+    assert.ok(Math.abs(f.api.slipChance(900) - 0.001) < 1e-12 && Math.abs(f.api.slipChance(600) - 0.001) < 1e-12, 'slow: 0.1%');
+    assert.ok(Math.abs(f.api.slipChance(150) - 0.005) < 1e-12 && Math.abs(f.api.slipChance(10) - 0.005) < 1e-12, 'quick: 0.5%');
+    assert.ok(f.api.slipChance(375) > 0.001 && f.api.slipChance(375) < 0.005, 'in between: in between');
+    for (const to of ['e4', 'a1', 'h8', 'a8', 'd1']) {
+      for (let i = 0; i < 20; i++) {
+        const sq = f.api.slipSquare(to, () => i / 20);
+        assert.ok(sq && sq !== to && Math.abs(sq.charCodeAt(0) - to.charCodeAt(0)) <= 1 && Math.abs(+sq[1] - +to[1]) <= 1 && /^[a-h][1-8]$/.test(sq), sq + ' is one square from ' + to);
+      }
+    }
+    // a slipped drop lands off the target; an ordinary one on it
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const board = f.board(fen);
+    board.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 800, right: 800, bottom: 800 });
+    f.w.document.elementFromPoint = () => board;
+    const drops = [];
+    board.addEventListener('pointerup', e => drops.push([Math.round(e.clientX), Math.round(e.clientY)]));
+    const ms = f.api.humanDrag(board, 'e2', 'e4', false, () => 0.0);     // random 0: slips, whatever the chance
+    await new Promise(r => setTimeout(r, ms + 80));
+    assert.equal(drops.length, 1);
+    assert.ok(drops[0][0] !== 450 || drops[0][1] !== 450, 'the piece was let go off e4 (' + drops[0] + ')');
+    drops.length = 0;
+    const ms2 = f.api.humanDrag(board, 'e2', 'e4', false, () => 0.9999);  // never slips
+    await new Promise(r => setTimeout(r, ms2 + 80));
+    assert.deepEqual(drops[0], [450, 450], 'an ordinary drop lands on e4');
   } finally { f.close(); }
 });
 

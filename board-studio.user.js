@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.17.1
+// @version      6.17.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1864,7 +1864,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .rng b { font-weight: 600; color: #f7c045; }
     .odds { padding: 8px 0 4px; }
     .odds-bar { position: relative; display: flex; height: 22px; margin: 0 8px; border-radius: 11px; touch-action: none; --a: 60%; --b: 100%; }
-    .odds-bar .seg { display: flex; align-items: baseline; justify-content: center; gap: 4px; overflow: hidden; white-space: nowrap; min-width: 0; font-style: normal; font-variant-numeric: tabular-nums; color: rgba(0,0,0,.72); padding: 0 10px; align-items: center; }
+    .odds-bar .seg { display: flex; align-items: baseline; justify-content: center; gap: 4px; overflow: hidden; white-space: nowrap; min-width: 0; font-style: normal; font-variant-numeric: tabular-nums; color: rgba(0,0,0,.72); padding: 0 3px; }
     .odds-bar .seg .t { font-size: 8.5px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; opacity: .7; }
     .odds-bar .seg .n { font-size: 13px; font-weight: 800; letter-spacing: -.2px; }
     .odds-bar .seg .n i { font-style: normal; font-size: 9px; font-weight: 700; opacity: .7; margin-left: 1px; }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.7.1
+// @version      6.8.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -263,7 +263,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
                   opacity 260ms ease, transform 300ms cubic-bezier(.34, 1.4, .64, 1);
     }
     .cc-ghost.cc-ghost-leave { transform: scale(0.7); }
-    .bs-ghost-ai { position: absolute; inset: 0; pointer-events: none; }
+    .bs-ghost-ai, .bs-ghost-clutch { position: absolute; inset: 0; pointer-events: none; }
     .piece.bs-fallen { filter: url(#bs-fallen-filter) !important; }
     [data-pin="board-studio"] a.bs-paused svg { opacity: .4; filter: grayscale(1); }
     .bs-badge { position: absolute; width: 12.5%; height: 12.5%; z-index: 1; pointer-events: none; }
@@ -279,8 +279,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     .bs-badge .bs-taken i { filter: grayscale(1) brightness(.92); }
     .bs-ghost-ai svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-    .bs-ghost-ai .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)); }
-    .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
+    .bs-ghost-ai .cc-ghost, .bs-ghost-clutch .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)) drop-shadow(0 0 2px var(--reply-color)); }
+    .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave, .bs-ghost-clutch .cc-ghost, .bs-ghost-clutch .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
                   opacity 320ms ease, transform 320ms cubic-bezier(.34, 1.4, .64, 1); }
     .bs-ghost-ai .reply-arrow { transition: opacity 320ms ease; }
     .bs-ghost-ai .reply-shaft { fill: none; stroke-linecap: round; stroke-linejoin: round; transition: stroke 320ms ease; }
@@ -995,7 +995,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       let marks = false, hints = false, flip = false;
       for (const rec of records) {
         const t = rec.target;
-        if (this.layer.contains(t) || this.overlay.contains(t) || this.ghosts.el.contains(t) || t.closest?.('.bs-blunder-layer, .bs-fallback-hints, .bs-ghost-ai')) continue;
+        if (this.layer.contains(t) || this.overlay.contains(t) || this.ghosts.el.contains(t) || t.closest?.('.bs-blunder-layer, .bs-fallback-hints, .bs-ghost-ai, .bs-ghost-clutch')) continue;
         // Chess.com recycles its highlight elements (class and style rewritten in place), so any
         // change among the board's children may be a highlight coming or going.
         if (rec.type === 'childList') {
@@ -3849,6 +3849,80 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (step.promotion) setTimeout(() => choosePromotion(own, step.promotion), instant ? 20 : 160);
   }
 
+  // Clutch starts at the Time setting give or take 0.4 s, a new throw each time it disarms, so it never
+  // kicks in at exactly the same moment. Once started it stays on until the clock is clearly above it.
+  function clutchEngages(state, time, clock, random = Math.random) {
+    if (clock > time + 0.4) { state.jitter = null; state.engaged = false; return false; }
+    if (state.jitter === null || state.jitter === undefined) state.jitter = Math.round((random() * 0.8 - 0.4) * 100) / 100;
+    if (!state.engaged && clock <= Math.max(0.1, time + state.jitter)) state.engaged = true;
+    return !!state.engaged;
+  }
+
+  // Ghosts for Clutch: blue for the moves it is considering, red for the one it will premove (hold and
+  // play the instant their move arrives). items: [{ fen, uci, color }], fen being the position the move
+  // is made in. They slide out of their square and fade, like the Ghost AI's.
+  const CLUTCH_BLUE = '#4cc2ff', CLUTCH_RED = '#ff4d4d';
+
+  function clutchGhostKind(fen, uci) {
+    try {
+      const piece = new BoardStudioRules.Chess(fen).get(uci.slice(0, 2));
+      return piece ? piece.color + (uci[4] || piece.type) : null;
+    } catch (e) { return null; }
+  }
+
+  function showClutchGhosts(ctl, items) {
+    const board = ctl.board;
+    let layer = ctl.clutchGhostLayer;
+    if (!items.length && !layer) return;
+    const key = JSON.stringify([ctl.flipped, items.map(i => [i.uci, i.color, String(i.fen).split(' ')[0]])]);
+    if (ctl.clutchGhostKey === key && layer && layer.isConnected) return;
+    ctl.clutchGhostKey = key;
+    if (!layer || !layer.isConnected) {
+      if (layer) layer.remove();
+      layer = document.createElement('div');
+      layer.className = 'bs-ghost-clutch';
+      layer.setAttribute('aria-hidden', 'true');
+      ctl.clutchGhostLayer = layer;
+      ctl.clutchGhostItems = new Map();
+      const above = ctl.svg && ctl.svg.parentNode === board ? ctl.svg : ctl.overlay;
+      if (above && above.parentNode === board) board.insertBefore(layer, above); else board.appendChild(layer);
+    }
+    const imageFor = ctl.imageFor ? kind => ctl.imageFor(kind) : kind => pieceImageUrl(board.game.getOptions().pieceStyle, kind);
+    const spot = square => {
+      const q = squareXY(square.charCodeAt(0) - 96, +square[1], ctl.flipped);
+      return { left: `${q.x * 12.5}%`, top: `${q.y * 12.5}%` };
+    };
+    const live = ctl.clutchGhostItems, keep = new Set();
+    for (const item of items) {
+      const id = item.uci + item.color;
+      keep.add(id);
+      let entry = live.get(id);
+      if (!entry) {
+        const kind = clutchGhostKind(item.fen, item.uci);
+        if (!kind) continue;
+        const el = document.createElement('div');
+        el.className = 'cc-ghost';
+        el.style.backgroundImage = imageFor(kind);
+        Object.assign(el.style, spot(item.uci.slice(0, 2)), { opacity: '0' });
+        layer.appendChild(el);
+        el.getBoundingClientRect();
+        entry = { el };
+        live.set(id, entry);
+      }
+      entry.el.style.setProperty('--reply-color', item.color);
+      Object.assign(entry.el.style, spot(item.uci.slice(2, 4)), { opacity: String(settings.ghosts.opacity + 0.1) });
+    }
+    for (const [id, entry] of live) {
+      if (keep.has(id)) continue;
+      live.delete(id);
+      entry.el.style.opacity = '0';
+      entry.el.classList.add('cc-ghost-leave');
+      setTimeout(() => entry.el.remove(), 340);
+    }
+  }
+
+  function clutchClear(ctl) { clutchShow(ctl, []); showClutchGhosts(ctl, []); }
+
   const clutch = { plan: null, working: null, played: '', playedAt: 0, tries: 0, arrows: '', book: null, suspended: false, wasOn: false, acting: false };
   function clutchStopBook() { if (clutch.book) clutch.book.token.stop = true; clutch.book = null; }
 
@@ -3945,7 +4019,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!hit) continue;
       option.book = true;
       const key = repKey(option.fen);
-      const entry = { plan: null, step: hit.step, note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, book: true };
+      const entry = { plan: null, step: hit.step, note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, book: true, fen: option.fen };
       entries.set(key, entry);
       onEntry(key, entry);
     }
@@ -3965,7 +4039,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!decision) continue;
         const key = repKey(option.fen), old = entries.get(key);
         if (old && old.depth > result.depth) continue;
-        const entry = { ...decision, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
+        const entry = { ...decision, fen: option.fen, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
         if (entry.forced) entry.crit = 0;
         entries.set(key, entry);
         onEntry(key, entry, old);
@@ -3986,7 +4060,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function clutchAnswers(entries) {
     const by = new Map();
     for (const entry of entries.values()) {
-      const answer = by.get(entry.step.uci) || { step: entry.step, replies: [] };
+      const answer = by.get(entry.step.uci) || { step: entry.step, fen: entry.fen, replies: [] };
       answer.replies.push(entry.reply);
       by.set(entry.step.uci, answer);
     }
@@ -4044,7 +4118,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const board = document.querySelector('wc-chess-board, chess-board');
     const ctl = board && board.__cc;
     if (!s.on || !board || !ctl || !board.game || typeof board.game.getFEN !== 'function') {
-      if (ctl) clutchShow(ctl, []);
+      if (ctl) clutchClear(ctl);
       clutchStopBook();
       clutch.plan = null; clutch.acting = false;
       setClutch(s.on ? 'Clutch: waiting for a board' : 'Clutch: off');
@@ -4068,16 +4142,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
-    if (!own) { clutch.acting = false; clutchStopBook(); setClutch('Clutch: waiting for a game you are playing'); return; }
+    if (!own) { clutch.acting = false; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
     // Auto plays at the opponent's rating when it can be read; otherwise, and with Auto off, the field's.
     const opponentElo = readOpponentElo();
     const elo = clutchEloFor(base, opponentElo);
     const clock = readClock('own');
-    if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchShow(ctl, []); return; }
-    if (clock > s.time) {
+    if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchClear(ctl); return; }
+    if (!clutchEngages(clutch, base.time, clock)) {
       clutch.acting = false; clutch.plan = null; clutchStopBook();
-      setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at ${s.time.toFixed(1)} s, Elo ${elo}${base.auto && opponentElo ? ' (opponent)' : ''}`);
-      clutchShow(ctl, []);
+      setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at about ${base.time.toFixed(1)} s, Elo ${elo}${base.auto && opponentElo ? ' (opponent)' : ''}`);
+      clutchClear(ctl);
       return;
     }
     s = clutchStrengthen(clutchParams(base, clock, countPieces(fen)), elo);
@@ -4146,6 +4220,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       if (clutch.working === key) return;
       clutch.working = key;
+      showClutchGhosts(ctl, []);
       if (book && !opening) setClutch('Clutch: not a reply I was ready for, thinking');
       clutchSearch(fen, clock, oppClock, s).then(result => {
         let current = null;
@@ -4154,6 +4229,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!result || !current || !sameFen(current, fen)) return;
         const decision = clutchDecide(fen, result, s);
         if (!decision) { setClutch('Clutch: no move found'); return; }
+        // what it was weighing, in blue
+        showClutchGhosts(ctl, (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv[0]).slice(0, 6).map(l => ({ fen, uci: l.pv[0], color: CLUTCH_BLUE })));
         if (decision.plan) clutch.plan = decision.plan;
         clutchShow(ctl, [{ id: 'cl:' + decision.step.uci, uci: decision.step.uci, color: CLUTCH_COLOR }]);
         act(decision.step, false, decision.note, false);
@@ -4183,6 +4260,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         // Show what is ready, like a premove would be shown: the answer covering most replies first.
         const answers = clutchAnswers(book.entries);
         clutchShow(ctl, answers.slice(0, 3).map((answer, i) => ({ id: 'cl:' + answer.step.uci, uci: answer.step.uci, color: ['#4cc2ff', '#2f8fbf', '#256a8c'][i] })));
+        // red: the answer it will premove (hold and play the moment they move); blue: the others it is weighing
+        showClutchGhosts(ctl, answers.slice(0, 4).filter(a => a.fen).map((answer, i) => ({ fen: answer.fen, uci: answer.step.uci, color: i === 0 ? CLUTCH_RED : CLUTCH_BLUE })));
         const native = premoveNative(board);
         setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${entry.depth}: ${answers.map(x => `${x.step.from}-${x.step.to} x${x.replies.length}`).join(', ')}${native ? '' : ' (no premoves in this game, held and played the instant they move)'}`);
         if (!native || !mayPlay) return;

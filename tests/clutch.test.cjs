@@ -380,3 +380,49 @@ test('the engine can be limited to a list of moves', { timeout: 60000 }, async (
     assert.ok(result.lines.every(l => ['a2a3', 'h2h3'].includes(l.pv[0])));
   } finally { kill(); f.close(); }
 });
+
+test('Clutch starts within 0.4 s of the Time setting, a new throw each time it disarms', () => {
+  const f = setup();
+  try {
+    const rolls = [0.0, 1.0, 0.5];
+    let i = 0; const random = () => rolls[i++ % 3];
+    const state = { jitter: null, engaged: false };
+    // first throw: -0.4, so with Time 10 it starts at 9.6 s
+    assert.equal(f.api.clutchEngages(state, 10, 9.9, random), false);
+    assert.equal(f.api.clutchEngages(state, 10, 9.6, random), true);
+    assert.equal(f.api.clutchEngages(state, 10, 8, random), true, 'stays on');
+    assert.equal(f.api.clutchEngages(state, 10, 10.5, random), false, 'clearly above: disarmed');
+    // second throw: +0.4, so it starts at 10.4 s
+    assert.equal(f.api.clutchEngages(state, 10, 10.4, random), true);
+    assert.ok(state.jitter >= -0.4 && state.jitter <= 0.4);
+    // never below 0.1 s however it is thrown
+    const tiny = { jitter: null, engaged: false };
+    assert.equal(f.api.clutchEngages(tiny, 0.1, 0.05, () => 0), true);
+    assert.equal(f.api.clutchEngages({ jitter: null, engaged: false }, 5, 5.5, () => 0.5), false);
+  } finally { f.close(); }
+});
+
+test('blue ghosts for the moves it considers, a red one for the premove, faded out when they go', () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const board = f.board(fen);
+    board.innerHTML = '<svg class="arrows"></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    assert.equal(f.api.clutchGhostKind(fen, 'g1f3'), 'wn');
+    assert.equal(f.api.clutchGhostKind(fen, 'e4e5'), null, 'no piece there');
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#ff4d4d' }, { fen, uci: 'g1f3', color: '#4cc2ff' }, { fen, uci: 'd2d4', color: '#4cc2ff' }]);
+    const ghosts = [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost')];
+    assert.equal(ghosts.length, 3);
+    const color = g => g.style.getPropertyValue('--reply-color');
+    assert.equal(ghosts.filter(g => color(g) === '#ff4d4d').length, 1, 'one red premove ghost');
+    assert.equal(ghosts.filter(g => color(g) === '#4cc2ff').length, 2, 'the rest blue');
+    const red = ghosts.find(g => color(g) === '#ff4d4d');
+    assert.equal(red.style.left, '50%'); assert.equal(red.style.top, '50%', 'sits on e4');
+    assert.ok(board.querySelector('.bs-ghost-clutch').compareDocumentPosition(ctl.overlay) & 4, 'under the arrows');
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#ff4d4d' }]);
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)').length, 1);
+    f.api.showClutchGhosts(ctl, []);
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)').length, 0);
+  } finally { f.close(); }
+});

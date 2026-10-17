@@ -495,6 +495,23 @@ test('everything is played around the eval bar: the aim sets where it should go,
   } finally { f.close(); }
 });
 
+test('the premove search runs once the three likeliest replies have answers, before the rest, one thing at a time', async () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1';
+    const seen = [];
+    let topAt = null, busy = false, overlapped = false;
+    const analyse = async (x, o) => ({ depth: 6, cp: 20, pv: ['e7e5', 'g1f3'], lines: ['e7e5', 'd7d5', 'g8f6', 'c7c5', 'e7e6'].map((u, i) => ({ cp: 20 - i, pv: [u, 'g1f3'] })) });
+    const answer = async (x, o) => { if (busy) overlapped = true; seen.push(x); return { depth: 6, cp: 30, pv: ['g1f3', 'b8c6'], human: true, lines: [] }; };
+    await f.api.bookBuild({
+      fen, s: { eval: 2, depth: 6, maxDepth: 12, spare: 2, human: true }, clock: 20, replies: 5, analyse, answer, stop: () => false, onEntry: () => {},
+      onTop: async entries => { topAt = seen.length; busy = true; await new Promise(r => setTimeout(r, 20)); busy = false; }
+    });
+    assert.equal(topAt, 3, 'after the third answer, before the fourth');
+    assert.equal(overlapped, false, 'nothing else was asked of the engine while it ran');
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

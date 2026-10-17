@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.28.0
+// @version      6.28.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4640,7 +4640,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return out;
   }
 
-  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, onRound = () => {}, onOptions = () => {}, stop, replies = 6, rounds = 6 }) {
+  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, onRound = () => {}, onOptions = () => {}, onTop = async () => {}, stop, replies = 6, rounds = 6 }) {
     // A person's answer is looked at twice: a quick look first, so the ghosts and the premove are there while the
     // opponent is still thinking, then a longer one that may change it.
     if (answer) rounds = 2;
@@ -4661,6 +4661,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     onOptions(options.length);
     const entries = new Map();
+    let topDone = false;
     const topReply = options.length ? options[0].uci : null;
     // Replies that lead into the opening book need no search: the book move is the answer.
     for (const option of options) {
@@ -4696,6 +4697,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (entry.forced) entry.crit = 0;
         entries.set(key, entry);
         onEntry(key, entry, old);
+        // The likeliest replies are answered: time to look for a premove that holds against them, before the others, and
+        // one thing at a time (two searches at once would cancel each other).
+        if (!topDone && entries.size >= Math.min(3, options.length)) { topDone = true; await onTop(entries); if (stop()) return entries.size; }
       }
       onRound(round);
     }
@@ -5042,13 +5046,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode, expected: clutch.lastValue === undefined ? null : clutch.lastValue, clock }, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
       onOptions: n => { book.total = n; },
-      onRound: () => {
-        book.complete = true; refresh();
-        if (!book.wiggleRun && s.mode !== 'lose') {
-          book.wiggleRun = true;
-          wigglePremove(book.entries, (x, y) => clutchEngine.analyse(x, y), () => !stillTheirMove()).then(w => { if (w && clutch.book === book && stillTheirMove()) { book.wiggle = w; refresh(); } });
-        }
-      }
+      onTop: async () => {
+        if (book.wiggleRun || s.mode === 'lose') return;
+        book.wiggleRun = true;
+        const w = await wigglePremove(book.entries, (x, y) => clutchEngine.analyse(x, y), () => !stillTheirMove());
+        if (w && clutch.book === book && stillTheirMove()) { book.wiggle = w; refresh(); }
+      },
+      onRound: () => { book.complete = true; refresh(); }
     }).then(count => {
       if (clutch.book === book && book.entries.size === 0 && stillTheirMove()) setClutch('Clutch: no answers prepared');
     });

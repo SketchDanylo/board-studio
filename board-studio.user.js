@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.8.0
+// @version      6.8.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2777,9 +2777,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (taken.length) badge.el.appendChild(makeList(taken.map(k => [k, null]), 'bs-taken'));
       });
       for (const [to, badge] of badges) if (!groups.has(to)) { badge.el.remove(); badges.delete(to); }
-      // A ghost one of the replies captures goes away, like when you draw the capture yourself.
-      // Counted from the replies still on show, so a reply that stopped capturing frees the piece.
-      ctl.ghosts?.take(new Set([...items.values()].map(i => i.capture).filter(Boolean)));
+      // A ghost the main line (the top reply) captures goes away, like when you draw the capture yourself.
+      // Only the main line counts: a lower reply that also captures is just being considered, so when the
+      // top move changes and no longer captures, the piece is free again (texture, stripes and all).
+      const mainItem = results[0] && items.get(results[0].move);
+      ctl.ghosts?.take(new Set(mainItem && mainItem.capture ? [mainItem.capture] : []));
     }
   };
   setInterval(() => {

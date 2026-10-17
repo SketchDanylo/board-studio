@@ -180,5 +180,11 @@ test('replies landing on one square share it: best ghost on it, others and the t
     iteration(s, 13, line(['g8f6', 'd8e7', 'h7h6', 'a7a6']));
     assert.equal(board.querySelectorAll('.bs-ghost-ai .bs-badge').length, 0);
     assert.equal(ctl.ghosts.taken.size, 0, 'a reply that stopped taking frees the piece');
+    // A lower reply that still captures does not keep the piece marked: only the main line counts.
+    iteration(s, 14, line(['g8f6', 'e5d4', 'd8e7', 'a7a6']));
+    assert.equal(ctl.ghosts.taken.size, 0, 'the top move no longer takes, so the piece is free');
+    assert.equal(board.querySelectorAll('.piece.bs-fallen').length, 0);
+    iteration(s, 15, line(['e5d4', 'g8f6', 'd8e7', 'a7a6']));
+    assert.ok(ctl.ghosts.taken.has('d4'), 'and marked again when the top move takes');
   } finally { f.close(); }
 });

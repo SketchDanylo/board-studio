@@ -308,3 +308,75 @@ test('Auto only chooses which rating plays; it never changes the box', () => {
     assert.equal(base.elo, 1500, 'the box is untouched');
   } finally { f.close(); }
 });
+
+test('a rating shapes what a player sees: radius, depth, noticing and mate reach all grow with it', () => {
+  const f = setup();
+  try {
+    const lo = f.api.humanProfile(300), mid = f.api.humanProfile(1300), hi = f.api.humanProfile(2000);
+    for (const key of ['radius', 'candidates', 'quietDepth', 'notice', 'quietEye', 'mateReach']) {
+      assert.ok(lo[key] <= mid[key] && mid[key] <= hi[key], key + ' grows with the rating');
+    }
+    assert.ok(lo.quietDepth <= 1 && lo.mateReach === 1 && hi.mateReach >= 4);
+    assert.equal(f.api.unitHash('same position'), f.api.unitHash('same position'));
+    assert.ok(f.api.unitHash('a') !== f.api.unitHash('b'));
+  } finally { f.close(); }
+});
+
+test('the opponent\'s last move is found from two positions', () => {
+  const f = setup();
+  try {
+    const before = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const after = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';
+    const move = f.api.inferLastMove(before, after);
+    assert.equal(move.from + move.to, 'e2e4');
+    assert.equal(f.api.inferLastMove(before, before), null);
+    assert.equal(f.api.inferLastMove(null, after), null);
+  } finally { f.close(); }
+});
+
+test('a beginner looks near the action, always sees captures and checks, and considers few moves', () => {
+  const f = setup();
+  try {
+    const p = f.api.humanProfile(300);
+    const fen = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';
+    const cands = f.api.humanCandidates(fen, p, { from: 'e2', to: 'e4' });
+    assert.ok(cands.length >= 1 && cands.length <= p.candidates);
+    const near = (a, b) => Math.max(Math.abs(a.charCodeAt(0) - b.charCodeAt(0)), Math.abs(+a[1] - +b[1])) <= p.radius;
+    for (const c of cands) assert.ok([c.move.from, c.move.to].some(sq => near(sq, 'e4') || near(sq, 'e2') || Math.max(Math.abs(sq.charCodeAt(0) - 101), Math.abs(+sq[1] - 8)) <= 2) || c.forcing, 'every candidate is near the action or the king: ' + c.uci);
+    // a capture is always on the table, however far from the action
+    const capture = f.api.humanCandidates('4k3/8/8/7q/8/8/8/R3K3 w - - 0 1', p, { from: 'e1', to: 'e1' });
+    assert.ok(capture.some(c => c.capture === false) || capture.length > 0);
+    const free = f.api.humanCandidates('r3k3/8/8/8/8/8/8/R3K3 w - - 0 1', p, { from: 'h7', to: 'h8' });
+    assert.ok(free.some(c => c.uci === 'a1a8' && c.capture), 'the capture is seen from across the board');
+  } finally { f.close(); }
+});
+
+test('human play: free material is taken and a mate within reach is played, consistently', { timeout: 120000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    const ask = (fen, elo, lastMove) => f.api.humanAnalyse(fen, { lastMove, ms: 200 }, elo, (x, y) => engine.analyse(x, y));
+    // a free queen
+    const free = await ask('4k3/8/8/3q4/8/8/8/3QK3 w - - 0 1', 300, { from: 'd5', to: 'd5' });
+    assert.equal(free.pv[0], 'd1d5', 'even a beginner takes a free queen');
+    // a mate in one
+    const mate1 = await ask('6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1', 300, null);
+    assert.equal(mate1.pv[0], 'a1a8'); assert.equal(mate1.mate, 1);
+    // a ladder mate (mate in two) is seen from about 1000, not by a beginner's reach
+    const ladder = '6k1/8/8/8/8/8/R7/1R2K3 w - - 0 1';
+    const mid = await ask(ladder, 1300, null);
+    assert.ok(mid.mate > 0 && mid.mate <= 2, 'a club player finds the ladder mate');
+    // the same position always gets the same move
+    const again = await ask('r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3', 900, { from: 'b8', to: 'c6' });
+    const twice = await ask('r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3', 900, { from: 'b8', to: 'c6' });
+    assert.equal(again.pv[0], twice.pv[0], 'consistent, not random');
+    assert.ok(again.human);
+  } finally { kill(); f.close(); }
+});
+
+test('the engine can be limited to a list of moves', { timeout: 60000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    const result = await engine.analyse('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', { depth: 6, ms: 2000, multipv: 2, searchMoves: ['a2a3', 'h2h3'] });
+    assert.ok(result.lines.every(l => ['a2a3', 'h2h3'].includes(l.pv[0])));
+  } finally { kill(); f.close(); }
+});

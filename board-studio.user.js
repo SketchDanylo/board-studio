@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.6.1
+// @version      6.7.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3567,12 +3567,154 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return lines[0];
   }
 
+  // ---------- Clutch human play ----------
+
+  // Below about 2200 Elo Clutch does not play like a weaker engine, it plays like a person of that
+  // rating, whose mistakes have causes rather than dice. The model follows what is known of human play
+  // (a position's blunder potential matters more than the rating itself; people calculate forcing lines
+  // deeper than quiet ones; attention stays near the action; backward and long quiet moves go unseen):
+  //  - what it sees: moves near the opponent's last move and its own king, every capture and check, the
+  //    moves of its attacked pieces (noticed more often the higher the rating), only some quiet moves
+  //    that go backward or far;
+  //  - how far it calculates: a few plies for quiet moves, two more for forcing ones;
+  //  - what it likes: material, checks, development and the centre, a little;
+  //  - what it always finds: a mate within its reach (a mate in one for a beginner, a ladder mate from
+  //    about 1000).
+  // A position always gets the same move, so it plays consistently, not randomly.
+
+  const HUMAN_BELOW = 2200;
+
+  function humanProfile(elo) {
+    return {
+      radius: elo < 600 ? 1 : elo < 900 ? 2 : elo < 1200 ? 3 : elo < 1600 ? 4 : elo < 2000 ? 5 : 8,
+      candidates: Math.max(3, Math.min(12, Math.round(2 + elo / 350))),
+      quietDepth: Math.max(1, Math.min(10, Math.round((elo - 200) / 260))),
+      forcingExtra: 2,
+      notice: Math.min(0.98, 0.45 + elo / 2600),
+      quietEye: Math.max(0.08, Math.min(1, (elo - 400) / 1800)),
+      mateReach: elo < 500 ? 1 : elo < 1000 ? 2 : elo < 1600 ? 3 : elo < 2200 ? 4 : 6,
+      appetite: Math.max(0, 1 - elo / 3000)
+    };
+  }
+
+  // A stable number in [0, 1) for a position and a purpose: the same position always decides the same.
+  function unitHash(text) {
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return ((h >>> 0) % 100000) / 100000;
+  }
+
+  const HUMAN_VALUE = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+  const squareIndex = sq => ({ f: sq.charCodeAt(0) - 97, r: +sq[1] - 1 });
+  const near = (a, b, radius) => { const x = squareIndex(a), y = squareIndex(b); return Math.max(Math.abs(x.f - y.f), Math.abs(x.r - y.r)) <= radius; };
+
+  // Which move was just played, from the position before and after.
+  function inferLastMove(before, after) {
+    if (!before || !after) return null;
+    try {
+      const game = new BoardStudioRules.Chess(before);
+      for (const move of game.moves({ verbose: true })) {
+        game.move(move);
+        // the en-passant square is left out of the comparison: sites write it differently
+        const same = game.fen().split(' ').slice(0, 3).join(' ') === String(after).split(' ').slice(0, 3).join(' ');
+        game.undo();
+        if (same) return { from: move.from, to: move.to };
+      }
+    } catch (e) { /* not a position that follows */ }
+    return null;
+  }
+
+  // The moves the player considers at all, most promising first, at most `candidates` of them.
+  function humanCandidates(fen, p, lastMove) {
+    const game = new BoardStudioRules.Chess(fen);
+    const us = game.turn(), them = us === 'w' ? 'b' : 'w';
+    const moves = game.moves({ verbose: true });
+    const kingSquare = (game.board().flat().find(s => s && s.type === 'k' && s.color === us) || {}).square;
+    // our attacked pieces: noticed (or not) by position
+    const attacked = new Set();
+    for (const row of game.board()) for (const cell of row) {
+      if (cell && cell.color === us && cell.type !== 'k' && HUMAN_VALUE[cell.type] >= 3 && game.isAttacked(cell.square, them)) attacked.add(cell.square);
+    }
+    const noticed = new Set([...attacked].filter(sq => unitHash(fen + 'n' + sq) < p.notice));
+    const out = [];
+    for (const move of moves) {
+      const uci = move.from + move.to + (move.promotion || '');
+      const check = /[+#]/.test(move.san), capture = !!move.captured, promotion = !!move.promotion;
+      const forcing = check || capture || promotion;
+      const back = us === 'w' ? squareIndex(move.to).r < squareIndex(move.from).r : squareIndex(move.to).r > squareIndex(move.from).r;
+      const far = Math.max(Math.abs(squareIndex(move.to).f - squareIndex(move.from).f), Math.abs(squareIndex(move.to).r - squareIndex(move.from).r)) >= 4;
+      const focus = [move.from, move.to].some(sq =>
+        (lastMove && (near(sq, lastMove.from, p.radius) || near(sq, lastMove.to, p.radius))) || (kingSquare && near(sq, kingSquare, 2)));
+      const escapes = noticed.has(move.from);
+      let seen = forcing || escapes || /[kq]/.test(move.flags) || focus;
+      if (seen && !forcing && !escapes && (back || far) && unitHash(fen + uci) >= p.quietEye) seen = false;
+      if (!seen && p.radius >= 8) seen = true;
+      if (!seen) continue;
+      let salience = 0;
+      if (capture) salience += 3 + HUMAN_VALUE[move.captured] * 0.4;
+      if (check) salience += 2.5;
+      if (promotion) salience += 4;
+      if (escapes) salience += 2.5;
+      if (/[kq]/.test(move.flags)) salience += 1.5;
+      if (focus) salience += 1;
+      if (back) salience -= 1;
+      if (move.piece === 'k' && !/[kq]/.test(move.flags)) salience -= 1.5;
+      out.push({ move, uci, forcing, capture, check, salience });
+    }
+    out.sort((a, b) => b.salience - a.salience || (unitHash(fen + a.uci) - unitHash(fen + b.uci)));
+    return out.slice(0, p.candidates);
+  }
+
+  // A small, rating-scaled taste: material, checks, development and the centre.
+  function humanTaste(c, p, fen) {
+    let bonus = 0;
+    if (c.capture) bonus += 25 * p.appetite * 2 * (1 + HUMAN_VALUE[c.move.captured] / 9);
+    if (c.check) bonus += 15 * p.appetite * 2;
+    if (/[nb]/.test(c.move.piece) && /[18]/.test(c.move.from[1]) && !/[18]/.test(c.move.to[1])) bonus += 12 * p.appetite * 2;
+    if (/[de][45]/.test(c.move.to) && c.move.piece === 'p') bonus += 8 * p.appetite * 2;
+    return bonus + (unitHash(fen + 'j' + c.uci) - 0.5) * 8 * p.appetite;
+  }
+
+  // Our move in a position, the human way. analyse(fen, options) is the engine call (searchMoves limits
+  // it to the moves the player considers). Resolves like a search result, with human: true and the
+  // chosen move first; null when the search was replaced.
+  async function humanAnalyse(fen, { lastMove = null, ms = 300 } = {}, elo, analyse) {
+    const p = humanProfile(elo);
+    const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
+    if (!legal.length) return null;
+    // A mate within reach is simply played.
+    // (the engine's mate solver, since quiet mating moves hide from an ordinary shallow search)
+    const mateLook = await analyse(fen, { mate: p.mateReach, depth: 2 * p.mateReach + 2, ms: 220, multipv: 1 });
+    if (!mateLook) return null;
+    if (mateLook.mate > 0 && mateLook.mate <= p.mateReach) return { ...mateLook, human: true, lines: [mateLook] };
+    if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
+    const cands = humanCandidates(fen, p, lastMove);
+    if (!cands.length) return { ...mateLook, human: true, lines: [mateLook] };
+    const value = l => l.mate !== undefined ? Math.sign(l.mate) * (10000 - Math.abs(l.mate)) : l.cp;
+    const rated = [];
+    for (const [group, extra] of [[cands.filter(c => c.forcing), p.forcingExtra], [cands.filter(c => !c.forcing), 0]]) {
+      if (!group.length) continue;
+      const result = await analyse(fen, { depth: p.quietDepth + extra, ms, multipv: group.length, searchMoves: group.map(c => c.uci) });
+      if (!result) return null;
+      for (const line of result.lines || [result]) {
+        const c = group.find(x => x.uci === line.pv[0]);
+        if (c) rated.push({ c, line, score: value(line) + humanTaste(c, p, fen) });
+      }
+    }
+    if (!rated.length) return { ...mateLook, human: true, lines: [mateLook] };
+    rated.sort((a, b) => b.score - a.score);
+    const best = rated[0];
+    return { ...best.line, human: true, depth: p.quietDepth, lines: rated.map(r => r.line) };
+  }
+
+
   // The move to play when there is no mate: the best one, except when losing, when a move that
   // holds about equal wins out, a check first (a perpetual is the way out of a lost position).
   function clutchPick(fen, result, s) {
     const lines = (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv.length);
     if (!lines.length) return null;
     const best = lines[0];
+    if (result.human) return stepFor(fen, result.pv[0]);
     // Below full strength a move is drawn from the best few, so the rating shows in the play.
     if (s.strength && s.strength.limited && lines.length > 1) return stepFor(fen, sampleLine(lines, s.strength.temperature, s.random).pv[0]);
     if (clutchLosing(best, s)) {
@@ -3625,18 +3767,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     },
     next() {
       if (!this.ready || this.job || !this.pending) return;
-      const { fen, depth, ms, multipv, keepPartial, resolve } = this.pending;
+      const { fen, depth, ms, multipv, keepPartial, searchMoves, mate, resolve } = this.pending;
       this.pending = null;
       this.job = { resolve, last: null, lines: [], depth: 0, cancelled: false, keepPartial };
       this.send(`setoption name MultiPV value ${multipv}`);
       this.send('position fen ' + fen);
-      this.send(`go depth ${depth} movetime ${Math.round(ms)}`);
+      this.send(`go ${mate ? 'mate ' + mate : 'depth ' + depth} movetime ${Math.round(ms)}${searchMoves && searchMoves.length ? ' searchmoves ' + searchMoves.join(' ') : ''}`);
     },
-    analyse(fen, { depth, ms, multipv = 1, keepPartial = false }) {
+    analyse(fen, { depth, ms, multipv = 1, keepPartial = false, searchMoves = null, mate = 0 }) {
       this.start();
       return new Promise(resolve => {
         this.pending?.resolve(null);
-        this.pending = { fen, depth, ms, multipv, keepPartial, resolve };
+        this.pending = { fen, depth, ms, multipv, keepPartial, searchMoves, mate, resolve };
         if (this.job) { this.job.cancelled = true; this.send('stop'); } else this.next();
       });
     },
@@ -3725,6 +3867,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
     const hurry = oppClock !== null && oppClock < clock * 0.7 ? 0.5 : 1;
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
+    if (s.human) return humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.min(400, budget.stage1Ms + 150) }, s.elo, (f, o) => clutchEngine.analyse(f, o));
     let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: s.multipv || 4 });
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0 && !(s.strength && s.strength.limited)) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
@@ -3743,14 +3886,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // From a result to what to do: a mate becomes a plan, anything else one move.
   function clutchDecide(fen, result, s) {
-    if (result.mate > 0 && result.pv && !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2))) {
+    if (result.mate > 0 && result.pv && (result.human || !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2)))) {
       const line = mateLine(fen, result.pv);
       if (line[0] && line[0].ours) return { plan: { start: fen, line }, step: line[0], note: `mate in ${result.mate} (depth ${result.depth})` };
     }
     const step = clutchPick(fen, result, s);
     if (!step) return null;
     const score = result.mate !== undefined ? `mate ${result.mate}` : (result.cp / 100).toFixed(2);
-    const { crit, gap } = clutchCritical(fen, result, step);
+    const { crit, gap } = result.human ? { crit: 0, gap: Infinity } : clutchCritical(fen, result, step);
     return { plan: null, step, crit, gap, note: `${step.check && clutchLosing(result, s) ? 'perpetual try' : 'best move'} ${step.from}-${step.to} (${score}, depth ${result.depth}${crit ? ', care ' + crit : ''})` };
   }
 
@@ -3767,7 +3910,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // analyse(fen, options) is the engine call. onEntry(key, entry) hears every new or improved
   // answer; stop() says whether to give up (the position changed). Resolves with how many answers
   // the book ended with.
-  async function bookBuild({ fen, analyse, s, clock, onEntry, stop, replies = 6, rounds = 6 }) {
+  async function bookBuild({ fen, analyse, answer, s, clock, onEntry, stop, replies = 6, rounds = 6 }) {
+    if (answer) rounds = 1; // a person's answer is decided once
     const first = await analyse(fen, { depth: s.depth, ms: 250, multipv: Math.max(replies, s.multipv || 0) });
     if (stop() || !first) return 0;
     const lines = (first.lines && first.lines.length ? first.lines : [first]).filter(l => l && l.pv && l.pv.length);
@@ -3800,7 +3944,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       for (const option of options) {
         if (stop()) return entries.size;
         if (option.book) continue;
-        const result = await analyse(option.fen, { depth: Math.min(depth, s.strength ? s.strength.depthCap : 99), ms: round ? 500 : 200, multipv: s.multipv || 4 });
+        const lastMove = { from: option.uci.slice(0, 2), to: option.uci.slice(2, 4) };
+        const result = answer
+          ? (round ? null : await answer(option.fen, { lastMove, ms: 250 }))
+          : await analyse(option.fen, { depth: Math.min(depth, s.strength ? s.strength.depthCap : 99), ms: round ? 500 : 200, multipv: s.multipv || 4 });
         if (stop()) return entries.size;
         if (!result || !result.pv) continue;
         const decision = clutchDecide(option.fen, result, s);
@@ -3873,7 +4020,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       ...params, elo, strength,
       depth: Math.min(params.depth, strength.depthCap),
       maxDepth: Math.min(params.maxDepth, strength.depthCap + 2),
-      multipv: strength.limited ? 6 : 4
+      multipv: strength.limited ? 6 : 4,
+      human: elo < HUMAN_BELOW
     };
   }
 
@@ -3905,6 +4053,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     let fen, own;
     try {
       fen = board.game.getFEN();
+      if (fen !== clutch.curFen) { clutch.lastMove = inferLastMove(clutch.curFen, fen); clutch.curFen = fen; }
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
@@ -4017,6 +4166,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     bookBuild({
       fen, s, clock, stop: () => !stillTheirMove() || Date.now() - started > 45000,
       analyse: (f, o) => clutchEngine.analyse(f, o),
+      answer: s.human ? (f, o) => humanAnalyse(f, o, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => {
         book.entries.set(k, entry);
         // Show what is ready, like a premove would be shown: the answer covering most replies first.

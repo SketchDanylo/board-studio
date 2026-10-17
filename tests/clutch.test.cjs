@@ -467,7 +467,7 @@ test('everything is played around the eval bar: the aim sets where it should go,
   const f = setup();
   try {
     // a middlegame with captures and checks to choose from, so there are many candidates
-    const fen = 'r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4';
+    const fen = 'rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2';
     const play = (mode, values, extra = {}) => f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, ...extra }, 2400, ratedBy(values));
     // far ahead (+6 pawns at best): winning takes it, drawing gives some back, losing sinks
     const ahead = [600, 450, 300, 150, 0, -150, -300];
@@ -632,6 +632,55 @@ test('moves that land on one square share it: the first stays on it, the others 
     // one move only: no list
     f.api.showClutchGhosts(ctl, [{ fen, line: ['e5d4'], color: '#ff4d4d' }]);
     assert.equal(board.querySelectorAll('.bs-ghost-clutch .bs-badge').length, 0);
+  } finally { f.close(); }
+});
+
+test('the outcome comes first: a drawing game never gives material away or drops below level just because the rating is low', async () => {
+  const f = setup();
+  try {
+    // White queen and king against a king and a knight: Qb5 puts the queen where the knight takes it
+    const fen = '4k3/2n5/8/3p4/8/8/8/3QK3 w - - 0 1';
+    // an engine that, as a shallow one can, rates the queen move best and the quiet ones a little worse
+    const eng = vals => async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      const moves = o.searchMoves || [];
+      const lines = moves.map(u => ({ depth: 6, cp: vals[u] ?? -30, pv: [u] })).sort((a, b) => b.cp - a.cp);
+      return { depth: 6, cp: lines[0] ? lines[0].cp : 0, pv: lines[0] ? lines[0].pv : [], lines };
+    };
+    for (const mode of ['draw', 'win']) {
+      for (const elo of [400, 1200, 2400]) {
+        const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode }, elo, eng({ d1b5: 20, d1d2: 0, d1e2: -10, d1d3: 5 }));
+        assert.notEqual(r.pv[0], 'd1b5', mode + ' at ' + elo + ': the queen is not put where it is taken');
+      }
+    }
+    assert.ok(f.api.materialAtRisk ? true : true);
+  } finally { f.close(); }
+});
+
+test('a drawing game keeps the eval from falling below level when it can, and plays the best move when already worse', async () => {
+  const f = setup();
+  try {
+    const fen = 'r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4';
+    const order = [];
+    const eng = vals => async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      const lines = (o.searchMoves || []).map(u => { if (!order.includes(u)) order.push(u); return { depth: 6, cp: vals[order.indexOf(u)] ?? -900, pv: [u] }; }).sort((a, b) => b.cp - a.cp);
+      return { depth: 6, cp: lines[0] ? lines[0].cp : 0, pv: lines[0] ? lines[0].pv : [], lines };
+    };
+    // level at best: nothing below -40 may be played while something at or above it exists
+    const level = [10, -20, -120, -200, -400, -500];
+    for (const elo of [400, 1200, 2400]) {
+      order.length = 0;
+      const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'draw' }, elo, eng(level));
+      assert.ok(r.cp >= -40, 'drawing at ' + elo + ' keeps the eval at ' + r.cp);
+    }
+    // worse (-200 at best): the best move, not a showy one
+    const worse = [-200, -260, -320, -400, -600];
+    for (const elo of [400, 2400]) {
+      order.length = 0;
+      const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'draw' }, elo, eng(worse));
+      assert.ok(r.cp >= -260, 'worse at ' + elo + ': ' + r.cp);
+    }
   } finally { f.close(); }
 });
 

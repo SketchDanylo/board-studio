@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.30.0
+// @version      6.31.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3992,12 +3992,29 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Our move in a position, the human way. analyse(fen, options) is the engine call (searchMoves limits
   // it to the moves the player considers). Resolves like a search result, with human: true and the
   // chosen move first; null when the search was replaced.
+  // What a move puts at risk: the most the other side can win on any square afterwards (a static exchange), less what the
+  // move itself takes. Positive: the move gives material away. Centipawns.
+  function materialAtRisk(fen, uci) {
+    try {
+      const g = new BoardStudioRules.Chess(fen);
+      const m = g.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
+      if (!m) return 0;
+      let worst = 0; const seen = new Set();
+      for (const c of g.moves({ verbose: true })) {
+        if (!c.captured || c.captured === 'k' || seen.has(c.to)) continue;
+        seen.add(c.to);
+        worst = Math.max(worst, exchangeGain(g, c.to));
+      }
+      return worst - (m.captured ? PIECE_VALUE[m.captured] : 0);
+    } catch (e) { return 0; }
+  }
+
   // The technique of a won ending with few pieces: push the enemy king to the edge and bring one's own
   // king up to it. Scores how much a position improves on that over the one before.
   function mateProgress(beforeFen, afterFen, us) {
     const kings = f => {
       const rows = f.split(' ')[0].split('/'); const out = {};
-      rows.forEach((row, r) => { let c = 0; for (const ch of row) { if (/d/.test(ch)) c += +ch; else { if (ch.toLowerCase() === 'k') out[ch === 'K' ? 'w' : 'b'] = [c, r]; c++; } } });
+      rows.forEach((row, r) => { let c = 0; for (const ch of row) { if (/[1-8]/.test(ch)) c += +ch; else { if (ch.toLowerCase() === 'k') out[ch === 'K' ? 'w' : 'b'] = [c, r]; c++; } } });
       return out;
     };
     const them = us === 'w' ? 'b' : 'w';
@@ -4014,7 +4031,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Level, or giving back an edge: the score becomes how far the move leaves the eval from where it should be. When
     // the eval is against us (no target) the best move simply wins, and a repetition or stalemate is a gift.
     let t = target === null ? 0 : -v - Math.abs(v - target) * pull;
-    t += again * 120 * pull;
+    t += again * (target === null ? 250 : 120) * pull;
+    if (target === null && r.c.check) t += 40;                                  // a check may lead to a perpetual
+    if (target !== null && v > 40 && r.c.capture && r.c.net >= 0) t += 40;     // an even trade takes an edge off safely
     if (after) { try { const g = new BoardStudioRules.Chess(after.fen); if (g.isStalemate() || g.isInsufficientMaterial()) t += 600; else if (g.isDraw()) t += 300; } catch (e) {} }
     return t;
   }
@@ -4133,7 +4152,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Far ahead on material yet nothing noticed holds it (a queen up, and every move it saw is a check
     // that throws the queen away): it was looking at the wrong moves, so it looks at the others.
     const holdsNothing = ahead >= 4 && topValue < Math.min(150, ahead * 30);
-    if (left() > 300 && ((winning && rated.filter(r => value(r.line) >= topValue - 150).every(r => { const st = stepFor(fen, r.c.uci); return st && seen(st.fen); })) || holdsNothing)) {
+    // The moves it noticed are well short of what the position holds (the eval bar says so): it was looking at the wrong
+    // moves, so it looks at the rest, whatever the rating. The aim is not given up for a narrow view.
+    const missedBetter = evalNow !== null && mode !== 'lose' && topValue < evalNow - 120;
+    if (left() > 300 && ((winning && rated.filter(r => value(r.line) >= topValue - 150).every(r => { const st = stepFor(fen, r.c.uci); return st && seen(st.fen); })) || holdsNothing || missedBetter)) {
       const have = new Set(rated.map(r => r.c.uci));
       const rest = legal.map(m => m.from + m.to + (m.promotion || '')).filter(u => !have.has(u) && !seen((stepFor(fen, u) || {}).fen));
       if (rest.length) {
@@ -4141,17 +4163,26 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const more = await analyse(fen, { depth: p.quietDepth, ms: Math.min(ms, 600, left() * 0.4), multipv: rest.length, searchMoves: rest, fresh: true });
         for (const line of (more && (more.lines || [more])) || []) {
           const move = legal.find(m => m.from + m.to + (m.promotion || '') === line.pv[0]);
-          if (move && !move.captured && !have.has(line.pv[0])) {
+          if (move && (missedBetter || !move.captured) && !have.has(line.pv[0])) {
             const mv = line.pv[0], cap = !!move.captured;
             rated.push({ c: { move, uci: mv, forcing: false, capture: cap, check: /[+#]/.test(move.san), salience: 0, free: false, net: cap ? 0 : 0 }, line });
           }
         }
       }
     }
+    // The outcome is decided, and only the way to it bends with the rating. So a move that gives material away for no
+    // reason, or drops the eval below where the aim can still be reached, is not on the table: when drawing, the eval may
+    // not go under a little below level (or, when already worse, under the best by much); a win may not be thrown away.
+    const risks = new Map(rated.map(r => [r, mode === 'lose' ? 0 : materialAtRisk(fen, r.c.uci)]));
+    const minRisk = Math.min(...risks.values());
+    // a sacrifice that the search rates clearly above everything else is trusted (it may be the only way out)
+    const sorted = rated.map(r => value(r.line)).sort((a, b) => b - a), secondV = sorted.length > 1 ? sorted[1] : -Infinity;
+    const floorV = mode === 'draw' ? (topValue > -40 ? -40 : topValue - 60) : mode === 'win' ? topValue - 250 : -Infinity;
     for (const r of rated) {
       const after = stepFor(fen, r.c.uci);
       const again = after ? seen(after.fen) : 0;
-      r.score = value(r.line) + humanTaste(r.c, p, fen, { winning }) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (squeeze ? 0.3 : winning && countPieces(fen) <= 6 ? 0.1 : 1))
+      const v0 = value(r.line), risk = risks.get(r) - minRisk, gives = risks.get(r) >= 200 && risk >= 150 && v0 < secondV + 100 && (mode === 'draw' ? true : v0 < 300);
+      r.score = v0 + humanTaste(r.c, p, fen, { winning }) - (gives ? 1500 : 0) - (v0 < floorV ? 4000 : 0) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (squeeze || mode === 'draw' ? 0.3 : winning && countPieces(fen) <= 6 ? 0.1 : 1))
         - (again && mode === 'win' ? (winning ? 300 : 50) * again : 0)
         + (mode === 'draw' ? drawTaste(r, value(r.line), after, again, elo, target) : 0)
         + (mode === 'lose' ? loseTaste(value(r.line), target, after) : 0)
@@ -4160,10 +4191,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     rated.sort((a, b) => b.score - a.score);
     // Never walk into a mate: the few best moves are each checked for a mate by the other side.
-    for (const r of mode === 'lose' ? [] : rated.slice(0, 5)) {
+    for (const r of mode === 'lose' ? [] : rated.slice(0, 6)) {
       const after = stepFor(fen, r.c.uci);
       if (!after || left() < 80) continue;
-      const reply = await analyse(after.fen, { mate: 3, depth: 8, ms: Math.max(30, Math.min(150, left() / 6)), multipv: 1, fresh: true });
+      const reply = await analyse(after.fen, { mate: 4, depth: 10, ms: Math.max(30, Math.min(160, left() / 7)), multipv: 1, fresh: true });
       if (reply && reply.mate > 0) r.score -= 20000 - 100 * reply.mate;
     }
     rated.sort((a, b) => b.score - a.score);
@@ -4923,12 +4954,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // prepared (when they have only one move, that is trivially so), or a trade it is counting on: they
   // are about to take on a square and every taking is answered by taking back there. A premove is only
   // ever named once the first full round of replies has been worked out. Null when there is none.
-  function clutchPremove(entries, topReply, complete) {
+  function clutchPremove(entries, topReply, complete, allowGamble = true) {
     const list = [...entries.values()];
     // Clearly lost whatever they play (a deep minus, or mated): nothing is risked, so the answer to their best reply is
     // premoved at once, even before the other replies are worked out. Speed is the only chance left.
     const lead = list.find(e => e.reply === topReply);
-    if (lead && !lead.forced && (lead.mate < 0 || (lead.cp !== undefined && lead.cp <= -500))) {
+    if (allowGamble && lead && !lead.forced && (lead.mate < 0 || (lead.cp !== undefined && lead.cp <= -500))) {
       return { step: lead.step, fen: lead.fen, line: lineOf(lead, lead.step), conditional: false, gamble: true, why: 'lost anyway: playing for their best reply' };
     }
     if (!complete || !list.length) return null;
@@ -5126,7 +5157,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const refresh = entry => {
       // The answers to the three likeliest replies are enough to name a premove; waiting for all of them was why they were rare.
       if (!book.complete && book.total && book.entries.size >= Math.min(3, book.total)) book.complete = true;
-      const certain = clutchPremove(book.entries, book.topReply, book.complete);
+      const certain = clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw');
       // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
       const sticky = book.premove && (book.premove.wiggle || book.premove.gamble);
       const now = sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (certain || book.wiggle || null);
@@ -5165,7 +5196,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
       onOptions: n => { book.total = n; },
       onTop: async () => {
-        if (book.wiggleRun || s.mode === 'lose') return;
+        if (book.wiggleRun || s.mode !== 'win') return;
         book.wiggleRun = true;
         const w = await wigglePremove(book.entries, (x, y) => clutchEngine.analyse(x, y), () => !stillTheirMove());
         if (w && clutch.book === book && stillTheirMove()) { book.wiggle = w; refresh(); }

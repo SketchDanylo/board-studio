@@ -24,7 +24,8 @@ test('reply position applies legal arrows and chains without altering the live b
     assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }]), afterE4.fen());
     assert.equal(position(initialFEN, [{ from: 'e2', to: 'e5' }]), null);
     assert.equal(position(initialFEN, []), null);
-    assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'e7', to: 'e5' }]), null, 'only previews opponent replies');
+    const e4e5 = new Chess(); ['e4', 'e5'].forEach(m => e4e5.move(m));
+    assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'e7', to: 'e5' }]), e4e5.fen(), 'a move drawn for the opponent too: the ghosts are for whoever moves next, here White');
     const line = new Chess(); ['e4', 'e5', 'Nf3'].forEach(m => line.move(m));
     assert.equal(position(initialFEN, [{ from: 'e2', to: 'e4' }, { from: 'e7', to: 'e5' }, { from: 'g1', to: 'f3' }]), line.fen());
     const d4 = new Chess(); d4.move('d4');
@@ -205,5 +206,41 @@ test('a move you draw for the opponent is what they play, instead of the engine\
     // without a drawn reply it still needs the engine's
     const asked = new Set(); position(e4.fen(), [{ from: 'd2', to: 'd4' }], asked);
     assert.equal(asked.size, 1);
+  } finally { f.close(); }
+});
+
+test('a move drawn for the opponent on your own turn is taken as their next move, and the ghosts are for your side', () => {
+  const f = setup();
+  try {
+    const position = f.api.ghostReplyPosition;
+    // You are White and it is your move; you draw ...e5 for Black.
+    const black = new Chess('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1'); black.move('e5');
+    assert.equal(position(initialFEN, [{ from: 'e7', to: 'e5' }], null, null, 'w'), black.fen(), 'it is their move now, so White is next and the ghosts show White\'s best');
+    assert.equal(position(initialFEN, [{ from: 'e7', to: 'e5' }], null, null, 'w').split(' ')[1], 'w');
+    // their move, then yours, then theirs again: every drawn move is followed in the order it can be played
+    const chain = new Chess('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1'); ['e5', 'Nf3', 'Nc6'].forEach(m => chain.move(m));
+    assert.equal(position(initialFEN, [{ from: 'e7', to: 'e5' }, { from: 'g1', to: 'f3' }, { from: 'b8', to: 'c6' }], null, null, 'w'), chain.fen());
+    // an illegal drawn move still clears the preview
+    assert.equal(position(initialFEN, [{ from: 'e7', to: 'e4' }], null, null, 'w'), null);
+  } finally { f.close(); }
+});
+
+test('changing a move of either side rebuilds the line from it, and a gap on either side is filled with the engine\'s best', () => {
+  const f = setup();
+  try {
+    const position = f.api.ghostReplyPosition;
+    const e4 = new Chess(); e4.move('e4');
+    // Black to move, you are Black: you draw two of your own moves in a row. White's reply in between is a gap
+    // that must be filled with White's best, which is asked for first.
+    const e5 = new Chess(e4.fen()); e5.move('e5');
+    const need = new Set();
+    const d5 = new Chess(e4.fen()); d5.move('d5');
+    assert.equal(position(e4.fen(), [{ from: 'e7', to: 'e5' }, { from: 'd7', to: 'd5' }], need, null, 'b'), d5.fen(), 'until it is known the second move starts a variation of its own');
+    assert.deepEqual([...need], [e5.fen()], 'it asks for White\'s best move after ...e5');
+    // you change the opponent's move: drawing a different one for White gives a different line
+    const other = new Chess(e5.fen()); other.move('Nf3'); other.move('d5');
+    assert.equal(position(e4.fen(), [{ from: 'e7', to: 'e5' }, { from: 'g1', to: 'f3' }, { from: 'd7', to: 'd5' }], null, null, 'b'), other.fen(), 'the changed move is followed');
+    const other2 = new Chess(e5.fen()); other2.move('d4'); other2.move('d5');
+    assert.equal(position(e4.fen(), [{ from: 'e7', to: 'e5' }, { from: 'd2', to: 'd4' }, { from: 'd7', to: 'd5' }], null, null, 'b'), other2.fen());
   } finally { f.close(); }
 });

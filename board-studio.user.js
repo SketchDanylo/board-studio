@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.21.1
+// @version      6.22.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2603,29 +2603,38 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Best reply found so far for each position the opponent was to move in, so a drawn line can assume it.
   const ghostBest = new Map();
 
+  // The position the ghosts are shown for: after the line you drew, whoever is to move there. Moves drawn for
+  // either side are taken as played, in the order they can be played (an out-of-order one jumps ahead), and
+  // wherever the line has a gap for a side the engine's best move for that side is assumed. A move you draw
+  // for your opponent while it is your turn is taken as their next move, so the ghosts show your best reply.
   function ghostReplyPosition(fen, arrows, need, out, userColor) {
     if (!fen || !arrows.length) return null;
     try {
-      let game = new BoardStudioRules.Chess(fen);
-      // You are the colour you play (when the game says), else whoever owns the first arrow's piece, so
-      // drawing while the opponent is still thinking works: their best reply is assumed first, then your
-      // move goes on top of it.
-      const mover = game.turn();
-      const player = userColor || game.get(arrows[0].from)?.color;
+      const start = new BoardStudioRules.Chess(fen);
+      // You are the colour you play (when the game says), else whoever owns the first arrow's piece.
+      const mover = start.turn();
+      const player = userColor || start.get(arrows[0].from)?.color;
       if (!player) return null;
-      // A move you draw for the opponent is what they play, instead of the engine's choice: an arrow
-      // that is legal for the side to move now, drawn after one that is not, goes first.
-      if (arrows.length > 1 && !ghostMove(new BoardStudioRules.Chess(fen), arrows[0])) {
-        const i = arrows.findIndex((a, n) => n > 0 && game.get(a.from)?.color === mover && ghostMove(new BoardStudioRules.Chess(fen), a));
+      const opponent = player === 'w' ? 'b' : 'w';
+      const flip = f => { const p = f.split(' '); p[1] = p[1] === 'w' ? 'b' : 'w'; p[3] = '-'; return p.join(' '); };
+      // A move you draw for the opponent is what they play, instead of the engine's choice: an arrow that is
+      // legal for the side to move now, drawn after one of your own that is not, goes first.
+      if (arrows.length > 1 && start.get(arrows[0].from)?.color === player && !ghostMove(new BoardStudioRules.Chess(fen), arrows[0])) {
+        const i = arrows.findIndex((a, n) => n > 0 && start.get(a.from)?.color === mover && ghostMove(new BoardStudioRules.Chess(fen), a));
         if (i > 0) arrows = [arrows[i], ...arrows.filter((_, n) => n !== i)];
       }
-      // Play one arrow. If it is not legal yet and it is the opponent's move, assume their best
-      // reply (asking for it to be worked out if it is not known) and try again.
-      let line = []; // every move of the line in order, the assumed opponent replies included
+      // The first arrow is your opponent's piece and it is not their turn: it is their next move, as you drew it.
+      let root = fen;
+      if (!ghostMove(new BoardStudioRules.Chess(fen), arrows[0]) && start.get(arrows[0].from)?.color === opponent && mover !== opponent) root = flip(fen);
+      let game = new BoardStudioRules.Chess(root);
+      // Play one arrow. If it is not legal yet because it is the other side's turn, assume that side's best move
+      // (asking for it to be worked out if it is not known) and try again.
+      let line = []; // every move of the line in order, the assumed ones included
       const play = arrow => {
         const id = arrow.id ?? arrow.key;
         if (ghostMove(game, arrow)) { line.push({ from: arrow.from, to: arrow.to, id }); return true; }
-        if (game.turn() === player) return false;
+        const owner = game.get(arrow.from)?.color;
+        if (!owner || owner === game.turn()) return false;
         const best = ghostBest.get(game.fen());
         if (!best) { need?.add(game.fen()); return false; }
         if (!game.move({ from: best.slice(0, 2), to: best.slice(2, 4), promotion: best[4] }) || !ghostMove(game, arrow)) return false;
@@ -2636,12 +2645,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // An invalid last arrow clears the preview instead of evaluating a made-up position.
       for (const arrow of arrows) {
         if (play(arrow)) continue;
-        game = new BoardStudioRules.Chess(fen);
+        game = new BoardStudioRules.Chess(root);
         line = [];
         if (!play(arrow)) return null;
       }
       if (out) out.line = line;
-      return game.turn() !== player && !game.isGameOver() ? game.fen() : null;
+      return !game.isGameOver() ? game.fen() : null;
     } catch (e) { return null; }
   }
 

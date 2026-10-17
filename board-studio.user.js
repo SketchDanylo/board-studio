@@ -3735,7 +3735,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       const depth = p.quietDepth + extra;
       // `ms` is a ceiling: a shallow look takes little time, a deep one (a strong player in an ending) what it needs
-      const result = await analyse(fen, { depth, ms: Math.min(ms, 100 + 6 * depth * depth), multipv: wanted.length, searchMoves: wanted, fresh: true });
+      const result = await analyse(fen, { depth, ms: Math.min(ms, Math.round((100 + 8 * depth * depth) * Math.max(1, wanted.length / 2))), multipv: wanted.length, searchMoves: wanted, fresh: true });
       if (!result) return null;
       for (const line of result.lines || [result]) {
         const c = group.find(x => x.uci === line.pv[0]);

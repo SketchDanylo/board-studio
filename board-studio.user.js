@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.1.0
+// @version      6.2.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3563,7 +3563,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // A drag from one square to another, as a hand would do it. On your turn it is a move; on the
   // opponent's turn chess.com takes it as a premove.
-  function dragPiece(board, from, to) {
+  function dragPiece(board, from, to, instant = false) {
     const rect = board.getBoundingClientRect(), size = rect.width / 8;
     const flipped = board.classList.contains('flipped');
     const at = square => {
@@ -3577,6 +3577,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       el.dispatchEvent(new PointerEvent(type, init));
       el.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), init));
     };
+    if (instant) { fire('pointerdown', a, 1); fire('pointermove', mid, 1); fire('pointermove', b, 1); fire('pointerup', b, 0); return; }
     fire('pointerdown', a, 1);
     setTimeout(() => fire('pointermove', mid, 1), 30);
     setTimeout(() => fire('pointermove', b, 1), 60);
@@ -3599,12 +3600,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }, 40);
   }
 
-  function clutchMove(board, step, own) {
-    dragPiece(board, step.from, step.to);
-    if (step.promotion) setTimeout(() => choosePromotion(own, step.promotion), 160);
+  function clutchMove(board, step, own, instant = false) {
+    dragPiece(board, step.from, step.to, instant);
+    if (step.promotion) setTimeout(() => choosePromotion(own, step.promotion), instant ? 20 : 160);
   }
 
-  const clutch = { plan: null, working: null, played: '', playedAt: 0, tries: 0, arrows: '', ponder: null, suspended: false, wasOn: false, acting: false };
+  const clutch = { plan: null, working: null, played: '', playedAt: 0, tries: 0, arrows: '', book: null, suspended: false, wasOn: false, acting: false };
+  function clutchStopBook() { if (clutch.book) clutch.book.token.stop = true; clutch.book = null; }
 
   function clutchShow(ctl, specs) {
     const key = JSON.stringify(specs);
@@ -3652,6 +3654,64 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return { plan: null, step, note: `${step.check && clutchLosing(result, s) ? 'perpetual try' : 'best move'} ${step.from}-${step.to} (${score}, depth ${result.depth})` };
   }
 
+  // ---------- Clutch response book ----------
+
+  // The opponent's moves we are ready for. While they think, Clutch looks at their most likely
+  // replies (the engine's top lines, trades and captures included), and for each one works out our
+  // answer on the position that reply would leave. When they really play one of them the answer is
+  // played at once, no search. A reply that is not in the book makes Clutch wait and think as usual.
+  // Entries are refined round after round (deeper search replaces shallower), so the book changes
+  // its mind as the engine learns more.
+  const repKey = fen => String(fen).split(' ').slice(0, 4).join(' ');
+
+  // analyse(fen, options) is the engine call. onEntry(key, entry) hears every new or improved
+  // answer; stop() says whether to give up (the position changed). Resolves with how many answers
+  // the book ended with.
+  async function bookBuild({ fen, analyse, s, clock, onEntry, stop, replies = 6, rounds = 6 }) {
+    const first = await analyse(fen, { depth: s.depth, ms: 250, multipv: replies });
+    if (stop() || !first) return 0;
+    const lines = (first.lines && first.lines.length ? first.lines : [first]).filter(l => l && l.pv && l.pv.length);
+    const options = lines.map(l => stepFor(fen, l.pv[0])).filter(Boolean)
+      .map(step => ({ uci: step.uci, fen: step.fen }));
+    // Every capture is worth being ready for even when the engine ranks it low (trades).
+    const game = new BoardStudioRules.Chess(fen);
+    for (const move of game.moves({ verbose: true })) {
+      if (options.length >= replies + 2) break;
+      const uci = move.from + move.to + (move.promotion || '');
+      if (!move.captured || options.some(o => o.uci === uci)) continue;
+      game.move(move);
+      options.push({ uci, fen: game.fen() });
+      game.undo();
+    }
+    const entries = new Map();
+    for (let round = 0; round < rounds; round++) {
+      const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
+      const depth = Math.min(budget.maxDepth + 4, s.depth + 4 * round);
+      for (const option of options) {
+        if (stop()) return entries.size;
+        const result = await analyse(option.fen, { depth, ms: round ? 500 : 200, multipv: 4 });
+        if (stop()) return entries.size;
+        if (!result || !result.pv) continue;
+        const decision = clutchDecide(option.fen, result, s);
+        if (!decision) continue;
+        const key = repKey(option.fen), old = entries.get(key);
+        if (old && old.depth > result.depth) continue;
+        const entry = { ...decision, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate };
+        entries.set(key, entry);
+        onEntry(key, entry, old);
+      }
+    }
+    return entries.size;
+  }
+
+  // One move that is the answer to every reply in the book: that one is safe to premove for real.
+  function robustMove(entries) {
+    const list = [...entries.values()];
+    if (!list.length) return null;
+    const uci = list[0].step.uci;
+    return list.every(e => e.step.uci === uci) ? list[0].step : null;
+  }
+
   function clutchTick() {
     const s = settings.clutch;
     if (s.on && !clutch.wasOn) { clutch.suspended = false; }
@@ -3660,9 +3720,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const ctl = board && board.__cc;
     if (!s.on || !board || !ctl || !board.game || typeof board.game.getFEN !== 'function') {
       if (ctl) clutchShow(ctl, []);
-      clutch.plan = null; clutch.acting = false; clutch.ponder = null;
+      clutchStopBook();
+      clutch.plan = null; clutch.acting = false;
       setClutch(s.on ? 'Clutch: waiting for a board' : 'Clutch: off');
       return;
+    }
+    // React to the board itself, so an answer that is ready goes out the moment the opponent moves.
+    if (!board.__clutchWatch) {
+      board.__clutchWatch = true;
+      let queued = false;
+      new MutationObserver(() => {
+        if (queued) return;
+        queued = true;
+        queueMicrotask(() => { queued = false; clutchTick(); });
+      }).observe(board, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
     }
     if (clutch.suspended) return;
     let fen, own;
@@ -3671,30 +3742,30 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
-    if (!own) { clutch.acting = false; setClutch('Clutch: waiting for a game you are playing'); return; }
+    if (!own) { clutch.acting = false; clutchStopBook(); setClutch('Clutch: waiting for a game you are playing'); return; }
     const clock = readClock('own');
     if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchShow(ctl, []); return; }
     if (clock > s.time) {
-      clutch.acting = false; clutch.plan = null; clutch.ponder = null;
+      clutch.acting = false; clutch.plan = null; clutchStopBook();
       setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at ${s.time.toFixed(1)} s`);
       clutchShow(ctl, []);
       return;
     }
     clutch.acting = clutchMayPlay();
     const oppClock = readClock('opp');
-    const turn = fen.split(' ')[1], key = fen.split(' ').slice(0, 4).join(' ');
+    const turn = fen.split(' ')[1], key = repKey(fen);
     const mayPlay = clutchMayPlay();
-    const act = (step, premove, note) => {
+    const act = (step, premove, note, instant) => {
       if (!mayPlay) { setClutch(`Clutch: ${note} (drawn only, it moves pieces in games against the computer)`); return; }
-      const stale = clutch.played === key && Date.now() - clutch.playedAt < 1500;
-      if (stale || clutch.tries > 3 && clutch.played === key) return;
+      const stale = clutch.played === key && Date.now() - clutch.playedAt < (instant ? 700 : 1500);
+      if (stale || (clutch.tries > 3 && clutch.played === key)) return;
       clutch.tries = clutch.played === key ? clutch.tries + 1 : 1;
       clutch.played = key; clutch.playedAt = Date.now();
       setClutch(`Clutch: ${premove ? 'premoving' : 'playing'} ${step.from}-${step.to}, ${note}`);
-      clutchMove(board, step, own);
+      clutchMove(board, step, own, instant);
     };
 
-    // 1. A plan already made: where are we in it?
+    // 1. A mate plan already made: where are we in it?
     let rest = null;
     if (clutch.plan) {
       const at = clutch.plan.line.findIndex(step => sameFen(step.fen, fen));
@@ -3704,19 +3775,24 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     if (rest) {
       clutchShow(ctl, rest.filter(step => step.ours).map(step => ({ id: 'cl:' + step.uci, uci: step.uci, color: CLUTCH_COLOR })));
-      if (turn === own && rest[0]?.ours && rest[0].sure) { act(rest[0], false, 'following the mate'); return; }
-      if (turn !== own && rest[0] && !rest[0].ours && rest[0].sure && rest[1]?.ours && rest[1].sure) { act(rest[1], true, 'the reply is forced'); return; }
+      if (turn === own && rest[0]?.ours && rest[0].sure) { clutchStopBook(); act(rest[0], false, 'following the mate', true); return; }
     }
 
-    // 2. Our move: use what was pondered if the opponent played what was expected, else look now.
+    // 2. Our move. If the opponent played something the book was ready for, answer at once.
     if (turn === own) {
+      const book = clutch.book;
+      const entry = book && book.entries.get(key);
+      clutchStopBook();
+      if (entry) {
+        if (entry.plan) clutch.plan = entry.plan;
+        clutchShow(ctl, [{ id: 'cl:' + entry.step.uci, uci: entry.step.uci, color: CLUTCH_COLOR }]);
+        act(entry.step, false, `prepared answer to ${entry.reply} (${entry.note})`, true);
+        return;
+      }
       if (clutch.working === key) return;
       clutch.working = key;
-      const ponder = clutch.ponder;
-      clutch.ponder = null;
-      const fromPonder = ponder && sameFen(ponder.fen, fen);
-      (fromPonder ? (ponder.result ? Promise.resolve(ponder.result) : clutchEngine.finish()) : clutchSearch(fen, clock, oppClock, s)).then(async result => {
-        if (fromPonder && (!result || !result.pv)) result = await clutchSearch(fen, clock, oppClock, s);
+      if (book) setClutch('Clutch: not a reply I was ready for, thinking');
+      clutchSearch(fen, clock, oppClock, s).then(result => {
         let current = null;
         try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
         if (clutch.working === key) clutch.working = null;
@@ -3725,49 +3801,36 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!decision) { setClutch('Clutch: no move found'); return; }
         if (decision.plan) clutch.plan = decision.plan;
         clutchShow(ctl, [{ id: 'cl:' + decision.step.uci, uci: decision.step.uci, color: CLUTCH_COLOR }]);
-        act(decision.step, false, (fromPonder ? 'pondered ' : '') + decision.note);
+        act(decision.step, false, decision.note, false);
       });
       return;
     }
 
-    // 3. Their move: think on their time. First who they will probably play, then deeper on the
-    // position after it. If their move is forced, the reply is premoved as soon as it is ready.
-    if (clutch.working === key || (clutch.ponder && clutch.ponder.key === key)) return;
-    clutch.working = key;
-    clutch.ponder = { key, fen: null };
-    clutchEngine.analyse(fen, { depth: s.depth, ms: 300 }).then(first => {
-      if (clutch.working === key) clutch.working = null;
-      let current = null;
-      try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
-      if (!first || !first.pv || !current || !sameFen(current, fen)) { if (clutch.ponder && clutch.ponder.key === key) clutch.ponder = null; return; }
-      const reply = stepFor(fen, first.pv[0]);
-      if (!reply) return;
-      const predicted = reply.fen;
-      const forced = new BoardStudioRules.Chess(fen).moves().length === 1;
-      const pRef = { key, fen: predicted, result: null };
-      clutch.ponder = pRef;
-      setClutch(`Clutch: pondering ${reply.from}-${reply.to}${forced ? ' (their only move)' : ''}`);
-      const pieces = countPieces(predicted), budget = clutchBudget(clock, pieces, s);
-      // Their time is free, so ponder as deep as allowed (not tied to our clock).
-      clutchEngine.analyse(predicted, { depth: Math.min(40, budget.maxDepth + 4), ms: 60000, multipv: 4, keepPartial: true }).then(done => {
-        pRef.result = done;
-        if (!done || !forced || !done.pv) return;
-        // Their reply is forced, so premove ours.
-        let now = null;
-        try { now = board.game.getFEN(); } catch (e) { /* board gone */ }
-        if (!now || !sameFen(now, fen) || !mayPlay) return;
-        const decision = clutchDecide(predicted, done, s);
-        if (decision) act(decision.step, true, 'the reply is forced');
-      });
-      // a forced reply needs no waiting: premove once a first look at it exists
-      if (forced) setTimeout(() => clutchEngine.finish().then(partial => {
-        if (!partial || !partial.pv) return;
-        let now = null;
-        try { now = board.game.getFEN(); } catch (e) { /* board gone */ }
-        if (!now || !sameFen(now, fen) || !mayPlay) return;
-        const decision = clutchDecide(predicted, partial, s);
-        if (decision) act(decision.step, true, 'the reply is forced');
-      }), 400);
+    // 3. Their move: build the book of answers on their time.
+    if (clutch.book && clutch.book.key === key) return;
+    clutchStopBook();
+    const book = { key, entries: new Map(), token: { stop: false }, premoved: false };
+    const forced = new BoardStudioRules.Chess(fen).moves().length === 1;
+    clutch.book = book;
+    const started = Date.now();
+    const stillTheirMove = () => {
+      if (book.token.stop) return false;
+      let now = null;
+      try { now = board.game.getFEN(); } catch (e) { return false; }
+      return !!now && sameFen(now, fen);
+    };
+    bookBuild({
+      fen, s, clock, stop: () => !stillTheirMove() || Date.now() - started > 45000,
+      analyse: (f, o) => clutchEngine.analyse(f, o),
+      onEntry: (k, entry) => {
+        book.entries.set(k, entry);
+        setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${entry.depth}${robustMove(book.entries) ? ', same answer to all' : ''}`);
+        // Their only move can be premoved for real; with a choice of replies the answer is held and
+        // played the instant their move arrives, which beats a premove's own delay.
+        if (forced && mayPlay && !book.premoved) { book.premoved = true; act(entry.step, true, 'their only move', false); }
+      }
+    }).then(count => {
+      if (clutch.book === book && book.entries.size === 0 && stillTheirMove()) setClutch('Clutch: no answers prepared');
     });
   }
   setInterval(clutchTick, 200);

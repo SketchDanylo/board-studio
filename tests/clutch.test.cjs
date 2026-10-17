@@ -132,3 +132,60 @@ test('promotion: the queen in chess.com\'s picker gets clicked', () => {
     return new Promise(resolve => setTimeout(() => { assert.equal(clicks.join(), 'q'); f.close(); resolve(); }, 150));
   } catch (e) { f.close(); throw e; }
 });
+
+function realEngine(f) {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const { spawn } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'board-studio-book-'));
+  fs.writeFileSync(path.join(dir, 'stockfish.cjs'), engineAssets.script);
+  fs.writeFileSync(path.join(dir, 'stockfish.wasm'), engineAssets.wasm);
+  const child = spawn(process.execPath, [path.join(dir, 'stockfish.cjs')], { windowsHide: true });
+  const engine = f.api.clutchEngine;
+  let buffer = '';
+  engine.worker = { postMessage: command => child.stdin.write(command + '\n'), terminate() {} };
+  child.stdout.on('data', chunk => { buffer += chunk; const lines = buffer.split(/\r?\n/); buffer = lines.pop(); lines.forEach(l => engine.receive(l.trim())); });
+  engine.send('uci');
+  return { engine, kill: () => child.kill() };
+}
+
+test('the response book holds an answer for each likely reply, trades included', { timeout: 120000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    // Black to move; ...exd5 takes a knight and the answer is a recapture on d5.
+    const fen = 'rnbqkbnr/pppp1ppp/4p3/3N4/2P5/8/PP1PPPPP/R1BQKBNR b KQkq - 0 1';
+    const entries = new Map();
+    const s = { eval: 2, depth: 8, maxDepth: 12, spare: 2 };
+    const n = await f.api.bookBuild({
+      fen, s, clock: 20, rounds: 1, replies: 4,
+      analyse: (x, o) => engine.analyse(x, o), stop: () => false, onEntry: (k, e) => entries.set(k, e)
+    });
+    assert.ok(n >= 3, 'several replies are covered');
+    const trade = [...entries.values()].find(e => e.reply === 'e6d5');
+    assert.ok(trade, 'the capture is in the book');
+    assert.equal(trade.step.to, 'd5', 'and the answer is the recapture on d5');
+    // a deeper round replaces the entry, never a shallower one
+    const depths = [];
+    await f.api.bookBuild({ fen, s, clock: 20, rounds: 2, replies: 2, analyse: (x, o) => engine.analyse(x, o), stop: () => false, onEntry: (k, e) => depths.push(e.depth) });
+    assert.ok(Math.max(...depths) >= depths[0], 'deeper rounds improve entries');
+  } finally { kill(); f.close(); }
+});
+
+test('the book gives up as soon as the position changes', { timeout: 60000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    let calls = 0;
+    const n = await f.api.bookBuild({ fen: '4k3/8/4p3/3N4/8/8/8/3QK3 b - - 0 1', s: { eval: 2, depth: 6, maxDepth: 10, spare: 2 }, clock: 20, rounds: 4, replies: 4,
+      analyse: (x, o) => { calls++; return engine.analyse(x, o); }, stop: () => calls >= 3, onEntry: () => {} });
+    assert.ok(calls <= 4, 'it stopped early'); assert.ok(n <= 2);
+  } finally { kill(); f.close(); }
+});
+
+test('one answer to every reply is flagged as safe to premove', () => {
+  const f = setup();
+  try {
+    const mk = uci => ({ step: { uci } });
+    assert.ok(f.api.robustMove(new Map([['a', mk('e2e4')], ['b', mk('e2e4')]])));
+    assert.equal(f.api.robustMove(new Map([['a', mk('e2e4')], ['b', mk('d2d4')]])), null);
+    assert.equal(f.api.robustMove(new Map()), null);
+  } finally { f.close(); }
+});

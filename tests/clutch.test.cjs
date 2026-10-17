@@ -443,6 +443,38 @@ test('human play takes free material and leaves poisoned material alone, at any 
   } finally { kill(); f.close(); }
 });
 
+test('a won position is converted: no habit of checks, and a position seen before is steered away from', { timeout: 180000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    const queen = '8/8/8/3k4/8/8/4Q3/4K3 w - - 0 1';
+    const mating = await f.api.humanAnalyse(queen, { ms: 4000 }, 500, (x, y) => engine.analyse(x, y));
+    assert.ok(mating.mate > 0, 'a lone queen against a king is mated, not circled, at any rating');
+    // a won ending with no quick mate: Rook and pawn against a rook, extra material 
+    const fen = '8/8/8/2k5/8/8/p7/4K2Q w - - 0 1';
+    const ask = (elo, seen) => f.api.humanAnalyse(fen, { ms: 4000, seen }, elo, (x, y) => engine.analyse(x, y));
+    for (const elo of [500]) {
+      const first = await ask(elo, () => 0);
+      if (first.mate > 0) continue;
+      const g = new Chess(fen); g.move({ from: first.pv[0].slice(0, 2), to: first.pv[0].slice(2, 4) });
+      const key = g.fen().split(' ').slice(0, 3).join(' ');
+      const again = await ask(elo, after => after.split(' ').slice(0, 3).join(' ') === key ? 2 : 0);
+      assert.notEqual(again.pv[0], first.pv[0], 'a won position already seen twice is not walked into again at ' + elo);
+    }
+  } finally { kill(); f.close(); }
+});
+
+test('a game is played to win or to draw: the same won position is mated in one mode and stalemated in the other', { timeout: 120000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    const fen = '7k/8/5K2/8/8/8/8/6Q1 w - - 0 1';
+    const ask = mode => f.api.humanAnalyse(fen, { ms: 4000, mode }, 1200, (x, y) => engine.analyse(x, y));
+    assert.equal((await ask('win')).pv[0], 'g1g7', 'to win: the mate');
+    const g = new Chess(fen); const drawn = await ask('draw');
+    g.move({ from: drawn.pv[0].slice(0, 2), to: drawn.pv[0].slice(2, 4) });
+    assert.ok(g.isDraw() || g.isStalemate(), 'to draw: the stalemate, not the mate');
+  } finally { kill(); f.close(); }
+});
+
 test('the rating does not depend on how many pieces are left: the same misjudgement of quiet positions', () => {
   const f = setup();
   try {

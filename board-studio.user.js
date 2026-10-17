@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.11.0
+// @version      6.12.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3693,13 +3693,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!seen) continue;
       let salience = 0;
       if (capture) salience += 3 + HUMAN_VALUE[move.captured] * 0.4 + (free ? 3 : 0);
-      if (check) salience += 2.5;
+      if (check && !p.calm) salience += 2.5;
       if (promotion) salience += 4;
       if (escapes) salience += 2.5;
       if (/[kq]/.test(move.flags)) salience += 1.5;
       if (focus) salience += 1;
       if (back) salience -= 1;
-      if (move.piece === 'k' && !/[kq]/.test(move.flags)) salience -= 1.5;
+      if (move.piece === 'k' && !/[kq]/.test(move.flags)) salience += p.calm && countPieces(fen) <= 6 ? 4 : -1.5; // a king walks in a won ending
       out.push({ move, uci, forcing, capture, check, salience, free, net });
     }
     out.sort((a, b) => b.salience - a.salience || (unitHash(fen + a.uci) - unitHash(fen + b.uci)));
@@ -3707,10 +3707,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // A small, rating-scaled taste: material, checks, development and the centre.
-  function humanTaste(c, p, fen) {
+  function humanTaste(c, p, fen, ctx = {}) {
     let bonus = 0;
     if (c.capture) bonus += c.free ? 60 + 10 * HUMAN_VALUE[c.move.captured] : c.net >= 0 ? 8 : c.net * 70;
-    if (c.check) bonus += 15 * p.appetite * 2;
+    if (c.check && !ctx.winning) bonus += 15 * p.appetite * 2; // when winning, a check is no reason to play a move
     if (/[nb]/.test(c.move.piece) && /[18]/.test(c.move.from[1]) && !/[18]/.test(c.move.to[1])) bonus += 12 * p.appetite * 2;
     if (/[de][45]/.test(c.move.to) && c.move.piece === 'p') bonus += 8 * p.appetite * 2;
     return bonus + (unitHash(fen + 'j' + c.uci) - 0.5) * 8 * p.appetite;
@@ -3719,17 +3719,62 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Our move in a position, the human way. analyse(fen, options) is the engine call (searchMoves limits
   // it to the moves the player considers). Resolves like a search result, with human: true and the
   // chosen move first; null when the search was replaced.
-  async function humanAnalyse(fen, { lastMove = null, ms = 300 } = {}, elo, analyse) {
+  // The technique of a won ending with few pieces: push the enemy king to the edge and bring one's own
+  // king up to it. Scores how much a position improves on that over the one before.
+  function mateProgress(beforeFen, afterFen, us) {
+    const kings = f => {
+      const rows = f.split(' ')[0].split('/'); const out = {};
+      rows.forEach((row, r) => { let c = 0; for (const ch of row) { if (/d/.test(ch)) c += +ch; else { if (ch.toLowerCase() === 'k') out[ch === 'K' ? 'w' : 'b'] = [c, r]; c++; } } });
+      return out;
+    };
+    const them = us === 'w' ? 'b' : 'w';
+    const measure = f => { const k = kings(f); if (!k.w || !k.b) return { edge: 0, apart: 0 }; const e = k[them];
+      return { edge: Math.min(e[0], 7 - e[0], e[1], 7 - e[1]), apart: Math.max(Math.abs(k.w[0] - k.b[0]), Math.abs(k.w[1] - k.b[1])) }; };
+    const a = measure(beforeFen), b = measure(afterFen);
+    return (a.edge - b.edge) * 30 + (a.apart - b.apart) * 25;
+  }
+
+  // Playing for the draw: keep the evaluation at nothing, love a repeated position, a stalemate or a
+  // dead draw. The lower the rating, the weaker the pull, so the draw comes about more slowly.
+  function drawTaste(r, v, after, again, elo) {
+    const pull = 0.35 + 0.65 * Math.min(1, Math.max(0, (elo - 300) / 1900));
+    let t = -v - Math.abs(v) * pull; // (the score becomes minus the size of the advantage, either side)
+    t += again * 120 * pull;
+    if (after) { try { const g = new BoardStudioRules.Chess(after.fen); if (g.isStalemate() || g.isInsufficientMaterial()) t += 600; else if (g.isDraw()) t += 300; } catch (e) {} }
+    return t;
+  }
+
+  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win' } = {}, elo, analyse) {
     const p = humanProfile(elo, fen);
     const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
     if (!legal.length) return null;
     // A mate within reach is simply played.
     // (the engine's mate solver, since quiet mating moves hide from an ordinary shallow search)
-    const mateLook = await analyse(fen, { mate: p.mateReach, depth: 2 * p.mateReach + 2, ms: 220, multipv: 1, fresh: true });
+    // With a few pieces left, mating is technique (box the king in, bring the queen or rook up), which a
+    // player who knows it carries out from any distance: the reach grows to ten moves, fourteen when a rook or queen faces a bare king.
+    // (a weaker player gets there more slowly: the reach grows with the rating)
+    const technique = Math.round(Math.min(countPieces(fen) <= 4 ? 14 : 10, Math.max(5, 4 + elo / 150)));
+    const reach = countPieces(fen) <= 6 ? Math.max(p.mateReach, technique) : p.mateReach;
+    const mateLook = await analyse(fen, { mate: reach, depth: 2 * reach + 2, ms: reach > 4 ? 1500 : 220, multipv: 1, fresh: true });
     if (!mateLook) return null;
-    if (mateLook.mate > 0 && mateLook.mate <= p.mateReach) return { ...mateLook, human: true, lines: [mateLook] };
+    if (mode === 'win' && mateLook.mate > 0 && mateLook.mate <= reach) return { ...mateLook, human: true, lines: [mateLook] };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
-    const cands = humanCandidates(fen, p, lastMove);
+    // A player a queen up looks at every move, not only the checks and captures that catch the eye.
+    const ahead = (() => {
+      const side = fen.split(' ')[1]; let n = 0;
+      for (const ch of fen.split(' ')[0]) { const v = HUMAN_VALUE[ch.toLowerCase()]; if (v && v < 100) n += (ch === ch.toUpperCase() ? 1 : -1) * v; }
+      return side === 'w' ? n : -n;
+    })();
+    const cands = humanCandidates(fen, ahead >= 4 ? { ...p, radius: 8, quietEye: 2, candidates: Math.max(p.candidates, 10), calm: true } : p, lastMove);
+    // Playing for the draw, a move that ends the game drawn (a stalemate, bare kings) is always seen.
+    if (mode === 'draw') {
+      for (const move of legal) {
+        const uci = move.from + move.to + (move.promotion || '');
+        if (cands.some(c => c.uci === uci)) continue;
+        const g = new BoardStudioRules.Chess(fen); g.move(move);
+        if (g.isStalemate() || g.isInsufficientMaterial()) cands.push({ move, uci, forcing: true, capture: !!move.captured, check: false, salience: 9, free: false, net: 0 });
+      }
+    }
     if (!cands.length) return { ...mateLook, human: true, lines: [mateLook] };
     const value = l => l.mate !== undefined ? Math.sign(l.mate) * (10000 - Math.abs(l.mate)) : l.cp;
     const rated = [];
@@ -3748,10 +3793,52 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!result) return null;
       for (const line of result.lines || [result]) {
         const c = group.find(x => x.uci === line.pv[0]);
-        if (c) rated.push({ c, line, score: value(line) + humanTaste(c, p, fen) + (c.forcing ? 0 : (unitHash(fen + 'z' + c.uci) - 0.5) * 2 * p.fuzz) });
+        if (c) rated.push({ c, line });
       }
     }
     if (!rated.length) return { ...mateLook, human: true, lines: [mateLook] };
+    // Clearly winning: convert. No taste for checks, a position seen before is avoided (that is how a won
+    // game gets drawn), and when the fifty moves loom, a capture or a pawn move is progress.
+    const halfmove = +String(fen).split(' ')[4] || 0;
+    const winning = Math.max(...rated.map(r => value(r.line))) >= 300 || (ahead >= 4 && Math.max(...rated.map(r => value(r.line))) >= 100);
+    // Every good move it noticed repeats a position and the game is won: look at the rest of the moves too,
+    // since going round in circles is how a won game is drawn.
+    const topValue = Math.max(...rated.map(r => value(r.line)));
+    // Far ahead on material yet nothing noticed holds it (a queen up, and every move it saw is a check
+    // that throws the queen away): it was looking at the wrong moves, so it looks at the others.
+    const holdsNothing = ahead >= 4 && topValue < Math.min(150, ahead * 30);
+    if ((winning && rated.filter(r => value(r.line) >= topValue - 150).every(r => { const st = stepFor(fen, r.c.uci); return st && seen(st.fen); })) || holdsNothing) {
+      const have = new Set(rated.map(r => r.c.uci));
+      const rest = legal.map(m => m.from + m.to + (m.promotion || '')).filter(u => !have.has(u) && !seen((stepFor(fen, u) || {}).fen));
+      if (rest.length) {
+        if (rest.length === 1) { const f = legal.map(m => m.from + m.to + (m.promotion || '')).find(u => u !== rest[0]); if (f) rest.push(f); }
+        const more = await analyse(fen, { depth: p.quietDepth, ms: Math.min(ms, 600), multipv: rest.length, searchMoves: rest, fresh: true });
+        for (const line of (more && (more.lines || [more])) || []) {
+          const move = legal.find(m => m.from + m.to + (m.promotion || '') === line.pv[0]);
+          if (move && !move.captured && !have.has(line.pv[0])) {
+            const mv = line.pv[0], cap = !!move.captured;
+            rated.push({ c: { move, uci: mv, forcing: false, capture: cap, check: /[+#]/.test(move.san), salience: 0, free: false, net: cap ? 0 : 0 }, line });
+          }
+        }
+      }
+    }
+    for (const r of rated) {
+      const after = stepFor(fen, r.c.uci);
+      const again = after ? seen(after.fen) : 0;
+      r.score = value(r.line) + humanTaste(r.c, p, fen, { winning }) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (winning && countPieces(fen) <= 6 ? 0.1 : 1))
+        - (again && mode === 'win' ? (winning ? 300 : 50) * again : 0)
+        + (mode === 'draw' ? drawTaste(r, value(r.line), after, again, elo) : 0)
+        + (mode === 'win' && winning && countPieces(fen) <= 6 && after ? mateProgress(fen, after.fen, fen.split(' ')[1]) : 0)
+        + (winning && halfmove >= 16 && (r.c.capture || r.c.move.piece === 'p') ? 80 : 0);
+    }
+    rated.sort((a, b) => b.score - a.score);
+    // Never walk into a mate: the few best moves are each checked for a mate by the other side.
+    for (const r of rated.slice(0, 5)) {
+      const after = stepFor(fen, r.c.uci);
+      if (!after) continue;
+      const reply = await analyse(after.fen, { mate: 3, depth: 8, ms: 150, multipv: 1, fresh: true });
+      if (reply && reply.mate > 0) r.score -= 20000 - 100 * reply.mate;
+    }
     rated.sort((a, b) => b.score - a.score);
     let best = rated[0];
     // Now and then the move played is simply the most natural-looking one (a capture, a check, the
@@ -3763,7 +3850,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // (when everything wins anyway, the free piece still beats a slightly faster route)
     const freeTake = rated.find(r => r.c.free && (value(r.line) >= top - 150 || (value(r.line) >= 500 && top >= 500)));
     if (freeTake) best = freeTake;
-    else if (rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
+    else if (!winning && mode === 'win' && rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
       const fair = rated.filter(r => value(r.line) >= top - p.maxLoss && !(r.c.capture && r.c.net < 0));
       if (fair.length) best = fair.slice().sort((a, b) => b.c.salience - a.c.salience)[0];
     }
@@ -3776,8 +3863,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function clutchPick(fen, result, s) {
     const lines = (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv.length);
     if (!lines.length) return null;
-    const best = lines[0];
     if (result.human) return stepFor(fen, result.pv[0]);
+    // Better and about to repeat a position: take the next move that does not, if it is nearly as good.
+    if (s.seen && lines[0].mate === undefined && lines[0].cp >= 150) {
+      const fresh = lines.filter(l => { const st = stepFor(fen, l.pv[0]); return st && !s.seen(st.fen); });
+      if (fresh.length && fresh[0] !== lines[0] && (fresh[0].mate !== undefined || fresh[0].cp >= lines[0].cp - 100)) lines.unshift(...lines.splice(lines.indexOf(fresh[0]), 1));
+    }
+    const best = lines[0];
     // Below full strength a move is drawn from the best few, so the rating shows in the play.
     if (s.strength && s.strength.limited && lines.length > 1) return stepFor(fen, sampleLine(lines, s.strength.temperature, s.random).pv[0]);
     if (clutchLosing(best, s)) {
@@ -4007,7 +4099,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
     const hurry = oppClock !== null && oppClock < clock * 0.7 ? 0.5 : 1;
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
-    if (s.human) return humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(200, Math.min(1500, clock * 1000 * 0.1)) }, s.elo, (f, o) => clutchEngine.analyse(f, o));
+    if (s.human) return humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(200, Math.min(1500, clock * 1000 * 0.1)), seen: s.seen, mode: s.mode }, s.elo, (f, o) => clutchEngine.analyse(f, o));
     let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: s.multipv || 4 });
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0 && !(s.strength && s.strength.limited)) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
@@ -4212,11 +4304,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     let fen, own;
     try {
       fen = board.game.getFEN();
-      if (fen !== clutch.curFen) { clutch.lastMove = inferLastMove(clutch.curFen, fen); clutch.curFen = fen; }
+      if (fen !== clutch.curFen) {
+        clutch.lastMove = inferLastMove(clutch.curFen, fen); clutch.curFen = fen;
+        if (/^rnbqkbnr\/pppppppp\/8\/8\/8\/8\/PPPPPPPP\/RNBQKBNR/.test(fen) && fen.split(' ')[5] === '1' && fen.split(' ')[1] === 'w') { clutch.seen = {}; clutch.mode = null; }
+        const k = fen.split(' ').slice(0, 3).join(' ');
+        clutch.seen = clutch.seen || {};
+        clutch.seen[k] = (clutch.seen[k] || 0) + 1;
+      }
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
-    if (!own) { clutch.acting = false; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
+    if (!own) { clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
     // Auto plays at the opponent's rating when it can be read; otherwise, and with Auto off, the field's.
     const opponentElo = readOpponentElo();
     const elo = clutchEloFor(base, opponentElo);
@@ -4229,6 +4327,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       return;
     }
     s = clutchStrengthen(clutchParams(base, clock, countPieces(fen)), elo);
+    // Each game is played to win (six in ten) or, in the rest, to draw whatever the position is.
+    if (!clutch.mode) clutch.mode = Math.random() < 0.6 ? 'win' : 'draw';
+    s.mode = clutch.mode;
+    s.seen = after => (clutch.seen && clutch.seen[String(after).split(' ').slice(0, 3).join(' ')]) || 0;
     clutch.acting = clutchMayPlay();
     const oppClock = readClock('opp');
     const turn = fen.split(' ')[1], key = repKey(fen);
@@ -4351,7 +4453,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     bookBuild({
       fen, s, clock, stop: () => !stillTheirMove() || Date.now() - started > 45000,
       analyse: (f, o) => clutchEngine.analyse(f, o),
-      answer: s.human ? (f, o) => humanAnalyse(f, o, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
+      answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode }, s.elo, (x, y) => clutchEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
       onRound: () => { book.complete = true; refresh(); }
     }).then(count => {

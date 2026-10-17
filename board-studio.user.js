@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.6.0
+// @version      6.6.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2148,7 +2148,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         <div class="body flow" style="--i:11">
           <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0.1" max="60" step="0.1"></label>
           <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="100" max="3500" step="50" aria-label="Clutch Elo">
-            <div class="sub" data-key="auto" title="Play at the opponent's rating"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
+            <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo in the box"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
           <div class="clutch-status"></div>
         </div>
       </div>
@@ -2229,11 +2229,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }));
   });
   shadow.querySelectorAll('.rng input').forEach(input => input.addEventListener('input', () => setSetting('clutch', input.dataset.key, +input.value)));
-  // Typing an Elo is choosing one: Auto steps aside.
+  // The field is its own value (what plays with Auto off, or when no rating can be read).
   shadow.querySelector('.elo-input').addEventListener('input', e => {
-    const value = Math.max(100, Math.min(3500, Math.round(+e.target.value) || 100));
-    if (rawSettings.clutch.auto) setSetting('clutch', 'auto', false);
-    setSetting('clutch', 'elo', value);
+    setSetting('clutch', 'elo', Math.max(100, Math.min(3500, Math.round(+e.target.value) || 100)));
   });
   listeners.add(renderPanel);
   renderPanel();
@@ -3533,6 +3531,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return m ? +m[1] : null;
   }
 
+  // The rating Clutch plays at. Auto leaves the field alone: it only decides which rating applies.
+  const clutchEloFor = (base, opponentElo) => (base.auto && opponentElo ? opponentElo : base.elo);
+
   // The opponent's rating from their player row (the one at the top of the board).
   function readOpponentElo() {
     for (const selector of ['#player-top [class*="user-rating"]', '#board-layout-player-top [class*="user-rating"]', '#player-top .user-tagline-rating', '#player-top']) {
@@ -3908,15 +3909,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
     if (!own) { clutch.acting = false; clutchStopBook(); setClutch('Clutch: waiting for a game you are playing'); return; }
-    // Auto: play at the opponent's rating, and keep it as the default in the field.
+    // Auto plays at the opponent's rating when it can be read; otherwise, and with Auto off, the field's.
     const opponentElo = readOpponentElo();
-    if (base.auto && opponentElo && base.elo !== opponentElo) setSetting('clutch', 'elo', opponentElo);
-    const elo = base.auto && opponentElo ? opponentElo : base.elo;
+    const elo = clutchEloFor(base, opponentElo);
     const clock = readClock('own');
     if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchShow(ctl, []); return; }
     if (clock > s.time) {
       clutch.acting = false; clutch.plan = null; clutchStopBook();
-      setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at ${s.time.toFixed(1)} s, Elo ${elo}${base.auto ? ' (auto)' : ''}`);
+      setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at ${s.time.toFixed(1)} s, Elo ${elo}${base.auto && opponentElo ? ' (opponent)' : ''}`);
       clutchShow(ctl, []);
       return;
     }

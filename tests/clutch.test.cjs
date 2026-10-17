@@ -296,3 +296,15 @@ test('a low rating sometimes picks a worse move, a high one almost never', () =>
     assert.equal(f.api.sampleLine([{ pv: ['m'], mate: 2 }, { pv: ['n'], cp: 50 }], 1).pv[0], 'm', 'a mate is found');
   } finally { f.close(); }
 });
+
+test('Auto only chooses which rating plays; it never changes the box', () => {
+  const f = setup();
+  try {
+    const e = f.api.clutchEloFor;
+    assert.equal(e({ auto: true, elo: 1500 }, 250), 250, 'Auto on, rating read: the opponent\'s');
+    assert.equal(e({ auto: true, elo: 1500 }, null), 1500, 'Auto on, nothing to read: the box');
+    assert.equal(e({ auto: false, elo: 1500 }, 250), 1500, 'Auto off: the box');
+    const base = { auto: true, elo: 1500 }; e(base, 250);
+    assert.equal(base.elo, 1500, 'the box is untouched');
+  } finally { f.close(); }
+});

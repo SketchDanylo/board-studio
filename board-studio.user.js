@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.8.1
+// @version      6.9.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3586,11 +3586,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   const HUMAN_BELOW = 2200;
 
-  function humanProfile(elo) {
+  // fen is optional: with it, the depth grows as the board empties (a player of a given strength sees
+  // much further in an ending, where there is little to calculate, and pawn endings need real depth).
+  function humanProfile(elo, fen) {
+    let endgameDepth = 0;
+    if (fen) {
+      const placement = String(fen).split(' ')[0];
+      const pieces = (placement.match(/[a-zA-Z]/g) || []).length;
+      const heavy = (placement.match(/[nbrqNBRQ]/g) || []).length;
+      const skill = Math.max(0, Math.min(1, (elo - 300) / 1700));
+      endgameDepth = Math.round(skill * (heavy === 0 ? 8 : pieces <= 8 ? 5 : pieces <= 12 ? 3 : pieces <= 16 ? 1 : 0));
+    }
     return {
       radius: elo < 600 ? 1 : elo < 900 ? 2 : elo < 1200 ? 3 : elo < 1600 ? 4 : elo < 2000 ? 5 : 8,
       candidates: Math.max(3, Math.min(12, Math.round(2 + elo / 350))),
-      quietDepth: Math.max(1, Math.min(10, Math.round((elo - 200) / 260))),
+      quietDepth: Math.max(1, Math.min(18, Math.round((elo - 200) / 260) + endgameDepth)),
       forcingExtra: 2,
       notice: Math.min(0.98, 0.45 + elo / 2600),
       quietEye: Math.max(0.08, Math.min(1, (elo - 400) / 1800)),
@@ -3599,7 +3609,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // How often the calculated move is not the one played: the more so the lower the rating and the
       // more of the options are bad (the position's blunder potential), after the finding that people
       // avoid blunders several times more often than chance and that this grows with rating.
-      slip: Math.max(0.02, Math.min(0.6, 0.55 * Math.exp(-(elo - 300) / 550)))
+      slip: Math.max(0.02, Math.min(0.6, 0.55 * Math.exp(-(elo - 300) / 550))),
+      // A slip never costs more than this (centipawns): people drift into small mistakes far more
+      // often than they throw a piece away.
+      maxLoss: Math.max(40, Math.min(220, 220 * Math.exp(-(elo - 300) / 900))),
+      // How far off a quiet position is judged (centipawns), deterministic per move. Forcing lines are
+      // calculated, quiet ones are felt, so this is where positional and endgame errors come from, and
+      // it is the same whatever the number of pieces on the board.
+      fuzz: Math.max(8, Math.min(120, 120 * Math.exp(-(elo - 300) / 700)))
     };
   }
 
@@ -3651,13 +3668,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const far = Math.max(Math.abs(squareIndex(move.to).f - squareIndex(move.from).f), Math.abs(squareIndex(move.to).r - squareIndex(move.from).r)) >= 4;
       const focus = [move.from, move.to].some(sq =>
         (lastMove && (near(sq, lastMove.from, p.radius) || near(sq, lastMove.to, p.radius))) || (kingSquare && near(sq, kingSquare, 2)));
+      // What a capture does to the material: free (nothing can take back), an even trade, or a loss.
+      let net = 0, free = false;
+      if (capture) {
+        const after = new BoardStudioRules.Chess(fen);
+        after.move(move);
+        const defended = after.isAttacked(move.to, them);
+        free = !defended && HUMAN_VALUE[move.captured] > 0;
+        net = HUMAN_VALUE[move.captured] - (defended ? HUMAN_VALUE[move.piece] : 0);
+      }
       const escapes = noticed.has(move.from);
       let seen = forcing || escapes || /[kq]/.test(move.flags) || focus;
       if (seen && !forcing && !escapes && (back || far) && unitHash(fen + uci) >= p.quietEye) seen = false;
       if (!seen && p.radius >= 8) seen = true;
       if (!seen) continue;
       let salience = 0;
-      if (capture) salience += 3 + HUMAN_VALUE[move.captured] * 0.4;
+      if (capture) salience += 3 + HUMAN_VALUE[move.captured] * 0.4 + (free ? 3 : 0);
       if (check) salience += 2.5;
       if (promotion) salience += 4;
       if (escapes) salience += 2.5;
@@ -3665,7 +3691,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (focus) salience += 1;
       if (back) salience -= 1;
       if (move.piece === 'k' && !/[kq]/.test(move.flags)) salience -= 1.5;
-      out.push({ move, uci, forcing, capture, check, salience });
+      out.push({ move, uci, forcing, capture, check, salience, free, net });
     }
     out.sort((a, b) => b.salience - a.salience || (unitHash(fen + a.uci) - unitHash(fen + b.uci)));
     return out.slice(0, p.candidates);
@@ -3674,7 +3700,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // A small, rating-scaled taste: material, checks, development and the centre.
   function humanTaste(c, p, fen) {
     let bonus = 0;
-    if (c.capture) bonus += 25 * p.appetite * 2 * (1 + HUMAN_VALUE[c.move.captured] / 9);
+    if (c.capture) bonus += c.free ? 60 + 10 * HUMAN_VALUE[c.move.captured] : c.net >= 0 ? 8 : c.net * 70;
     if (c.check) bonus += 15 * p.appetite * 2;
     if (/[nb]/.test(c.move.piece) && /[18]/.test(c.move.from[1]) && !/[18]/.test(c.move.to[1])) bonus += 12 * p.appetite * 2;
     if (/[de][45]/.test(c.move.to) && c.move.piece === 'p') bonus += 8 * p.appetite * 2;
@@ -3685,12 +3711,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // it to the moves the player considers). Resolves like a search result, with human: true and the
   // chosen move first; null when the search was replaced.
   async function humanAnalyse(fen, { lastMove = null, ms = 300 } = {}, elo, analyse) {
-    const p = humanProfile(elo);
+    const p = humanProfile(elo, fen);
     const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
     if (!legal.length) return null;
     // A mate within reach is simply played.
     // (the engine's mate solver, since quiet mating moves hide from an ordinary shallow search)
-    const mateLook = await analyse(fen, { mate: p.mateReach, depth: 2 * p.mateReach + 2, ms: 220, multipv: 1 });
+    const mateLook = await analyse(fen, { mate: p.mateReach, depth: 2 * p.mateReach + 2, ms: 220, multipv: 1, fresh: true });
     if (!mateLook) return null;
     if (mateLook.mate > 0 && mateLook.mate <= p.mateReach) return { ...mateLook, human: true, lines: [mateLook] };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
@@ -3700,11 +3726,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const rated = [];
     for (const [group, extra] of [[cands.filter(c => c.forcing), p.forcingExtra], [cands.filter(c => !c.forcing), 0]]) {
       if (!group.length) continue;
-      const result = await analyse(fen, { depth: p.quietDepth + extra, ms, multipv: group.length, searchMoves: group.map(c => c.uci) });
+      // A search of a single move ends at once without a word (the engine sees nothing to choose), so
+      // a lone candidate gets another move beside it to make the engine actually look.
+      const wanted = group.map(c => c.uci);
+      if (wanted.length === 1) {
+        const filler = legal.map(m => m.from + m.to + (m.promotion || '')).find(u => u !== wanted[0]);
+        if (filler) wanted.push(filler);
+      }
+      const depth = p.quietDepth + extra;
+      // `ms` is a ceiling: a shallow look takes little time, a deep one (a strong player in an ending) what it needs
+      const result = await analyse(fen, { depth, ms: Math.min(ms, 100 + 6 * depth * depth), multipv: wanted.length, searchMoves: wanted, fresh: true });
       if (!result) return null;
       for (const line of result.lines || [result]) {
         const c = group.find(x => x.uci === line.pv[0]);
-        if (c) rated.push({ c, line, score: value(line) + humanTaste(c, p, fen) });
+        if (c) rated.push({ c, line, score: value(line) + humanTaste(c, p, fen) + (c.forcing ? 0 : (unitHash(fen + 'z' + c.uci) - 0.5) * 2 * p.fuzz) });
       }
     }
     if (!rated.length) return { ...mateLook, human: true, lines: [mateLook] };
@@ -3714,8 +3749,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // developing move) instead of the calculated one. When it happens is decided by the position.
     const top = value(best.line), bad = rated.filter(r => value(r.line) < top - 100).length;
     const slipChance = Math.min(0.9, p.slip * (0.5 + bad / rated.length));
-    if (rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
-      best = rated.slice().sort((a, b) => b.c.salience - a.c.salience)[0];
+    // Free material is always taken, and a slip never gives up more than maxLoss or loses material
+    // outright: the natural-looking move has to be a fair one.
+    // (when everything wins anyway, the free piece still beats a slightly faster route)
+    const freeTake = rated.find(r => r.c.free && (value(r.line) >= top - 150 || (value(r.line) >= 500 && top >= 500)));
+    if (freeTake) best = freeTake;
+    else if (rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
+      const fair = rated.filter(r => value(r.line) >= top - p.maxLoss && !(r.c.capture && r.c.net < 0));
+      if (fair.length) best = fair.slice().sort((a, b) => b.c.salience - a.c.salience)[0];
     }
     return { ...best.line, human: true, depth: p.quietDepth, lines: [best.line, ...rated.map(r => r.line).filter(l => l !== best.line)] };
   }
@@ -3780,18 +3821,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     },
     next() {
       if (!this.ready || this.job || !this.pending) return;
-      const { fen, depth, ms, multipv, keepPartial, searchMoves, mate, resolve } = this.pending;
+      const { fen, depth, ms, multipv, keepPartial, searchMoves, mate, fresh, resolve } = this.pending;
       this.pending = null;
       this.job = { resolve, last: null, lines: [], depth: 0, cancelled: false, keepPartial };
+      if (fresh) this.send('ucinewgame'); // a clean hash: the same position gets the same answer every time
       this.send(`setoption name MultiPV value ${multipv}`);
       this.send('position fen ' + fen);
       this.send(`go ${mate ? 'mate ' + mate : 'depth ' + depth} movetime ${Math.round(ms)}${searchMoves && searchMoves.length ? ' searchmoves ' + searchMoves.join(' ') : ''}`);
     },
-    analyse(fen, { depth, ms, multipv = 1, keepPartial = false, searchMoves = null, mate = 0 }) {
+    analyse(fen, { depth, ms, multipv = 1, keepPartial = false, searchMoves = null, mate = 0, fresh = false }) {
       this.start();
       return new Promise(resolve => {
         this.pending?.resolve(null);
-        this.pending = { fen, depth, ms, multipv, keepPartial, searchMoves, mate, resolve };
+        this.pending = { fen, depth, ms, multipv, keepPartial, searchMoves, mate, fresh, resolve };
         if (this.job) { this.job.cancelled = true; this.send('stop'); } else this.next();
       });
     },
@@ -3954,7 +3996,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
     const hurry = oppClock !== null && oppClock < clock * 0.7 ? 0.5 : 1;
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
-    if (s.human) return humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.min(400, budget.stage1Ms + 150) }, s.elo, (f, o) => clutchEngine.analyse(f, o));
+    if (s.human) return humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(200, Math.min(1500, clock * 1000 * 0.1)) }, s.elo, (f, o) => clutchEngine.analyse(f, o));
     let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: s.multipv || 4 });
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0 && !(s.strength && s.strength.limited)) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
@@ -4033,7 +4075,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (option.book) continue;
         const lastMove = { from: option.uci.slice(0, 2), to: option.uci.slice(2, 4) };
         const result = answer
-          ? (round ? null : await answer(option.fen, { lastMove, ms: 250 }))
+          ? (round ? null : await answer(option.fen, { lastMove, ms: 1500 }))
           : await analyse(option.fen, { depth: Math.min(depth, s.strength ? s.strength.depthCap : 99), ms: round ? 500 : 200, multipv: s.multipv || 4 });
         if (stop()) return entries.size;
         if (!result || !result.pv) continue;

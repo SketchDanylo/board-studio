@@ -354,7 +354,7 @@ test('a beginner looks near the action, always sees captures and checks, and con
 test('human play: free material is taken and a mate within reach is played, consistently', { timeout: 120000 }, async () => {
   const f = setup(); const { engine, kill } = realEngine(f);
   try {
-    const ask = (fen, elo, lastMove) => f.api.humanAnalyse(fen, { lastMove, ms: 200 }, elo, (x, y) => engine.analyse(x, y));
+    const ask = (fen, elo, lastMove) => f.api.humanAnalyse(fen, { lastMove, ms: 4000 }, elo, (x, y) => engine.analyse(x, y));
     // a free queen
     const free = await ask('4k3/8/8/3q4/8/8/8/3QK3 w - - 0 1', 300, { from: 'd5', to: 'd5' });
     assert.equal(free.pv[0], 'd1d5', 'even a beginner takes a free queen');
@@ -424,5 +424,44 @@ test('blue ghosts for the moves it considers, a red one for the premove, faded o
     assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)').length, 1);
     f.api.showClutchGhosts(ctl, []);
     assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)').length, 0);
+  } finally { f.close(); }
+});
+
+test('human play takes free material and leaves poisoned material alone, at any rating', { timeout: 180000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    const ask = (fen, elo) => f.api.humanAnalyse(fen, { lastMove: null, ms: 4000 }, elo, (x, y) => engine.analyse(x, y));
+    for (const elo of [300, 600, 900, 1200, 1600, 2000]) {
+      const pawn = await ask('4k3/8/8/3p4/8/8/8/3QK3 w - - 0 1', elo);
+      assert.equal(pawn.pv[0], 'd1d5', `free pawn at ${elo}`);
+      const rook = await ask('4k3/8/8/3r4/8/8/8/3QK3 w - - 0 1', elo);
+      assert.equal(rook.pv[0], 'd1d5', `free rook at ${elo}`);
+      // the pawn is guarded by the knight: queen for a pawn is a blunder, not material
+      const poisoned = await ask('4k3/2n5/8/3p4/8/8/8/3QK3 w - - 0 1', elo);
+      assert.notEqual(poisoned.pv[0], 'd1d5', `a poisoned pawn at ${elo}`);
+    }
+  } finally { kill(); f.close(); }
+});
+
+test('the rating does not depend on how many pieces are left: the same misjudgement of quiet positions', () => {
+  const f = setup();
+  try {
+    const p = f.api.humanProfile(900), q = f.api.humanProfile(900);
+    assert.equal(p.fuzz, q.fuzz);
+    assert.ok(f.api.humanProfile(400).fuzz > f.api.humanProfile(1200).fuzz && f.api.humanProfile(1200).fuzz > f.api.humanProfile(2000).fuzz);
+    assert.ok(f.api.humanProfile(400).maxLoss > f.api.humanProfile(2000).maxLoss);
+  } finally { f.close(); }
+});
+
+test('in an ending the same rating sees further: depth grows as the board empties', () => {
+  const f = setup();
+  try {
+    const full = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const rooks = '4r1k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1';
+    const pawns = '8/5pk1/6p1/8/8/6P1/5PK1/8 w - - 0 1';
+    const d = (elo, fen) => f.api.humanProfile(elo, fen).quietDepth;
+    assert.ok(d(2000, pawns) > d(2000, rooks) && d(2000, rooks) > d(2000, full), 'a pawn ending is read deepest');
+    assert.equal(d(300, pawns), d(300, full), 'a beginner gains nothing from an emptier board');
+    assert.equal(f.api.humanProfile(1200).quietDepth, f.api.humanProfile(1200, full).quietDepth);
   } finally { f.close(); }
 });

@@ -267,6 +267,26 @@ test('the Styles panel carries no plan badge (it is beside the clock), and it sc
   } finally { f.close(); }
 });
 
+test('playing to draw with a clock to spare: some quiet moves are held so the opponent is not the one flagged, never when short of time', () => {
+  const f = setup();
+  try {
+    const burn = f.api.clutchBurnMs;
+    const quiet = { uci: 'g1f3', check: false, capture: false, promotion: null };
+    const fens = Array.from({ length: 60 }, (_, i) => `rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - ${i} ${10 + i}`);
+    const holds = fens.map(fen => burn('draw', null, quiet, fen, 40, 15));
+    assert.ok(holds.some(ms => ms > 0) && holds.some(ms => ms === 0), 'only some moves');
+    assert.ok(holds.filter(ms => ms > 0).every(ms => ms >= 1500 * 0.6 && ms <= 16000), 'a share of the surplus, at most 40% of its own clock');
+    // 40 s against 15 s: it never spends below 12 s or below their clock + 3
+    assert.ok(holds.every(ms => 40 - ms / 1000 >= 18 - 1e-9), 'it keeps a comfortable margin over their clock');
+    const held = fens.find(fen => burn('draw', null, quiet, fen, 40, 15) > 0);
+    assert.equal(burn('draw', null, quiet, held, 40, 38), 0, 'no surplus over them: nothing to give');
+    assert.equal(burn('draw', null, quiet, held, 11, 2), 0, 'short of time itself: never');
+    assert.equal(burn('draw', null, quiet, held, 40, null), 0, 'their clock unknown: nothing');
+    assert.equal(burn('draw', null, { ...quiet, capture: true }, held, 40, 15), 0, 'a capture goes at once');
+    assert.equal(burn('win', null, quiet, held, 40, 15), 0, 'winning never holds');
+  } finally { f.close(); }
+});
+
 test('the plan badge sits just left of your own clock on the board, in the colour of the plan, and goes with the game', () => {
   const f = setup();
   try {

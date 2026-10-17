@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.20.2
+// @version      6.21.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4372,16 +4372,28 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // What one move may cost. The clock is spread over the moves still to come (a game runs to about move
   // 60, never fewer than 25 left in hand), at most a tenth of it on one move, and a different amount every
   // time, a quarter either way, so the thinking has no rhythm to read. A flash when it is nearly out.
-  // Playing to lose, one way is the clock: quick on the obvious moves (a capture, a check, a promotion, a
-  // forced move, the opening) but on some quiet ones it sits and thinks, a quarter to six tenths of what is
-  // left, and when little remains it stops altogether. Returns how long to hold this move, 0 for none. The
-  // position decides, so asking again about the same position gives the same answer.
-  function clutchBurnMs(mode, way, step, fen, clock) {
-    if (mode !== 'lose' || way !== 'time' || !step) return 0;
+  // Holding a move back on purpose, for two aims (the position decides, so asking again about the same
+  // position gives the same answer). Quick moves stay quick: a capture, a check, a promotion, a forced move
+  // and the opening are never held.
+  //  - Playing to lose, one way is the clock: on some quiet moves it sits and thinks, a quarter to six tenths of
+  //    what is left, and when little remains it stops altogether.
+  //  - Playing to draw with a clock to spare: on some quiet moves it spends its own time, so the opponent is not the
+  //    one running out (a flag would decide the game). It spends down towards a little above their clock, never
+  //    more than 40% of its own, and only when it has plenty: a floor of 12 s on its own clock stays untouched.
+  // Returns how long to hold this move, 0 for none.
+  function clutchBurnMs(mode, way, step, fen, clock, oppClock = null) {
+    if (!step || (mode !== 'lose' && mode !== 'draw')) return 0;
+    if (mode === 'lose' && way !== 'time') return 0;
     const full = +String(fen).split(' ')[5] || 1;
     let forced = false;
     try { forced = new BoardStudioRules.Chess(fen).moves().length === 1; } catch (e) { /* none */ }
     if (step.capture || step.check || step.promotion || forced || full <= 6) return 0;
+    if (mode === 'draw') {
+      if (oppClock === null || oppClock === undefined || clock < 12 || clock <= oppClock + 4) return 0;
+      if (unitHash(fen + 'give') >= 0.4) return 0;
+      const spare = Math.min(clock - Math.max(oppClock + 3, 12), clock * 0.4);
+      return spare >= 1.5 ? Math.round(spare * 1000 * (0.6 + 0.4 * unitHash(fen + 'giveamt'))) : 0;
+    }
     if (unitHash(fen + 'burn') >= 0.5) return 0;
     if (clock < 4) return Math.round(clock * 1000 + 800);
     return Math.round(clock * 1000 * (0.25 + 0.35 * unitHash(fen + 'hold')));
@@ -4672,7 +4684,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // the move goes out in the same breath as the board changing.
     if (clutch.engaged && clutch.book && fen.split(' ')[1] === own && clutchMayPlay()) {
       const quickKey = repKey(fen), e = clutch.book.entries.get(quickKey), prem = clutch.book.premove;
-      if (e && e.step && (e.book || !e.crit || (prem && prem.step.uci === e.step.uci)) && !clutchBurnMs(clutch.mode, clutch.way, e.step, fen, readClock('own') || 99) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 700)) {
+      if (e && e.step && (e.book || !e.crit || (prem && prem.step.uci === e.step.uci)) && !clutchBurnMs(clutch.mode, clutch.way, e.step, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 700)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
         if (e.plan) clutch.plan = e.plan;
         clutchMove(board, e.step, own, true);
@@ -4707,11 +4719,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const mayPlay = clutchMayPlay();
     const act = (step, premove, note, instant) => {
       if (!mayPlay) { setClutch(`Clutch: ${note} (drawn only, it moves pieces in games against the computer)`); return; }
-      const hold = clutchBurnMs(clutch.mode, clutch.way, step, fen, clock);
+      const hold = clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock);
       if (hold > 0) {
         if (!clutch.burn || clutch.burn.key !== key) clutch.burn = { key, until: Date.now() + hold };
         if (Date.now() < clutch.burn.until) {
-          setClutch(`Clutch: taking its time (${((clutch.burn.until - Date.now()) / 1000).toFixed(0)} s)`);
+          setClutch(`Clutch: ${clutch.mode === 'draw' ? 'giving the opponent room on the clock' : 'taking its time'} (${((clutch.burn.until - Date.now()) / 1000).toFixed(0)} s)`);
           clearTimeout(clutch.burn.timer);
           clutch.burn.timer = setTimeout(clutchTick, clutch.burn.until - Date.now() + 40);
           return;

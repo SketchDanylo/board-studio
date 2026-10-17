@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.5.0
+// @version      6.6.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -78,9 +78,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     book: { on: true },
     crown: { on: true },
     ghosts: { on: true, opacity: 0.25, ai: false },
-    // Clutch: from `time` seconds on your clock down, the engine takes over. Everything else (what
-    // counts as winning, how deep to look, how much clock a deep search may cost) it works out itself.
-    clutch: { on: false, time: 10 },
+    // Clutch: from `time` seconds on your clock down, the engine takes over, playing at `elo`
+    // (with `auto` the opponent's rating). Everything else (what counts as winning, how deep to look,
+    // how much clock a deep search may cost) it works out itself.
+    clutch: { on: false, time: 10, elo: 1500, auto: true },
     global: { on: true }
   };
 
@@ -1853,6 +1854,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .row > span { flex: 1; margin-left: 12px; padding-right: 4px; }
     .item.off .row > span, .item.off .row > svg { opacity: .55; }
     :host(.paused) .item:not([data-group="global"]) { opacity: .4; }
+    .elo-row { display: flex; align-items: center; gap: 8px; padding: 6px 0 2px; font-size: 12px; }
+    .elo-row > span { flex: 1; }
+    .elo-input { width: 64px; padding: 3px 6px; border-radius: 6px; border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.25); color: #f7c045; font: 600 12px inherit; text-align: right; }
+    .elo-row .sub { margin: 0; padding: 2px 6px; flex: none; gap: 8px; }
     .rng { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 4px 0; font-size: 12px; }
     .rng input { grid-column: 1 / -1; width: 100%; accent-color: #f7c045; margin: 0; }
     .rng b { font-weight: 600; color: #f7c045; }
@@ -2142,6 +2147,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       <div class="item" data-group="clutch">${row('clutch', 'Clutch', 10)}
         <div class="body flow" style="--i:11">
           <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0.1" max="60" step="0.1"></label>
+          <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="100" max="3500" step="50" aria-label="Clutch Elo">
+            <div class="sub" data-key="auto" title="Play at the opponent's rating"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
           <div class="clutch-status"></div>
         </div>
       </div>
@@ -2180,6 +2187,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (document.activeElement !== input && shadow.activeElement !== input) input.value = String(c[key]);
       shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
     });
+    const eloInput = shadow.querySelector('.elo-input');
+    if (eloInput && shadow.activeElement !== eloInput) eloInput.value = String(c.elo);
     const cs = shadow.querySelector('.clutch-status');
     if (cs) cs.textContent = clutchState.text;
     const status = shadow.querySelector('.panel > .status');
@@ -2220,6 +2229,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }));
   });
   shadow.querySelectorAll('.rng input').forEach(input => input.addEventListener('input', () => setSetting('clutch', input.dataset.key, +input.value)));
+  // Typing an Elo is choosing one: Auto steps aside.
+  shadow.querySelector('.elo-input').addEventListener('input', e => {
+    const value = Math.max(100, Math.min(3500, Math.round(+e.target.value) || 100));
+    if (rawSettings.clutch.auto) setSetting('clutch', 'auto', false);
+    setSetting('clutch', 'elo', value);
+  });
   listeners.add(renderPanel);
   renderPanel();
 
@@ -3510,12 +3525,55 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return Math.round(Math.min(clock * 1000 * 0.06 * entry.crit, clock * 1000 * 0.2, 3000));
   }
 
+  // ---------- Clutch strength ----------
+
+  // "(250)" or "1500" as a rating, else null.
+  function parseElo(text) {
+    const m = /\((\d{2,4})\)/.exec(String(text)) || /^\s*(\d{2,4})\s*$/.exec(String(text));
+    return m ? +m[1] : null;
+  }
+
+  // The opponent's rating from their player row (the one at the top of the board).
+  function readOpponentElo() {
+    for (const selector of ['#player-top [class*="user-rating"]', '#board-layout-player-top [class*="user-rating"]', '#player-top .user-tagline-rating', '#player-top']) {
+      for (const el of document.querySelectorAll(selector)) {
+        const elo = parseElo(el.textContent);
+        if (elo) return elo;
+      }
+    }
+    return null;
+  }
+
+  // How a rating plays: a depth ceiling, and a temperature in centipawns for choosing among the best
+  // lines (the lower the rating, the more it will pick a worse move). Near full strength it just plays
+  // the best move and keeps its mate hunting.
+  function strengthOf(elo) {
+    return {
+      elo,
+      limited: elo < 2850,
+      depthCap: Math.max(1, Math.min(40, Math.round((elo - 300) / 110))),
+      temperature: elo >= 2850 ? 0 : Math.max(1, Math.round(450 * Math.exp(-(elo - 300) / 420)))
+    };
+  }
+
+  // One of the lines, weighted towards the better ones by the temperature.
+  function sampleLine(lines, temperature, random = Math.random) {
+    const value = l => l.mate !== undefined ? Math.sign(l.mate) * 10000 : l.cp;
+    const top = value(lines[0]);
+    const weights = lines.map(l => Math.exp(Math.max(-50, (value(l) - top) / Math.max(1, temperature))));
+    let roll = random() * weights.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < lines.length; i++) { roll -= weights[i]; if (roll <= 0) return lines[i]; }
+    return lines[0];
+  }
+
   // The move to play when there is no mate: the best one, except when losing, when a move that
   // holds about equal wins out, a check first (a perpetual is the way out of a lost position).
   function clutchPick(fen, result, s) {
     const lines = (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv.length);
     if (!lines.length) return null;
     const best = lines[0];
+    // Below full strength a move is drawn from the best few, so the rating shows in the play.
+    if (s.strength && s.strength.limited && lines.length > 1) return stepFor(fen, sampleLine(lines, s.strength.temperature, s.random).pv[0]);
     if (clutchLosing(best, s)) {
       const holds = lines.filter(l => l.mate === undefined ? l.cp >= -50 : l.mate > 0);
       const checks = holds.map(l => stepFor(fen, l.pv[0])).filter(st => st && st.check);
@@ -3666,8 +3724,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
     const hurry = oppClock !== null && oppClock < clock * 0.7 ? 0.5 : 1;
     setClutch(`Clutch: looking, ${pieces} pieces, ${clock.toFixed(1)} s left`);
-    let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: 4 });
-    if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0) {
+    let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: s.multipv || 4 });
+    if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0 && !(s.strength && s.strength.limited)) {
       setClutch(`Clutch: winning, going deeper (up to depth ${budget.maxDepth}, ${(budget.stage2Ms / 1000).toFixed(1)} s)`);
       result = (await clutchEngine.analyse(fen, { depth: budget.maxDepth, ms: budget.stage2Ms })) || result;
     } else if (result && !(result.mate > 0) && budget.canDeepen) {
@@ -3676,7 +3734,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const ms = decision ? clutchThink({ crit: decision.crit, depth: result.depth }, clock, s) : 0;
       if (ms > 0) {
         setClutch(`Clutch: this move needs care (${decision.crit}), thinking ${(ms / 1000).toFixed(1)} s`);
-        result = (await clutchEngine.analyse(fen, { depth: Math.min(budget.maxDepth, s.depth + 2 * decision.crit + 4), ms, multipv: 4 })) || result;
+        result = (await clutchEngine.analyse(fen, { depth: Math.min(budget.maxDepth, s.depth + 2 * decision.crit + 4), ms, multipv: s.multipv || 4 })) || result;
       }
     }
     return result;
@@ -3684,7 +3742,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // From a result to what to do: a mate becomes a plan, anything else one move.
   function clutchDecide(fen, result, s) {
-    if (result.mate > 0 && result.pv) {
+    if (result.mate > 0 && result.pv && !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2))) {
       const line = mateLine(fen, result.pv);
       if (line[0] && line[0].ours) return { plan: { start: fen, line }, step: line[0], note: `mate in ${result.mate} (depth ${result.depth})` };
     }
@@ -3709,7 +3767,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // answer; stop() says whether to give up (the position changed). Resolves with how many answers
   // the book ended with.
   async function bookBuild({ fen, analyse, s, clock, onEntry, stop, replies = 6, rounds = 6 }) {
-    const first = await analyse(fen, { depth: s.depth, ms: 250, multipv: replies });
+    const first = await analyse(fen, { depth: s.depth, ms: 250, multipv: Math.max(replies, s.multipv || 0) });
     if (stop() || !first) return 0;
     const lines = (first.lines && first.lines.length ? first.lines : [first]).filter(l => l && l.pv && l.pv.length);
     const options = lines.map(l => stepFor(fen, l.pv[0])).filter(Boolean)
@@ -3727,7 +3785,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const entries = new Map();
     // Replies that lead into the opening book need no search: the book move is the answer.
     for (const option of options) {
-      const hit = clutchBookStep(option.fen);
+      const hit = (s.elo === undefined || s.elo >= 800) ? clutchBookStep(option.fen) : null;
       if (!hit) continue;
       option.book = true;
       const key = repKey(option.fen);
@@ -3741,7 +3799,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       for (const option of options) {
         if (stop()) return entries.size;
         if (option.book) continue;
-        const result = await analyse(option.fen, { depth, ms: round ? 500 : 200, multipv: 4 });
+        const result = await analyse(option.fen, { depth: Math.min(depth, s.strength ? s.strength.depthCap : 99), ms: round ? 500 : 200, multipv: s.multipv || 4 });
         if (stop()) return entries.size;
         if (!result || !result.pv) continue;
         const decision = clutchDecide(option.fen, result, s);
@@ -3806,6 +3864,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     };
   }
 
+  // Everything above, tied to a rating: the depth ceiling, more lines to choose from, no deep mate hunt
+  // below full strength.
+  function clutchStrengthen(params, elo) {
+    const strength = strengthOf(elo);
+    return {
+      ...params, elo, strength,
+      depth: Math.min(params.depth, strength.depthCap),
+      maxDepth: Math.min(params.maxDepth, strength.depthCap + 2),
+      multipv: strength.limited ? 6 : 4
+    };
+  }
+
   function clutchTick() {
     const base = settings.clutch;
     let s = base;
@@ -3838,15 +3908,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
     if (!own) { clutch.acting = false; clutchStopBook(); setClutch('Clutch: waiting for a game you are playing'); return; }
+    // Auto: play at the opponent's rating, and keep it as the default in the field.
+    const opponentElo = readOpponentElo();
+    if (base.auto && opponentElo && base.elo !== opponentElo) setSetting('clutch', 'elo', opponentElo);
+    const elo = base.auto && opponentElo ? opponentElo : base.elo;
     const clock = readClock('own');
     if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchShow(ctl, []); return; }
     if (clock > s.time) {
       clutch.acting = false; clutch.plan = null; clutchStopBook();
-      setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at ${s.time.toFixed(1)} s`);
+      setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at ${s.time.toFixed(1)} s, Elo ${elo}${base.auto ? ' (auto)' : ''}`);
       clutchShow(ctl, []);
       return;
     }
-    s = clutchParams(base, clock, countPieces(fen));
+    s = clutchStrengthen(clutchParams(base, clock, countPieces(fen)), elo);
     clutch.acting = clutchMayPlay();
     const oppClock = readClock('opp');
     const turn = fen.split(' ')[1], key = repKey(fen);
@@ -3879,7 +3953,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const book = clutch.book;
       const entry = book && book.entries.get(key);
       clutchStopBook();
-      const opening = clutchBookStep(fen);
+      const opening = s.elo >= 800 ? clutchBookStep(fen) : null;
       if (opening && !(entry && !entry.book && entry.plan)) {
         clutchShow(ctl, [{ id: 'cl:' + opening.step.uci, uci: opening.step.uci, color: CLUTCH_COLOR }]);
         act(opening.step, false, `opening book, ${opening.games} games`, true);
@@ -3897,7 +3971,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (clutch.working === key) return;
         clutch.working = key;
         setClutch(`Clutch: prepared answer needs care (${entry.crit}), thinking ${(think / 1000).toFixed(1)} s`);
-        clutchEngine.analyse(fen, { depth: Math.min(28, s.depth + 2 * entry.crit + 4), ms: think, multipv: 4 }).then(result => {
+        clutchEngine.analyse(fen, { depth: Math.min(28, s.depth + 2 * entry.crit + 4), ms: think, multipv: s.multipv || 4 }).then(result => {
           let current = null;
           try { current = board.game.getFEN(); } catch (e) { /* board gone */ }
           if (clutch.working === key) clutch.working = null;

@@ -215,10 +215,11 @@ test('premoves are only used where chess.com has them, and cancelling goes throu
   } finally { f.close(); }
 });
 
-test('only the trigger time is a setting; the rest is worked out from the position and the clock', () => {
+test('the settings are the trigger time and the Elo (with Auto); the rest is worked out from the position and the clock', () => {
   const f = setup();
   try {
-    assert.equal(Object.keys(f.api.settings.clutch).sort().join(), 'on,time');
+    assert.equal(Object.keys(f.api.settings.clutch).sort().join(), 'auto,elo,on,time');
+    assert.equal(f.api.settings.clutch.auto, true, 'Auto is the default');
     const p = f.api.clutchParams;
     const base = { on: true, time: 10 };
     assert.ok(p(base, 40, 32).depth > p(base, 5, 32).depth, 'a draining clock shortens the quick look');
@@ -262,5 +263,36 @@ test('moves that call for care get thinking time, easy ones are played fast', ()
     assert.equal(f.api.clutchThink({ crit: 2, depth: 12 }, 1, s), 0, 'no clock to spare');
     const ms = f.api.clutchThink({ crit: 3, depth: 12 }, 20, s);
     assert.ok(ms > 0 && ms <= 3000 && ms <= 20 * 1000 * 0.2);
+  } finally { f.close(); }
+});
+
+test('ratings are read from the opponent row and become a playing strength', () => {
+  const f = setup();
+  try {
+    assert.equal(f.api.parseElo('(250)'), 250); assert.equal(f.api.parseElo(' 1500 '), 1500); assert.equal(f.api.parseElo('Martinfoot'), null);
+    f.w.document.body.innerHTML = '<div id="player-top"><div>Martinfoot</div><div class="cc-text-medium cc-user-rating-white">(1830)</div><div class="move-time-monospace">3:14</div></div><div id="player-bottom"><div class="cc-user-rating-white">(900)</div></div>';
+    assert.equal(f.api.readOpponentElo(), 1830, 'the top row is the opponent');
+    f.w.document.body.innerHTML = '';
+    assert.equal(f.api.readOpponentElo(), null);
+    const low = f.api.strengthOf(300), mid = f.api.strengthOf(1500), high = f.api.strengthOf(2400), full = f.api.strengthOf(3200);
+    assert.ok(low.depthCap < mid.depthCap && mid.depthCap < high.depthCap, 'a higher rating looks deeper');
+    assert.ok(low.temperature > mid.temperature && mid.temperature > high.temperature, 'and slips less');
+    assert.equal(full.limited, false); assert.equal(low.limited, true);
+    const p = f.api.clutchStrengthen({ depth: 14, maxDepth: 28, spare: 2, time: 10 }, 800);
+    assert.ok(p.depth <= p.strength.depthCap && p.maxDepth <= p.strength.depthCap + 2 && p.multipv >= 6);
+    assert.equal(f.api.clutchStrengthen({ depth: 14, maxDepth: 28 }, 3200).multipv, 4);
+  } finally { f.close(); }
+});
+
+test('a low rating sometimes picks a worse move, a high one almost never', () => {
+  const f = setup();
+  try {
+    const lines = [{ pv: ['a'], cp: 100 }, { pv: ['b'], cp: 0 }, { pv: ['c'], cp: -100 }, { pv: ['d'], cp: -300 }];
+    let seed = 7; const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const share = elo => { let best = 0; for (let i = 0; i < 400; i++) if (f.api.sampleLine(lines, f.api.strengthOf(elo).temperature, random).pv[0] === 'a') best++; return best / 400; };
+    assert.ok(share(2700) > 0.95, 'near full strength: the best move');
+    assert.ok(share(300) < 0.5, 'a beginner often does not');
+    assert.ok(share(1200) > share(300) && share(2000) > share(1200));
+    assert.equal(f.api.sampleLine([{ pv: ['m'], mate: 2 }, { pv: ['n'], cp: 50 }], 1).pv[0], 'm', 'a mate is found');
   } finally { f.close(); }
 });

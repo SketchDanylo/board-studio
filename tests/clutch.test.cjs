@@ -465,3 +465,23 @@ test('in an ending the same rating sees further: depth grows as the board emptie
     assert.equal(f.api.humanProfile(1200).quietDepth, f.api.humanProfile(1200, full).quietDepth);
   } finally { f.close(); }
 });
+
+test('Clutch ghosts: tied to their move, the premove one marked, a colour change keeps the same ghost, no arrows', () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const board = f.board(fen);
+    board.innerHTML = '<svg class="arrows"></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#4cc2ff' }, { fen, uci: 'g1f3', color: '#4cc2ff' }]);
+    const e4 = () => board.querySelector('.bs-ghost-clutch .cc-ghost[data-uci="e2e4"]');
+    const before = e4();
+    assert.equal(before.dataset.premove, '');
+    // it becomes the premove: the same element, now red
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#ff4d4d' }, { fen, uci: 'g1f3', color: '#4cc2ff' }]);
+    assert.equal(e4(), before, 'not rebuilt');
+    assert.equal(e4().dataset.premove, '1'); assert.equal(e4().style.getPropertyValue('--reply-color'), '#ff4d4d');
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost').length, 2);
+    assert.equal(ctl.clutchArrows === undefined || ctl.clutchArrows.length === 0, true, 'Clutch draws no arrows');
+  } finally { f.close(); }
+});

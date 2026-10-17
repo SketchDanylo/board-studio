@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.9.1
+// @version      6.10.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -280,7 +280,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .bs-badge .bs-taken i { filter: grayscale(1) brightness(.92); }
     .bs-ghost-ai svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
     .bs-ghost-ai .cc-ghost, .bs-ghost-clutch .cc-ghost { filter: drop-shadow(0 0 5px var(--reply-color)) drop-shadow(0 0 2px var(--reply-color)); }
-    .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave, .bs-ghost-clutch .cc-ghost, .bs-ghost-clutch .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
+    .bs-ghost-clutch .cc-ghost { transition: filter 260ms ease, left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1), opacity 320ms ease, transform 320ms cubic-bezier(.34, 1.4, .64, 1); }
+    .bs-ghost-ai .cc-ghost, .bs-ghost-ai .cc-ghost.cc-ghost-leave, .bs-ghost-clutch .cc-ghost.cc-ghost-leave { transition: left 460ms cubic-bezier(.34, 1.25, .64, 1), top 460ms cubic-bezier(.34, 1.25, .64, 1),
                   opacity 320ms ease, transform 320ms cubic-bezier(.34, 1.4, .64, 1); }
     .bs-ghost-ai .reply-arrow { transition: opacity 320ms ease; }
     .bs-ghost-ai .reply-shaft { fill: none; stroke-linecap: round; stroke-linejoin: round; transition: stroke 320ms ease; }
@@ -2520,14 +2521,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Best reply found so far for each position the opponent was to move in, so a drawn line can assume it.
   const ghostBest = new Map();
 
-  function ghostReplyPosition(fen, arrows, need, out) {
+  function ghostReplyPosition(fen, arrows, need, out, userColor) {
     if (!fen || !arrows.length) return null;
     try {
       let game = new BoardStudioRules.Chess(fen);
-      // You are whoever owns the first arrow's piece, so drawing while the opponent is still
-      // thinking works: their best reply is assumed first, then your move goes on top of it.
-      const player = game.get(arrows[0].from)?.color;
+      // You are the colour you play (when the game says), else whoever owns the first arrow's piece, so
+      // drawing while the opponent is still thinking works: their best reply is assumed first, then your
+      // move goes on top of it.
+      const mover = game.turn();
+      const player = userColor || game.get(arrows[0].from)?.color;
       if (!player) return null;
+      // A move you draw for the opponent is what they play, instead of the engine's choice: an arrow
+      // that is legal for the side to move now, drawn after one that is not, goes first.
+      if (arrows.length > 1 && !ghostMove(new BoardStudioRules.Chess(fen), arrows[0])) {
+        const i = arrows.findIndex((a, n) => n > 0 && game.get(a.from)?.color === mover && ghostMove(new BoardStudioRules.Chess(fen), a));
+        if (i > 0) arrows = [arrows[i], ...arrows.filter((_, n) => n !== i)];
+      }
       // Play one arrow. If it is not legal yet and it is the opponent's move, assume their best
       // reply (asking for it to be worked out if it is not known) and try again.
       let line = []; // every move of the line in order, the assumed opponent replies included
@@ -2621,7 +2630,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           return m && { id: m[0], from: m[1] + m[2], to: m[3] + m[4] };
         }).filter(Boolean);
       const arrows = drawnByYou(ctl, all);
-      const base = blunderFEN(board), need = new Set(), out = {}, fen = ghostReplyPosition(base, arrows, need, out);
+      const base = blunderFEN(board), need = new Set(), out = {}, fen = ghostReplyPosition(base, arrows, need, out, (() => { try { const pa = board.game.getPlayingAs && board.game.getPlayingAs(); return pa === 1 ? 'w' : pa === 2 ? 'b' : null; } catch (e) { return null; } })());
       ctl.assumedLine = fen ? out.line : null;
       // Playing on before the opponent's best reply is known: work it out first, then carry on.
       this.feed(ctl, need.values().next().value);
@@ -3938,7 +3947,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     };
     const live = ctl.clutchGhostItems, keep = new Set();
     for (const item of items) {
-      const id = item.uci + item.color;
+      const id = item.uci;
       keep.add(id);
       let entry = live.get(id);
       if (!entry) {
@@ -3946,6 +3955,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!kind) continue;
         const el = document.createElement('div');
         el.className = 'cc-ghost';
+        el.dataset.uci = item.uci;
         el.style.backgroundImage = imageFor(kind);
         Object.assign(el.style, spot(item.uci.slice(0, 2)), { opacity: '0' });
         layer.appendChild(el);
@@ -3954,6 +3964,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         live.set(id, entry);
       }
       entry.el.style.setProperty('--reply-color', item.color);
+      entry.el.dataset.premove = item.color === CLUTCH_RED ? '1' : '';
+      entry.el.classList.remove('cc-ghost-leave');
       Object.assign(entry.el.style, spot(item.uci.slice(2, 4)), { opacity: String(settings.ghosts.opacity + 0.1) });
     }
     for (const [id, entry] of live) {
@@ -3970,12 +3982,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   const clutch = { plan: null, working: null, played: '', playedAt: 0, tries: 0, arrows: '', book: null, suspended: false, wasOn: false, acting: false };
   function clutchStopBook() { if (clutch.book) clutch.book.token.stop = true; clutch.book = null; }
 
-  function clutchShow(ctl, specs) {
-    const key = JSON.stringify(specs);
-    if (clutch.arrows === key) return;
-    clutch.arrows = key;
-    ctl.clutchArrows = specs;
-    ctl.scheduleArrows?.();
+  // Clutch shows itself with ghosts only (below); no arrows are drawn for it.
+  function clutchShow(ctl) {
+    if (ctl.clutchArrows && ctl.clutchArrows.length) { ctl.clutchArrows = []; ctl.scheduleArrows?.(); }
   }
 
   // While Clutch plays, the user's own mouse is ignored (Clutch's drags are not "trusted" events),
@@ -4057,13 +4066,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       game.undo();
     }
     const entries = new Map();
+    const topReply = options.length ? options[0].uci : null;
     // Replies that lead into the opening book need no search: the book move is the answer.
     for (const option of options) {
       const hit = (s.elo === undefined || s.elo >= 800) ? clutchBookStep(option.fen) : null;
       if (!hit) continue;
       option.book = true;
       const key = repKey(option.fen);
-      const entry = { plan: null, step: hit.step, note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, book: true, fen: option.fen };
+      const entry = { plan: null, step: hit.step, note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, book: true, fen: option.fen, topReply };
       entries.set(key, entry);
       onEntry(key, entry);
     }
@@ -4083,7 +4093,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!decision) continue;
         const key = repKey(option.fen), old = entries.get(key);
         if (old && old.depth > result.depth) continue;
-        const entry = { ...decision, fen: option.fen, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
+        const entry = { ...decision, fen: option.fen, topReply, depth: result.depth, reply: option.uci, cp: result.cp, mate: result.mate, forced: new BoardStudioRules.Chess(option.fen).moves().length === 1 };
         if (entry.forced) entry.crit = 0;
         entries.set(key, entry);
         onEntry(key, entry, old);
@@ -4231,6 +4241,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const book = clutch.book;
       const entry = book && book.entries.get(key);
       clutchStopBook();
+      showClutchGhosts(ctl, []);
       const opening = s.elo >= 800 ? clutchBookStep(fen) : null;
       if (opening && !(entry && !entry.book && entry.plan)) {
         clutchShow(ctl, [{ id: 'cl:' + opening.step.uci, uci: opening.step.uci, color: CLUTCH_COLOR }]);
@@ -4305,7 +4316,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const answers = clutchAnswers(book.entries);
         clutchShow(ctl, answers.slice(0, 3).map((answer, i) => ({ id: 'cl:' + answer.step.uci, uci: answer.step.uci, color: ['#4cc2ff', '#2f8fbf', '#256a8c'][i] })));
         // red: the answer it will premove (hold and play the moment they move); blue: the others it is weighing
-        showClutchGhosts(ctl, answers.slice(0, 4).filter(a => a.fen).map((answer, i) => ({ fen: answer.fen, uci: answer.step.uci, color: i === 0 ? CLUTCH_RED : CLUTCH_BLUE })));
+        const topEntry = [...book.entries.values()].find(e => e.reply === entry.topReply);
+        const premoveUci = topEntry ? topEntry.step.uci : answers[0].step.uci;
+        const ordered = [...answers.filter(a => a.step.uci === premoveUci), ...answers.filter(a => a.step.uci !== premoveUci)];
+        showClutchGhosts(ctl, ordered.slice(0, 4).filter(a => a.fen).map(a => ({ fen: a.fen, uci: a.step.uci, color: a.step.uci === premoveUci ? CLUTCH_RED : CLUTCH_BLUE })));
         const native = premoveNative(board);
         setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${entry.depth}: ${answers.map(x => `${x.step.from}-${x.step.to} x${x.replies.length}`).join(', ')}${native ? '' : ' (no premoves in this game, held and played the instant they move)'}`);
         if (!native || !mayPlay) return;

@@ -188,3 +188,22 @@ test('replies landing on one square share it: best ghost on it, others and the t
     assert.ok(ctl.ghosts.taken.has('d4'), 'and marked again when the top move takes');
   } finally { f.close(); }
 });
+
+test('a move you draw for the opponent is what they play, instead of the engine\'s choice', () => {
+  const f = setup();
+  try {
+    const position = f.api.ghostReplyPosition;
+    const e4 = new Chess(); e4.move('e4');
+    // Black is to move. You draw your d4 first, then the reply you expect: e5 (not the engine's pick).
+    const expected = new Chess(); ['e4', 'e5', 'd4'].forEach(m => expected.move(m));
+    const need = new Set();
+    assert.equal(position(e4.fen(), [{ from: 'd2', to: 'd4' }, { from: 'e7', to: 'e5' }], need), expected.fen(), 'the drawn reply is assumed');
+    assert.equal(need.size, 0, 'so nothing has to be worked out first');
+    // the same with the reply drawn first
+    // drawn the other way round, the game says which side you are
+    assert.equal(position(e4.fen(), [{ from: 'e7', to: 'e5' }, { from: 'd2', to: 'd4' }], null, null, 'w'), expected.fen());
+    // without a drawn reply it still needs the engine's
+    const asked = new Set(); position(e4.fen(), [{ from: 'd2', to: 'd4' }], asked);
+    assert.equal(asked.size, 1);
+  } finally { f.close(); }
+});

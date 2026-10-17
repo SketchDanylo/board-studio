@@ -361,20 +361,17 @@ test('a Clutch ghost goes three deep: each next move a ghost of the one before, 
     assert.ok(first && second && third);
     assert.ok(Math.abs(op(second) - op(first) / 2) < 1e-9, 'the next ghost is half as strong as the one before');
     assert.ok(Math.abs(op(third) - op(second) / 2) < 1e-9, 'and the one after that half again');
+    assert.ok(op(third) >= 0.2, 'the third is still visible');
     assert.equal(second.style.left, '50%'); assert.equal(second.style.top, '37.5%', 'it sits where its piece lands (e5)');
-    assert.equal((ctl.chainArrows || []).length + layer.querySelectorAll('svg.cc-chain g').length, 0, 'no arrow from a live piece: their reply and a fresh piece of ours get a ghost and nothing more');
-    // a ghost that moves on again: an arrow from that ghost to where it goes, in the board's own arrow style, as strong as the ghost it leads to
-    const line = ['g1f3', 'b8c6', 'f3g5'];
-    f.api.showClutchGhosts(ctl, [{ fen, uci: 'g1f3', color: '#4cc2ff', line }]);
-    assert.equal(ctl.chainArrows.length, 1, 'one arrow: ghost knight f3 -> g5');
-    assert.equal(ctl.chainArrows[0].uci, 'f3g5');
-    const third2 = [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)')].find(g => g.dataset.uci === 'f3g5');
-    assert.ok(Math.abs(ctl.chainArrows[0].opacity - op(third2)) < 1e-9, 'as strong as the ghost it leads to');
-    // with custom arrows off the same arrow is a plain one inside the ghost layer
+    // an arrow runs from every ghost to the next, in the board's own arrow style, as strong as the ghost it leads to
+    assert.equal(ctl.chainArrows.length, 2, 'ghost to ghost, twice');
+    assert.deepEqual(Array.from(ctl.chainArrows, x => x.uci), ['e4e5', 'e5f3']);
+    assert.ok(Math.abs(ctl.chainArrows[0].opacity - op(second)) < 1e-9 && Math.abs(ctl.chainArrows[1].opacity - op(third)) < 1e-9);
+    // with custom arrows off they are plain ones inside the ghost layer
     f.api.settings.arrows.on = false;
-    f.api.showClutchGhosts(ctl, [{ fen, uci: 'g1f3', color: '#4cc2ff', line: ['g1f3', 'b8c6', 'f3h4'] }]);
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#4cc2ff', line: ['e2e4', 'e7e5', 'g1f3'] }]);
     assert.equal(ctl.chainArrows.length, 0, 'the board draws none');
-    assert.equal(board.querySelectorAll('.bs-ghost-clutch svg.cc-chain g').length, 1, 'a plain arrow instead');
+    assert.equal(board.querySelectorAll('.bs-ghost-clutch svg.cc-chain g').length, 2, 'plain arrows instead');
     f.api.settings.arrows.on = true;
     // a ghost with no further line is just the one ghost
     f.api.showClutchGhosts(ctl, [{ fen, uci: 'd2d4', color: '#4cc2ff' }]);
@@ -432,6 +429,31 @@ test('a hand takes time by distance: far from the piece or far across the board 
     const nearMove = f.api.humanDrag(board, 'e2', 'e3', false, () => 0.5);
     const farMove = f.api.humanDrag(board, 'a1', 'h8', false, () => 0.5);
     assert.ok(farMove > nearMove, 'a move across the whole board takes longer than one square (' + farMove + ' vs ' + nearMove + ' ms)');
+  } finally { f.close(); }
+});
+
+test('a branch starts from what they may play: their ghost, then our answer, then theirs, joined, and a shared ghost is drawn once', () => {
+  const f = setup();
+  try {
+    // Black to move after 1.e4; Black may play ...e5 or ...c5, and White answers 2.Nf3 to both
+    const after = new Chess(); after.move('e4');
+    const fen = after.fen();
+    const board = f.board(fen);
+    board.innerHTML = '<svg class="arrows"></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    f.api.showClutchGhosts(ctl, [
+      { fen, line: ['e7e5', 'g1f3', 'b8c6'], color: '#ff4d4d', premoveAt: 1 },
+      { fen, line: ['c7c5', 'g1f3', 'd7d6'], color: '#4cc2ff' }
+    ]);
+    const ghosts = [...board.querySelectorAll('.bs-ghost-clutch .cc-ghost:not(.cc-ghost-leave)')];
+    const by = (d, u) => ghosts.find(g => g.dataset.depth === String(d) && g.dataset.uci === u);
+    assert.ok(by(0, 'e7e5') && by(0, 'c7c5'), 'both of their possible moves are shown');
+    assert.equal(ghosts.filter(g => g.dataset.uci === 'g1f3').length, 1, 'the shared answer Nf3 is one ghost');
+    assert.ok(by(2, 'b8c6') && by(2, 'd7d6'), 'and what follows');
+    assert.equal(by(1, 'g1f3').dataset.premove, '1', 'the answer of the premove branch is the premove');
+    assert.equal(by(1, 'g1f3').style.getPropertyValue('--reply-color'), '#ff4d4d', 'a shared ghost takes the premove colour');
+    assert.equal(+by(0, 'e7e5').style.opacity, 2 * +by(1, 'g1f3').style.opacity, 'their move is the strongest');
+    assert.equal(ctl.chainArrows.length, 4, 'e5>Nf3, Nf3>Nc6, c5>Nf3, Nf3>d6');
   } finally { f.close(); }
 });
 
@@ -802,11 +824,11 @@ test('Clutch ghosts: tied to their move, the premove one marked, a colour change
     const before = e4();
     assert.equal(before.dataset.premove, '');
     // it becomes the premove: the same element, now red
-    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#ff4d4d' }, { fen, uci: 'g1f3', color: '#4cc2ff' }]);
+    f.api.showClutchGhosts(ctl, [{ fen, uci: 'e2e4', color: '#ff4d4d', premoveAt: 0 }, { fen, uci: 'g1f3', color: '#4cc2ff' }]);
     assert.equal(e4(), before, 'not rebuilt');
     assert.equal(e4().dataset.premove, '1'); assert.equal(e4().style.getPropertyValue('--reply-color'), '#ff4d4d');
     assert.equal(board.querySelectorAll('.bs-ghost-clutch .cc-ghost').length, 2);
-    assert.equal(ctl.clutchArrows === undefined || ctl.clutchArrows.length === 0, true, 'Clutch draws no arrows');
+    assert.equal(ctl.clutchArrows === undefined || ctl.clutchArrows.length === 0, true, 'single moves have nothing to link: no arrows');
   } finally { f.close(); }
 });
 

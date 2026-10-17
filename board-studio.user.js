@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.15.1
+// @version      6.16.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1862,13 +1862,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .rng { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 4px 0; font-size: 12px; }
     .rng input { grid-column: 1 / -1; width: 100%; accent-color: #f7c045; margin: 0; }
     .rng b { font-weight: 600; color: #f7c045; }
-    .odds { padding: 8px 0 4px; }
-    .odds-bar { position: relative; display: flex; height: 22px; margin: 0 8px; border-radius: 11px; touch-action: none; --a: 60%; --b: 100%; }
-    .odds-bar .seg { display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font: 700 11px inherit; font-style: normal; color: rgba(0,0,0,.72); min-width: 0; }
-    .odds-bar .seg.w { background: #96bc4b; border-radius: 11px 0 0 11px; }
-    .odds-bar .seg.d { background: #9a9a9a; }
-    .odds-bar .seg.l { background: #fa412d; border-radius: 0 11px 11px 0; color: rgba(255,255,255,.92); }
-    .odds-bar .ball { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #2b2926; box-shadow: 0 1px 4px rgba(0,0,0,.5); cursor: ew-resize; touch-action: none; }
+    .odds { padding: 10px 0 6px; }
+    .odds-bar { position: relative; display: flex; height: 38px; margin: 0 11px; border-radius: 13px; touch-action: none; --a: 60%; --b: 100%; box-shadow: 0 2px 10px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.06); }
+    .odds-bar .seg { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; overflow: hidden; white-space: nowrap; min-width: 0; padding: 0 12px; line-height: 1; font-style: normal; font-variant-numeric: tabular-nums; transition: flex-grow .12s ease-out; }
+    .odds-bar .seg .n { font-family: inherit; font-weight: 800; font-size: 16px; line-height: 1; letter-spacing: -.2px; }
+    .odds-bar .seg .n sup { font-size: 8px; font-weight: 700; line-height: 0; margin-left: 1px; opacity: .75; vertical-align: 6px; }
+    .odds-bar .seg .t { font-family: inherit; font-weight: 800; font-size: 8px; line-height: 1; letter-spacing: 1.5px; text-transform: uppercase; opacity: .72; }
+    .odds-bar .seg.w { background: linear-gradient(180deg, #b0d466, #86ad40); color: #213008; padding-left: 8px; border-radius: 13px 0 0 13px; box-shadow: inset 0 1px 0 rgba(255,255,255,.35); }
+    .odds-bar .seg.d { background: linear-gradient(180deg, #b3b3b3, #868686); color: #232323; box-shadow: inset 0 1px 0 rgba(255,255,255,.3); }
+    .odds-bar .seg.l { background: linear-gradient(180deg, #ff7a66, #e4432f); color: #fff; padding-right: 8px; border-radius: 0 13px 13px 0; box-shadow: inset 0 1px 0 rgba(255,255,255,.3); }
+    .odds-bar .seg.l .n, .odds-bar .seg.l .t { text-shadow: 0 1px 2px rgba(80,10,0,.35); }
+    .odds-bar .ball { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; padding: 0; border-radius: 50%; border: 0; background: radial-gradient(circle at 50% 50%, #2b2926 0 2.5px, #fff 3.5px); box-shadow: 0 0 0 1px rgba(0,0,0,.25), 0 3px 8px rgba(0,0,0,.45); cursor: ew-resize; touch-action: none; transition: transform .12s ease; }
+    .odds-bar .ball:hover, .odds-bar .ball:active { transform: scale(1.12); }
     .odds-bar .ball[data-ball="0"] { left: var(--a); }
     .odds-bar .ball[data-ball="1"] { left: var(--b); }
     .clutch-status { padding: 4px 0 2px; font-size: 11px; line-height: 15px; color: rgba(255,255,255,.6); }
@@ -2207,7 +2212,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       [['w', win, 'Win'], ['d', draw, 'Draw'], ['l', lose, 'Lose']].forEach(([k, v, name]) => {
         const seg = bar.querySelector('.seg.' + k);
         seg.style.flex = v + ' 0 0';
-        seg.textContent = v < 9 ? '' : v < 24 ? String(v) : name + ' ' + v;
+        // a share too narrow to hold a number (the balls cover its edges) shows nothing; a narrow one just the number
+        seg.innerHTML = v < 16 ? '' : v < 28 ? `<span class="n">${v}</span>` : `<span class="n">${v}<sup>%</sup></span><span class="t">${name}</span>`;
       });
     }
     const eloInput = shadow.querySelector('.elo-input');

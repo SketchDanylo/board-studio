@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.7.0
+// @version      6.7.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3593,7 +3593,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       notice: Math.min(0.98, 0.45 + elo / 2600),
       quietEye: Math.max(0.08, Math.min(1, (elo - 400) / 1800)),
       mateReach: elo < 500 ? 1 : elo < 1000 ? 2 : elo < 1600 ? 3 : elo < 2200 ? 4 : 6,
-      appetite: Math.max(0, 1 - elo / 3000)
+      appetite: Math.max(0, 1 - elo / 3000),
+      // How often the calculated move is not the one played: the more so the lower the rating and the
+      // more of the options are bad (the position's blunder potential), after the finding that people
+      // avoid blunders several times more often than chance and that this grows with rating.
+      slip: Math.max(0.02, Math.min(0.6, 0.55 * Math.exp(-(elo - 300) / 550)))
     };
   }
 
@@ -3703,8 +3707,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     if (!rated.length) return { ...mateLook, human: true, lines: [mateLook] };
     rated.sort((a, b) => b.score - a.score);
-    const best = rated[0];
-    return { ...best.line, human: true, depth: p.quietDepth, lines: rated.map(r => r.line) };
+    let best = rated[0];
+    // Now and then the move played is simply the most natural-looking one (a capture, a check, the
+    // developing move) instead of the calculated one. When it happens is decided by the position.
+    const top = value(best.line), bad = rated.filter(r => value(r.line) < top - 100).length;
+    const slipChance = Math.min(0.9, p.slip * (0.5 + bad / rated.length));
+    if (rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
+      best = rated.slice().sort((a, b) => b.c.salience - a.c.salience)[0];
+    }
+    return { ...best.line, human: true, depth: p.quietDepth, lines: [best.line, ...rated.map(r => r.line).filter(l => l !== best.line)] };
   }
 
 
@@ -3761,7 +3772,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       } else if (line.startsWith('bestmove')) {
         const job = this.job;
         this.job = null;
-        if (job) job.resolve(!job.last || (job.cancelled && !job.keepPartial) ? null : { ...job.last, lines: job.lines.filter(Boolean), best: line.split(' ')[1], partial: job.cancelled });
+        if (job) job.resolve(job.cancelled && (!job.last || !job.keepPartial) ? null : !job.last ? { depth: 0, cp: 0, pv: [], lines: [], best: line.split(' ')[1], noInfo: true } : { ...job.last, lines: job.lines.filter(Boolean), best: line.split(' ')[1], partial: job.cancelled });
         this.next();
       }
     },

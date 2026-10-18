@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.41.0
+// @version      6.41.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4134,9 +4134,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const reach = countPieces(fen) <= 6 ? Math.max(p.mateReach, technique) : p.mateReach;
     const mateLook = await analyse(fen, { mate: reach, depth: 2 * reach + 2, ms: Math.max(40, Math.min(reach > 4 ? 1500 : 220, left() * 0.3)), multipv: 1, fresh: true });
     if (!mateLook) return null;
-    // (playing for the draw, a mate that is plainly there is still played: stalemating a won ending would be
-    // absurd. Only a deeper one, in a fuller position, may be let go. Playing to lose, no mate is taken.)
-    const plain = mode === 'win' || mode === 'free' ? reach : mode === 'draw' ? (countPieces(fen) <= 6 ? reach : Math.min(3, reach)) : 0;
+    // (playing for the draw or to lose, no mate is taken: a draw is not checkmate)
+    const plain = mode === 'win' || mode === 'free' ? reach : 0;
     if (mateLook.mate > 0 && mateLook.mate <= plain) return { ...mateLook, human: true, lines: [mateLook] };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
     // The rating is kept whatever the aim: play is that of the rating, lifted a notch toward the aim and held to floors that guard it.
@@ -4168,7 +4167,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // A master simply plays the engine's move (no attention rules left to slip on); the lose plan keeps its own path below.
     // (A won game with the clock running low is hurried the same way: the win has to come before the flag, so it is converted directly.)
     const hurried = mode === 'win' && evalNow !== null && evalNow >= 250 && clock < 20;
-    if ((trueElo >= 2200 || hurried) && mode !== 'lose' && left() > 200) {
+    if ((trueElo >= 2200 || hurried) && mode !== 'lose' && mode !== 'draw' && left() > 200) {
       const top = await analyse(fen, { depth: 14, ms: Math.max(150, Math.min(700, left() * 0.6)), multipv: 2, fresh: true });
       if (top && top.pv && top.pv.length) return { ...top, human: true, lines: top.lines && top.lines.length ? top.lines : [top] };
     }
@@ -4225,6 +4224,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // The moves under consideration are shown at once, before they have been checked any further.
     if (onIdea && rated.length) { try { onIdea(rated.slice().sort((a, b) => value(b.line) - value(a.line)).map(r => ({ uci: r.c.uci, pv: r.line.pv || [r.c.uci], cp: value(r.line) }))); } catch (e) { /* display only */ } }
     if (!rated.length) return cands.length ? { depth: 1, cp: 0, pv: [cands[0].uci], human: true, lines: [] } : { ...mateLook, human: true, lines: [mateLook] };
+    // Playing for the draw, the move that mates is never played while another move exists.
+    const mates = new Set();
+    if (mode === 'draw') for (const m of legal) { const g = new BoardStudioRules.Chess(fen); g.move(m); if (g.isCheckmate()) mates.add(m.from + m.to + (m.promotion || '')); }
+    const dropMates = () => { if (!mates.size) return; const safe = rated.filter(r => !mates.has(r.c.uci)); if (safe.length) { rated.length = 0; rated.push(...safe); } };
+    if (mates.size && rated.every(r => mates.has(r.c.uci))) {
+      const alts = legal.filter(m => !mates.has(m.from + m.to + (m.promotion || ''))).map(m => m.from + m.to + (m.promotion || ''));
+      if (alts.length) {
+        const alt = await analyse(fen, { depth: 6, ms: 150, multipv: Math.min(3, alts.length), searchMoves: alts.slice(0, 8), fresh: true });
+        if (alt && alt.pv && alt.pv.length) return { ...alt, human: true, lines: alt.lines && alt.lines.length ? alt.lines : [alt] };
+        return { depth: 1, cp: 0, pv: [alts[0]], human: true, lines: [] };
+      }
+    }
+    dropMates();
     // Clearly winning: convert. No taste for checks, a position seen before is avoided (that is how a won
     // game gets drawn), and when the fifty moves loom, a capture or a pawn move is progress.
     const halfmove = +String(fen).split(' ')[4] || 0;
@@ -4281,6 +4293,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // The outcome is decided, and only the way to it bends with the rating. So a move that gives material away for no
     // reason, or drops the eval below where the aim can still be reached, is not on the table: when drawing, the eval may
     // not go under a little below level (or, when already worse, under the best by much); a win may not be thrown away.
+    dropMates();
     const risks = new Map(rated.map(r => [r, mode === 'lose' ? 0 : materialAtRisk(fen, r.c.uci)]));
     const minRisk = Math.min(...risks.values());
     // a sacrifice that the search rates clearly above everything else is trusted (it may be the only way out)
@@ -4921,7 +4934,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // From a result to what to do: a mate becomes a plan, anything else one move.
   function clutchDecide(fen, result, s) {
-    if (result.mate > 0 && result.pv && (result.human || !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2)))) {
+    if (result.mate > 0 && s.mode !== 'draw' && result.pv && (result.human || !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2)))) {
       const line = mateLine(fen, result.pv);
       if (line[0] && line[0].ours) return { plan: { start: fen, line }, step: line[0], note: `mate in ${result.mate} (depth ${result.depth})` };
     }

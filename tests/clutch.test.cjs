@@ -1293,13 +1293,15 @@ test('a won position is converted: no habit of checks, and a position seen befor
   } finally { kill(); f.close(); }
 });
 
-test('win, draw or lose: a plain mate is never thrown away in a draw game, a lose game declines it', { timeout: 120000 }, async () => {
+test('win, draw or lose: a win takes the plain mate, a draw game never mates and a lose game declines it', { timeout: 120000 }, async () => {
   const f = setup(); const { engine, kill } = realEngine(f);
   try {
     const fen = '7k/8/5K2/8/8/8/8/6Q1 w - - 0 1';
     const ask = mode => f.api.humanAnalyse(fen, { ms: 4000, mode }, 1200, (x, y) => engine.analyse(x, y));
     assert.equal((await ask('win')).pv[0], 'g1g7', 'to win: the mate');
-    assert.equal((await ask('draw')).pv[0], 'g1g7', 'to draw: a mate in one is still plainly there, stalemating it would be absurd');
+    const drawn = await ask('draw');
+    const gd = new Chess(fen); gd.move({ from: drawn.pv[0].slice(0, 2), to: drawn.pv[0].slice(2, 4) });
+    assert.ok(!gd.isCheckmate(), 'to draw: the mate in one is there but is not played');
     const lost = await ask('lose');
     const g = new Chess(fen); g.move({ from: lost.pv[0].slice(0, 2), to: lost.pv[0].slice(2, 4) });
     assert.ok(!g.isCheckmate() && !g.isDraw() && !g.isStalemate(), 'to lose: neither the mate nor a draw');

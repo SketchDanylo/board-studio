@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.40.1
+// @version      6.40.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4105,7 +4105,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (q) { evalNow = q.mate !== undefined ? Math.sign(q.mate) * 5000 : q.cp; if (!ideaLines) ideaLines = q.lines && q.lines.length ? q.lines : [q]; }
     }
     // How strong a player this is, 0 (a beginner) to 1 (strong). It decides the way the outcome is reached, never the outcome.
-    const skill = Math.max(0, Math.min(1, (elo - 400) / 1800));
+    let skill = Math.max(0, Math.min(1, (elo - 400) / 1800));
     const played = evalNow !== null && expected !== null && evalNow - expected < -60;
     // The rating is the baseline; the play follows how the outcome is headed. On course (a win: an edge of about a pawn; a draw:
     // not worse than level) it plays as its rating does. Off course it bumps up, the further the more, until at five pawns down
@@ -4118,6 +4118,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     } else if (mode === 'lose' && evalNow !== null && evalNow > 100) {
       elo = Math.max(300, elo - Math.min(700, (evalNow - 100) * 1.2));
     }
+    // (the same goes for how likely the engine's own ideas are to be seen)
+    if (elo !== trueElo) skill = Math.max(0, Math.min(1, (elo - 400) / 1800));
     const p = humanProfile(elo, fen);
     // A piece under attack is always noticed when the aim is to win or draw: the outcome does not wait on a rating.
     if (mode !== 'lose') p.notice = 1;

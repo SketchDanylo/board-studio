@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.40.2
+// @version      6.41.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4839,7 +4839,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // and the opening are never held.
   //  - Playing to lose, one way is the clock: on some quiet moves it sits and thinks, a quarter to six tenths of
   //    what is left, and when little remains it stops altogether.
-  //  - Playing to draw with a clock to spare: on some quiet moves it spends its own time, so the opponent is not the
+  //  - Playing to draw: every quiet move waits a breath first (never an instant premove while there is time), and with a clock to spare, on some quiet moves it spends its own time, so the opponent is not the
   //    one running out (a flag would decide the game). It spends down towards a little above their clock, never
   //    more than 40% of its own, and only when it has plenty: a floor of 12 s on its own clock stays untouched.
   // Returns how long to hold this move, 0 for none.
@@ -4851,10 +4851,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     try { forced = new BoardStudioRules.Chess(fen).moves().length === 1; } catch (e) { /* none */ }
     if (step.capture || step.check || step.promotion || forced || full <= 6) return 0;
     if (mode === 'draw') {
-      if (oppClock === null || oppClock === undefined || clock < 12 || clock <= oppClock + 4) return 0;
-      if (unitHash(fen + 'give') >= 0.4) return 0;
-      const spare = Math.min(clock - Math.max(oppClock + 3, 12), clock * 0.4);
-      return spare >= 1.5 ? Math.round(spare * 1000 * (0.6 + 0.4 * unitHash(fen + 'giveamt'))) : 0;
+      // Every move waits a breath (up to a couple of seconds, a small share of the clock, a different amount each time), so the
+      // opponent is never rushed; now and then it spends much more of its own time when it has plenty.
+      const breath = clock >= 6 ? Math.round(Math.min(clock * 0.06, 1.6) * 1000 * (0.5 + unitHash(fen + 'breath'))) : 0;
+      let give = 0;
+      if (oppClock !== null && oppClock !== undefined && clock >= 12 && clock > oppClock + 4 && unitHash(fen + 'give') < 0.6) {
+        const spare = Math.min(clock - Math.max(oppClock + 3, 12), clock * 0.4);
+        give = spare >= 1.5 ? Math.round(spare * 1000 * (0.6 + 0.4 * unitHash(fen + 'giveamt'))) : 0;
+      }
+      return Math.max(breath, give);
     }
     if (unitHash(fen + 'burn') >= 0.5) return 0;
     if (clock < 4) return Math.round(clock * 1000 + 800);
@@ -5397,7 +5402,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${depth}. Premove: ${prem ? `${prem.step.from}-${prem.step.to} (${prem.why})` : book.complete ? 'none, the replies need different answers' : 'working it out'}${native ? '' : '. No premoves in this game: answers are held and played the instant they move'}`);
       // Where chess.com has premoves, a certain one is set for real (a trade is not: it must not
       // run if they do not take).
-      if (native && mayPlay && prem && !prem.likely && book.fullRound && !book.premoveSet) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
+      if (native && mayPlay && prem && !prem.likely && book.fullRound && !book.premoveSet && !(s.mode === 'draw' && clock >= 6)) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
     };
     const stillTheirMove = () => {
       if (book.token.stop) return false;

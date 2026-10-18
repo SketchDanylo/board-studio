@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.41.1
+// @version      6.42.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3744,6 +3744,30 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // The engine's line as steps. Our steps are sure when every opponent move before them was forced
   // (their only legal move), so they can be played without seeing the reply, and premoved.
+  // A mate a drawing player still delivers because it is simple: one move, a run of checks (a ladder of rooks or queen and rook is
+  // long but mechanical, and can be premoved), or a plain technique ending with few pieces left, in each case with nothing given
+  // away on the way. A mate that needs a sacrifice, or quiet moves that only work because of a slip, is the hard kind: not played.
+  function isSimpleMate(fen, line) {
+    const n = line && line.mate;
+    if (!(n > 0)) return false;
+    if (n <= 1) return true;
+    const pv = (line.pv || []);
+    const side = fen.split(' ')[1];
+    const balance = f => { let t = 0; for (const ch of f.split(' ')[0]) { const v = HUMAN_VALUE[ch.toLowerCase()]; if (v) t += (ch === ch.toUpperCase() ? 1 : -1) * v * (side === 'w' ? 1 : -1); } return t; };
+    const game = new BoardStudioRules.Chess(fen);
+    const start = balance(fen);
+    let allChecks = true, gave = false;
+    for (let i = 0; i < pv.length; i++) {
+      const move = game.moves({ verbose: true }).find(m => m.from + m.to + (m.promotion || '') === pv[i]);
+      if (!move) break;
+      game.move(move);
+      if (i % 2 === 0) { if (!/[+#]/.test(move.san)) allChecks = false; }
+      else if (start - balance(game.fen()) >= 2) gave = true;
+    }
+    if (gave) return false;
+    return allChecks || n <= 2 || countPieces(fen) <= 6;
+  }
+
   function mateLine(fen, pv) {
     const game = new BoardStudioRules.Chess(fen);
     const line = [];
@@ -4134,8 +4158,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const reach = countPieces(fen) <= 6 ? Math.max(p.mateReach, technique) : p.mateReach;
     const mateLook = await analyse(fen, { mate: reach, depth: 2 * reach + 2, ms: Math.max(40, Math.min(reach > 4 ? 1500 : 220, left() * 0.3)), multipv: 1, fresh: true });
     if (!mateLook) return null;
-    // (playing for the draw or to lose, no mate is taken: a draw is not checkmate)
-    const plain = mode === 'win' || mode === 'free' ? reach : 0;
+    // (playing for the draw, a simple mate is still delivered (see isSimpleMate); a complex one is left. Playing to lose, no mate is taken.)
+    const plain = mode === 'win' || mode === 'free' ? reach : mode === 'draw' && isSimpleMate(fen, mateLook) ? reach : 0;
     if (mateLook.mate > 0 && mateLook.mate <= plain) return { ...mateLook, human: true, lines: [mateLook] };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
     // The rating is kept whatever the aim: play is that of the rating, lifted a notch toward the aim and held to floors that guard it.
@@ -4224,19 +4248,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // The moves under consideration are shown at once, before they have been checked any further.
     if (onIdea && rated.length) { try { onIdea(rated.slice().sort((a, b) => value(b.line) - value(a.line)).map(r => ({ uci: r.c.uci, pv: r.line.pv || [r.c.uci], cp: value(r.line) }))); } catch (e) { /* display only */ } }
     if (!rated.length) return cands.length ? { depth: 1, cp: 0, pv: [cands[0].uci], human: true, lines: [] } : { ...mateLook, human: true, lines: [mateLook] };
-    // Playing for the draw, the move that mates is never played while another move exists.
-    const mates = new Set();
-    if (mode === 'draw') for (const m of legal) { const g = new BoardStudioRules.Chess(fen); g.move(m); if (g.isCheckmate()) mates.add(m.from + m.to + (m.promotion || '')); }
-    const dropMates = () => { if (!mates.size) return; const safe = rated.filter(r => !mates.has(r.c.uci)); if (safe.length) { rated.length = 0; rated.push(...safe); } };
-    if (mates.size && rated.every(r => mates.has(r.c.uci))) {
-      const alts = legal.filter(m => !mates.has(m.from + m.to + (m.promotion || ''))).map(m => m.from + m.to + (m.promotion || ''));
-      if (alts.length) {
-        const alt = await analyse(fen, { depth: 6, ms: 150, multipv: Math.min(3, alts.length), searchMoves: alts.slice(0, 8), fresh: true });
-        if (alt && alt.pv && alt.pv.length) return { ...alt, human: true, lines: alt.lines && alt.lines.length ? alt.lines : [alt] };
-        return { depth: 1, cp: 0, pv: [alts[0]], human: true, lines: [] };
-      }
-    }
-    dropMates();
     // Clearly winning: convert. No taste for checks, a position seen before is avoided (that is how a won
     // game gets drawn), and when the fifty moves loom, a capture or a pawn move is progress.
     const halfmove = +String(fen).split(' ')[4] || 0;
@@ -4293,7 +4304,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // The outcome is decided, and only the way to it bends with the rating. So a move that gives material away for no
     // reason, or drops the eval below where the aim can still be reached, is not on the table: when drawing, the eval may
     // not go under a little below level (or, when already worse, under the best by much); a win may not be thrown away.
-    dropMates();
     const risks = new Map(rated.map(r => [r, mode === 'lose' ? 0 : materialAtRisk(fen, r.c.uci)]));
     const minRisk = Math.min(...risks.values());
     // a sacrifice that the search rates clearly above everything else is trusted (it may be the only way out)
@@ -4855,9 +4865,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   //  - Playing to draw: every quiet move waits a breath first (never an instant premove while there is time), and with a clock to spare, on some quiet moves it spends its own time, so the opponent is not the
   //    one running out (a flag would decide the game). It spends down towards a little above their clock, never
   //    more than 40% of its own, and only when it has plenty: a floor of 12 s on its own clock stays untouched.
+  //  - Playing to lose with their clock nearly out (under 20 s and below ours), the whole clock is run out at once.
   // Returns how long to hold this move, 0 for none.
+  const clutchRace = (mode, clock, oppClock) => mode === 'lose' && oppClock !== null && oppClock !== undefined && oppClock < 20 && oppClock < clock * 0.9;
   function clutchBurnMs(mode, way, step, fen, clock, oppClock = null) {
     if (!step || (mode !== 'lose' && mode !== 'draw')) return 0;
+    // A loss with the other side nearly out of time: they would flag before the board decides anything, and that is a win for us.
+    // So the clock is run out here instead, on any move: it is our turn, their clock does not move while we sit.
+    if (clutchRace(mode, clock, oppClock)) return Math.round(clock * 1000 + 800);
     if (mode === 'lose' && way !== 'time') return 0;
     const full = +String(fen).split(' ')[5] || 1;
     let forced = false;
@@ -4934,7 +4949,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // From a result to what to do: a mate becomes a plan, anything else one move.
   function clutchDecide(fen, result, s) {
-    if (result.mate > 0 && s.mode !== 'draw' && result.pv && (result.human || !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2)))) {
+    if (result.mate > 0 && (s.mode !== 'draw' || isSimpleMate(fen, result)) && result.pv && (result.human || !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2)))) {
       const line = mateLine(fen, result.pv);
       if (line[0] && line[0].ours) return { plan: { start: fen, line }, step: line[0], note: `mate in ${result.mate} (depth ${result.depth})` };
     }
@@ -5278,6 +5293,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     s.seen = after => (clutch.seen && clutch.seen[String(after).split(' ').slice(0, 3).join(' ')]) || 0;
     clutch.acting = clutchMayPlay();
     const oppClock = readClock('opp');
+    if (clutchRace(clutch.mode, clock, oppClock) && clutch.way !== 'time') { clutch.way = 'time'; setClutchMode('lose', 'time'); }
     const turn = fen.split(' ')[1], key = repKey(fen);
     const mayPlay = clutchMayPlay();
     const act = (step, premove, note, instant) => {

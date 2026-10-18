@@ -988,6 +988,35 @@ test('the play follows the outcome: on course it is the rating, off course it bu
   } finally { f.close(); }
 });
 
+test('a simple mate is delivered when drawing, a complex one (a sacrifice) is not', () => {
+  const f = setup();
+  try {
+    const simple = f.api.isSimpleMate;
+    assert.equal(simple('7k/8/5K2/8/8/8/8/6Q1 w - - 0 1', { mate: 1, pv: ['g1g7'] }), true, 'mate in one');
+    assert.equal(simple('7k/8/5K2/8/8/8/8/6Q1 w - - 0 1', { mate: undefined, pv: [] }), false, 'no mate');
+    assert.equal(simple('7k/8/8/8/8/8/8/K5Q1 w - - 0 1', { mate: 5, pv: ['g1g6'] }), true, 'a long technique mate with few pieces left is mechanical');
+    // Legal's mate: Nxe5 Bxd1 Bxf7+ Ke7 Nd5#, the queen given away on the way
+    assert.equal(simple('rn1qkbnr/ppp2p1p/3p2p1/4p3/2B1P1b1/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 0 5', { mate: 3, pv: ['f3e5', 'g4d1', 'c4f7', 'e8e7', 'c3d5'] }), false, 'a mate through a queen sacrifice is the hard kind');
+    assert.equal(simple('rn1qkbnr/ppp2p1p/3p2p1/4p3/2B1P1b1/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 0 5', { mate: 4, pv: ['c4f7'] }), true, 'a run of checks with nothing given away');
+    assert.equal(simple('rn1qkbnr/ppp2p1p/3p2p1/4p3/2B1P1b1/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 0 5', { mate: 4, pv: ['d2d3'] }), false, 'a long quiet mate in a full position is not simple');
+  } finally { f.close(); }
+});
+
+test('playing to lose with their clock nearly out: the whole clock is run out, on any move, instead of letting them flag', () => {
+  const f = setup();
+  try {
+    const burn = f.api.clutchBurnMs;
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 20';
+    const quiet = { uci: 'g1f3', check: false, capture: false, promotion: null };
+    assert.ok(burn('lose', 'board', quiet, fen, 40, 8) >= 40800, 'they have 8 s, we have 40: our clock is run out');
+    assert.ok(burn('lose', 'board', { ...quiet, capture: true }, fen, 40, 8) >= 40800, 'even a capture waits');
+    assert.equal(burn('lose', 'board', quiet, fen, 40, 30), 0, 'they have plenty: the board decides');
+    assert.equal(burn('lose', 'board', quiet, fen, 10, 15), 0, 'they have more than us: no race, ours is lower already');
+    assert.equal(burn('win', null, quiet, fen, 40, 8), 0, 'only a loss does it');
+    assert.equal(f.api.clutchRace('lose', 40, 8), true); assert.equal(f.api.clutchRace('draw', 40, 8), false);
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {
@@ -1293,15 +1322,13 @@ test('a won position is converted: no habit of checks, and a position seen befor
   } finally { kill(); f.close(); }
 });
 
-test('win, draw or lose: a win takes the plain mate, a draw game never mates and a lose game declines it', { timeout: 120000 }, async () => {
+test('win, draw or lose: a win and a draw take the simple mate in one, a lose game declines it', { timeout: 120000 }, async () => {
   const f = setup(); const { engine, kill } = realEngine(f);
   try {
     const fen = '7k/8/5K2/8/8/8/8/6Q1 w - - 0 1';
     const ask = mode => f.api.humanAnalyse(fen, { ms: 4000, mode }, 1200, (x, y) => engine.analyse(x, y));
     assert.equal((await ask('win')).pv[0], 'g1g7', 'to win: the mate');
-    const drawn = await ask('draw');
-    const gd = new Chess(fen); gd.move({ from: drawn.pv[0].slice(0, 2), to: drawn.pv[0].slice(2, 4) });
-    assert.ok(!gd.isCheckmate(), 'to draw: the mate in one is there but is not played');
+    assert.equal((await ask('draw')).pv[0], 'g1g7', 'to draw: a mate in one is simple, it is delivered');
     const lost = await ask('lose');
     const g = new Chess(fen); g.move({ from: lost.pv[0].slice(0, 2), to: lost.pv[0].slice(2, 4) });
     assert.ok(!g.isCheckmate() && !g.isDraw() && !g.isStalemate(), 'to lose: neither the mate nor a draw');

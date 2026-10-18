@@ -961,6 +961,31 @@ test('a won game with the clock running low is converted directly by the engine,
   } finally { f.close(); }
 });
 
+test('the play follows the outcome: on course it is the rating, off course it bumps up (win, draw), and losing it drops when the eval is too high', async () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2';
+    const used = [];
+    const eng = ev => async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      if (!o.searchMoves) return { depth: 8, cp: ev, pv: [], lines: [] };
+      const lines = o.searchMoves.map(u => ({ depth: 6, cp: ev, pv: [u] }));
+      return { depth: 6, cp: ev, pv: lines[0].pv, lines };
+    };
+    const depthAt = async (mode, ev) => {
+      let max = 0;
+      const wrapped = async (x, o) => { if (o.searchMoves && o.depth > max) max = o.depth; return eng(ev)(x, o); };
+      await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: ev, clock: 60 }, 800, wrapped);
+      return max;
+    };
+    const onCourse = await depthAt('win', 200), behind = await depthAt('win', -200), draw = await depthAt('draw', -250), drawOk = await depthAt('draw', 10);
+    assert.ok(behind > onCourse, 'a win going wrong is looked at deeper (' + behind + ' > ' + onCourse + ')');
+    assert.ok(draw > drawOk, 'so is a draw going wrong (' + draw + ' > ' + drawOk + ')');
+    const loseWell = await depthAt('lose', -300), loseBad = await depthAt('lose', 500);
+    assert.ok(loseBad <= loseWell, 'a loss that is not coming is played at a lower level (' + loseBad + ' <= ' + loseWell + ')');
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

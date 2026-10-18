@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.39.0
+// @version      6.40.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4107,16 +4107,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // How strong a player this is, 0 (a beginner) to 1 (strong). It decides the way the outcome is reached, never the outcome.
     const skill = Math.max(0, Math.min(1, (elo - 400) / 1800));
     const played = evalNow !== null && expected !== null && evalNow - expected < -60;
-    let boost = countPieces(fen) <= 10 && (mode === 'win' || mode === 'draw') ? (mode === 'win' ? 350 : 180) : 0;
-    // The further the eval bar is below level, the nearer to an engine it plays (from level and a little above, a little better than
-    // its rating; at about 2 pawns down, as strong as it gets): the aim is held onto, whatever the rating.
-    if ((mode === 'win' || mode === 'draw') && evalNow !== null && evalNow < 50) boost = Math.max(boost, Math.min(1800, (50 - evalNow) * 8));
-    // Going for a win, an edge has to be made: until the eval is clearly in favour the play is lifted well above the rating.
-    if (mode === 'win' && evalNow !== null && evalNow < 250) boost = Math.max(boost, Math.min(1800, 700 + Math.max(0, 50 - evalNow) * 8));
-    if ((mode === 'win' || mode === 'draw') && (pressure || played)) boost += 300;
+    // The rating is the baseline; the play follows how the outcome is headed. On course (a win: an edge of about a pawn; a draw:
+    // not worse than level) it plays as its rating does. Off course it bumps up, the further the more, until at five pawns down
+    // it is the engine. Losing, it is the other way: when the eval is above where a loss would come from, the play drops below
+    // the rating, so the slips come and the position slides.
     const trueElo = elo;
-    // The lift toward the aim is bounded: the play stays that of the rating's own kind, a notch above it, not an engine.
-    elo = Math.min(2600, elo + Math.min(boost, 500));
+    if ((mode === 'win' || mode === 'draw') && evalNow !== null) {
+      const deficit = Math.max(0, (mode === 'win' ? 80 : -30) - evalNow);
+      if (deficit > 0) elo = Math.min(2600, elo + Math.min(1800, deficit * 4.5 + (pressure || played ? 200 : 0)));
+    } else if (mode === 'lose' && evalNow !== null && evalNow > 100) {
+      elo = Math.max(300, elo - Math.min(700, (evalNow - 100) * 1.2));
+    }
     const p = humanProfile(elo, fen);
     // A piece under attack is always noticed when the aim is to win or draw: the outcome does not wait on a rating.
     if (mode !== 'lose') p.notice = 1;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.38.7
+// @version      6.38.8
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4300,14 +4300,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // walks into a mate), it is struck out. The rating decides which of the safe moves is chosen, never whether it is safe.
     const checkMs = left() > 900 ? 130 : 60;
     let checked = 0;
-    for (const r of mode === 'lose' ? [] : rated.slice(0, 6)) {
+    const looked = new Set();
+    // true when the move is struck out (and its score with it)
+    const refute = async (r, ms) => {
       const after = stepFor(fen, r.c.uci);
-      if (!after || left() < 90 || checked >= (left() > 900 ? 6 : 3)) continue;
-      checked++;
-      const reply = await analyse(after.fen, { depth: 10, ms: Math.max(40, Math.min(checkMs, left() / 5)), multipv: 1, fresh: true });
-      if (!reply) continue;
+      looked.add(r);
+      if (!after) return false;
+      const reply = await analyse(after.fen, { depth: 10, ms, multipv: 1, fresh: true });
+      if (!reply) return false;
       const ours = reply.mate !== undefined ? -Math.sign(reply.mate) * (10000 - Math.abs(reply.mate)) : -reply.cp;
-      if (ours < Math.min(value(r.line), topValue) - 150) r.score -= 6000 + (reply.mate > 0 ? 14000 : 0);
+      if (ours < Math.min(value(r.line), topValue) - 150) { r.score -= 6000 + (reply.mate > 0 ? 14000 : 0); return true; }
+      return false;
+    };
+    for (const r of mode === 'lose' ? [] : rated.slice(0, 6)) {
+      if (left() < 90 || checked >= (left() > 900 ? 6 : 3)) continue;
+      checked++;
+      await refute(r, Math.max(40, Math.min(checkMs, left() / 5)));
     }
     rated.sort((a, b) => b.score - a.score);
     let best = rated[0];
@@ -4329,6 +4337,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const okAim = r => { const v = value(r.line); return mode === 'draw' ? v >= floorV : mode === 'win' ? (topValue < 150 || v >= 100) : true; };
       const fair = rated.filter(r => r.score > -1000 && value(r.line) >= top - slipCap && !(r.c.capture && r.c.net < 0) && okAim(r) && !(mode !== 'lose' && risks.get(r) >= 200));
       if (fair.length) best = fair.slice().sort((a, b) => (b.c.salience - a.c.salience) + (mode === 'lose' ? (value(a.line) - value(b.line)) / 150 : 0))[0];
+    }
+    // Whatever was finally chosen (a slip included) has been looked at from the other side; a move that was never checked is now.
+    if (mode !== 'lose') {
+      for (let guard = 0; guard < 3 && !looked.has(best); guard++) {
+        const struck = await refute(best, Math.max(50, Math.min(120, left() / 2 + 40)));
+        if (!struck) break;
+        rated.sort((a, b) => b.score - a.score);
+        best = rated[0];
+      }
     }
     if (debug) { try { debug({ elo, p, topValue, evalNow, rated: rated.map(r => ({ uci: r.c.uci, v: value(r.line), score: Math.round(r.score), d: r.line.depth })) }); } catch (e) { /* debugging only */ } }
     return { ...best.line, human: true, depth: p.quietDepth, lines: [best.line, ...rated.map(r => r.line).filter(l => l !== best.line)] };

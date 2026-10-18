@@ -919,30 +919,26 @@ test('there are two engines: pondering has its own queue and never cancels a dec
   } finally { f.close(); }
 });
 
-test('the outcome is dictated: until a win is secured it is played at full strength, and the rating colours the way only after', async () => {
+test('the rating is kept whatever the aim: the engine takes over only when the position is disastrous for it', async () => {
   const f = setup();
   try {
     const fen = 'rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2';
-    let full = 0, human = 0;
+    let full = 0;
     const eng = evalNow => async (x, o) => {
       if (o.mate) return { depth: 4, cp: 0, pv: [] };
       if (!o.searchMoves && o.depth === 14) { full++; return { depth: 14, cp: evalNow, pv: ['e2e4'], lines: [{ depth: 14, cp: evalNow, pv: ['e2e4'] }, { depth: 14, cp: evalNow - 30, pv: ['d2d4'] }] }; }
       if (!o.searchMoves) return { depth: 8, cp: evalNow, pv: [] };
-      human++;
       const lines = o.searchMoves.map(u => ({ depth: 6, cp: evalNow, pv: [u] }));
       return { depth: 6, cp: evalNow, pv: lines[0].pv, lines };
     };
-    const play = (mode, ev) => f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: ev, clock: 60 }, 500, eng(ev));
-    let r = await play('win', 100);
-    assert.equal(full, 1, 'a win not yet secured (+1 pawn) is played by the full engine'); assert.equal(r.pv[0], 'e2e4');
-    full = 0; human = 0; r = await play('win', 400);
-    assert.equal(full, 0, 'a secured win (+4) is played the rating\'s way'); assert.ok(human > 0);
-    full = 0; r = await play('draw', 10);
-    assert.equal(full, 1, 'a draw not yet secured (level) is played by the full engine');
-    full = 0; human = 0; r = await play('draw', 200);
-    assert.equal(full, 0, 'with the eval above level it is the rating\'s way (giving the edge back)');
-    full = 0; r = await play('lose', -50);
-    assert.equal(full, 0, 'a loss is never played by the full engine');
+    const play = (mode, ev, elo = 500) => f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: ev, clock: 60 }, elo, eng(ev));
+    await play('win', 100); assert.equal(full, 0, 'a win not yet secured is still played with the rating');
+    await play('draw', 10); assert.equal(full, 0, 'so is a draw held from a level position');
+    await play('win', -300); assert.equal(full, 0, 'and a position a little worse');
+    await play('win', -700); assert.equal(full, 1, 'a disastrous position (over five pawns down) is played by the engine');
+    full = 0; await play('draw', -700); assert.equal(full, 1);
+    full = 0; await play('lose', -700); assert.equal(full, 0, 'a loss is never played by the full engine');
+    full = 0; await play('win', 100, 2400); assert.equal(full, 1, 'a master plays the engine move at any aim');
   } finally { f.close(); }
 });
 

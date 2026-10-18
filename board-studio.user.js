@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.38.9
+// @version      6.39.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4114,7 +4114,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Going for a win, an edge has to be made: until the eval is clearly in favour the play is lifted well above the rating.
     if (mode === 'win' && evalNow !== null && evalNow < 250) boost = Math.max(boost, Math.min(1800, 700 + Math.max(0, 50 - evalNow) * 8));
     if ((mode === 'win' || mode === 'draw') && (pressure || played)) boost += 300;
-    elo = Math.min(2600, elo + boost);
+    const trueElo = elo;
+    // The lift toward the aim is bounded: the play stays that of the rating's own kind, a notch above it, not an engine.
+    elo = Math.min(2600, elo + Math.min(boost, 500));
     const p = humanProfile(elo, fen);
     // A piece under attack is always noticed when the aim is to win or draw: the outcome does not wait on a rating.
     if (mode !== 'lose') p.notice = 1;
@@ -4134,12 +4136,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const plain = mode === 'win' || mode === 'free' ? reach : mode === 'draw' ? (countPieces(fen) <= 6 ? reach : Math.min(3, reach)) : 0;
     if (mateLook.mate > 0 && mateLook.mate <= plain) return { ...mateLook, human: true, lines: [mateLook] };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
-    // The outcome is dictated, and the rating only decides the way. Until a win is secured (a clear edge, two and a half pawns), or a
-    // draw is (the eval above level), nothing is left to the rating: every move is looked at, as deep as the time allows, and the
-    // best is played. Once it is secured the rating comes back: the path to the end is its own (slow or direct, trading or keeping
-    // things as they are), with the aim kept in sight.
-    const secured = mode === 'win' ? evalNow !== null && evalNow >= 250 : mode === 'draw' ? evalNow !== null && evalNow >= 60 : true;
-    if ((mode === 'win' || mode === 'draw') && evalNow !== null && !secured && left() > 200) {
+    // The rating is kept whatever the aim: play is that of the rating, lifted a notch toward the aim and held to floors that guard it.
+    // Only when the position is truly lost for the aim (more than five pawns down) is nothing left to the rating: every move is
+    // looked at, as deep as the time allows, and the best is played.
+    if ((mode === 'win' || mode === 'draw') && evalNow !== null && evalNow < -500 && left() > 200) {
       const full = await analyse(fen, { depth: 14, ms: Math.max(150, Math.min(1000, left() * 0.7)), multipv: 3, fresh: true });
       if (full && full.pv && full.pv.length) {
         let lines = full.lines && full.lines.length ? full.lines : [full], best = full;
@@ -4165,7 +4165,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // A master simply plays the engine's move (no attention rules left to slip on); the lose plan keeps its own path below.
     // (A won game with the clock running low is hurried the same way: the win has to come before the flag, so it is converted directly.)
     const hurried = mode === 'win' && evalNow !== null && evalNow >= 250 && clock < 20;
-    if ((elo >= 2200 || hurried) && mode !== 'lose' && left() > 200) {
+    if ((trueElo >= 2200 || hurried) && mode !== 'lose' && left() > 200) {
       const top = await analyse(fen, { depth: 14, ms: Math.max(150, Math.min(700, left() * 0.6)), multipv: 2, fresh: true });
       if (top && top.pv && top.pv.length) return { ...top, human: true, lines: top.lines && top.lines.length ? top.lines : [top] };
     }

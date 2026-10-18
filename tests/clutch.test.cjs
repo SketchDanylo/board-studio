@@ -397,7 +397,7 @@ function ratedBy(values) {
   const order = [];
   return async (fen, o) => {
     if (o.mate) return { depth: 4, cp: 0, pv: [] };
-    if (!o.searchMoves) return { depth: 8, cp: o.ms === 60 ? values[0] : -values[0], pv: [] };   // the eval bar, and a look from the other side that agrees
+    if (!o.searchMoves) return { depth: 8, cp: o.ms === 70 ? values[0] : -values[0], pv: [] };   // the eval bar, and a look from the other side that agrees
     const moves = o.searchMoves || [];
     const lines = moves.map(uci => { if (!order.includes(uci)) order.push(uci); return { depth: 6, cp: values[order.indexOf(uci)] ?? -900, pv: [uci] }; }).sort((a, b) => b.cp - a.cp);
     return { depth: 6, cp: lines[0] ? lines[0].cp : 0, pv: lines[0] ? lines[0].pv : [], lines };
@@ -611,7 +611,7 @@ test('every move is checked from the other side before it is played, and the eva
         const lines = o.searchMoves.map(u => ({ depth: 6, cp: v[u] ?? -40, pv: [u] })).sort((a, b) => b.cp - a.cp);
         return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
       }
-      if (o.depth === 8 && o.ms === 60) { calls.probe++; return { depth: 8, cp: 10, pv: ['d1d2'] }; }   // the eval bar
+      if (o.depth === 8 && o.ms === 70) { calls.probe++; return { depth: 8, cp: 10, pv: ['d1d2'] }; }   // the eval bar
       calls.check++;
       return x === hangs ? { depth: 10, cp: 700, pv: ['c5d3'] } : { depth: 10, cp: 5, pv: ['e8d8'] };
     };
@@ -638,7 +638,7 @@ test('a prepared answer is also made against the eval bar: when the moves notice
         const lines = o.searchMoves.map(u => ({ depth: 6, cp: u === 'e2e4' ? 120 : -50, pv: [u] })).sort((a, b) => b.cp - a.cp);
         return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
       }
-      if (o.depth === 8 && o.ms === 60) return { depth: 8, cp: 300, pv: ['e2e4'] };
+      if (o.depth === 8 && o.ms === 70) return { depth: 8, cp: 300, pv: ['e2e4'] };
       return { depth: 10, cp: 0, pv: [] };
     };
     const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'draw' }, 400, eng);
@@ -651,7 +651,7 @@ function listed(values) {
   const order = [];
   return async (fen, o) => {
     if (o.mate) return { depth: 4, cp: 0, pv: [] };
-    if (!o.searchMoves) return { depth: 8, cp: o.ms === 60 ? values[0] : -values[0], pv: [] };
+    if (!o.searchMoves) return { depth: 8, cp: o.ms === 70 ? values[0] : -values[0], pv: [] };
     const lines = o.searchMoves.map(u => { if (!order.includes(u)) order.push(u); return { depth: 6, cp: values[order.indexOf(u)] ?? -900, pv: [u] }; }).sort((a, b) => b.cp - a.cp);
     return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
   };
@@ -722,7 +722,7 @@ test('ideas are shown as soon as they exist: the moves under consideration are h
     const fen = '4k3/8/8/2n5/8/8/8/3QK3 w - - 0 1';
     const eng = async (x, o) => {
       if (o.mate) return { depth: 4, cp: 0, pv: [] };
-      if (!o.searchMoves) return { depth: 8, cp: 10, pv: ['d1d2'] };
+      if (!o.searchMoves) return { depth: 8, cp: 400, pv: ['d1d2'] };
       const lines = o.searchMoves.map(u => ({ depth: 6, cp: u === 'd1d2' ? 20 : -10, pv: [u, 'e8d8'] })).sort((a, b) => b.cp - a.cp);
       return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
     };
@@ -892,6 +892,57 @@ test('the engine tells a watcher at once: each time a whole set of lines for a d
     assert.deepEqual(seen.map(x => x[0]), [1, 2], 'told at depth 1 and at depth 2, not once per line');
     assert.deepEqual(Array.from(seen[1][1]), ['g1f3', 'e2e4'], 'with the better ideas of the deeper look');
     assert.ok(r && r.pv[0] === 'g1f3');
+  } finally { f.close(); }
+});
+
+test('there are two engines: pondering has its own queue and never cancels a decision', async () => {
+  const f = setup();
+  try {
+    const main = f.api.clutchEngine, ponder = f.api.ponderEngine;
+    assert.ok(main !== ponder, 'two objects');
+    const sent = { main: [], ponder: [] };
+    main.worker = { postMessage: c => sent.main.push(c), terminate() {} }; main.ready = true; main.job = null; main.pending = null;
+    ponder.worker = { postMessage: c => sent.ponder.push(c), terminate() {} }; ponder.ready = true; ponder.job = null; ponder.pending = null;
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const decision = main.analyse(fen, { depth: 6, ms: 100 });
+    const pondering = ponder.analyse(fen, { depth: 6, ms: 100 });
+    assert.ok(!sent.main.includes('stop') && !sent.ponder.includes('stop'), 'neither stopped the other');
+    ponder.analyse(fen, { depth: 8, ms: 100 });                       // a new look replaces the pondering one, only there
+    assert.ok(!sent.main.includes('stop'), 'the decision engine was left alone');
+    ponder.halt();
+    assert.ok(sent.ponder.includes('stop'), 'pondering can be halted when their move comes');
+    main.receive('info depth 2 multipv 1 score cp 10 pv e2e4'); main.receive('bestmove e2e4');
+    const r = await decision;
+    assert.equal(r.pv[0], 'e2e4', 'and the decision came out untouched');
+    ponder.receive('bestmove a2a3');
+    assert.equal(await pondering, null, 'the replaced pondering look gave nothing');
+  } finally { f.close(); }
+});
+
+test('the outcome is dictated: until a win is secured it is played at full strength, and the rating colours the way only after', async () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2';
+    let full = 0, human = 0;
+    const eng = evalNow => async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      if (!o.searchMoves && o.depth === 14) { full++; return { depth: 14, cp: evalNow, pv: ['e2e4'], lines: [{ depth: 14, cp: evalNow, pv: ['e2e4'] }, { depth: 14, cp: evalNow - 30, pv: ['d2d4'] }] }; }
+      if (!o.searchMoves) return { depth: 8, cp: evalNow, pv: [] };
+      human++;
+      const lines = o.searchMoves.map(u => ({ depth: 6, cp: evalNow, pv: [u] }));
+      return { depth: 6, cp: evalNow, pv: lines[0].pv, lines };
+    };
+    const play = (mode, ev) => f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: ev, clock: 60 }, 500, eng(ev));
+    let r = await play('win', 100);
+    assert.equal(full, 1, 'a win not yet secured (+1 pawn) is played by the full engine'); assert.equal(r.pv[0], 'e2e4');
+    full = 0; human = 0; r = await play('win', 400);
+    assert.equal(full, 0, 'a secured win (+4) is played the rating\'s way'); assert.ok(human > 0);
+    full = 0; r = await play('draw', 10);
+    assert.equal(full, 1, 'a draw not yet secured (level) is played by the full engine');
+    full = 0; human = 0; r = await play('draw', 200);
+    assert.equal(full, 0, 'with the eval above level it is the rating\'s way (giving the edge back)');
+    full = 0; r = await play('lose', -50);
+    assert.equal(full, 0, 'a loss is never played by the full engine');
   } finally { f.close(); }
 });
 

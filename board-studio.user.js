@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.38.8
+// @version      6.38.9
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4163,7 +4163,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
     }
     // A master simply plays the engine's move (no attention rules left to slip on); the lose plan keeps its own path below.
-    if (elo >= 2200 && mode !== 'lose' && left() > 200) {
+    // (A won game with the clock running low is hurried the same way: the win has to come before the flag, so it is converted directly.)
+    const hurried = mode === 'win' && evalNow !== null && evalNow >= 250 && clock < 20;
+    if ((elo >= 2200 || hurried) && mode !== 'lose' && left() > 200) {
       const top = await analyse(fen, { depth: 14, ms: Math.max(150, Math.min(700, left() * 0.6)), multipv: 2, fresh: true });
       if (top && top.pv && top.pv.length) return { ...top, human: true, lines: top.lines && top.lines.length ? top.lines : [top] };
     }

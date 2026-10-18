@@ -946,6 +946,25 @@ test('the outcome is dictated: until a win is secured it is played at full stren
   } finally { f.close(); }
 });
 
+test('a won game with the clock running low is converted directly by the engine, not in the slow way of the rating', async () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2';
+    let full = 0;
+    const eng = async (x, o) => {
+      if (o.mate) return { depth: 4, cp: 0, pv: [] };
+      if (!o.searchMoves && o.depth === 14) { full++; return { depth: 14, cp: 500, pv: ['e2e4'], lines: [{ depth: 14, cp: 500, pv: ['e2e4'] }] }; }
+      if (!o.searchMoves) return { depth: 8, cp: 500, pv: [] };
+      const lines = o.searchMoves.map(u => ({ depth: 6, cp: 500, pv: [u] }));
+      return { depth: 6, cp: 500, pv: lines[0].pv, lines };
+    };
+    await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', evalNow: 500, clock: 60 }, 500, eng);
+    assert.equal(full, 0, 'with a minute left a secured win is played the way of the rating');
+    const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', evalNow: 500, clock: 12 }, 500, eng);
+    assert.equal(full, 1, 'with 12 s left it is hurried'); assert.equal(r.pv[0], 'e2e4');
+  } finally { f.close(); }
+});
+
 test('clearly lost: premove their best reply at once; otherwise only what is certain', () => {
   const f = setup();
   try {

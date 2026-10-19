@@ -209,13 +209,13 @@ test('a move you draw for the opponent is what they play, instead of the engine\
   } finally { f.close(); }
 });
 
-test('a move drawn for the opponent on your own turn is taken as their next move, and the ghosts are for your side', () => {
+test('a move drawn for the opponent on your own turn is taken as their next move (the position is then yours to move)', () => {
   const f = setup();
   try {
     const position = f.api.ghostReplyPosition;
     // You are White and it is your move; you draw ...e5 for Black.
     const black = new Chess('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1'); black.move('e5');
-    assert.equal(position(initialFEN, [{ from: 'e7', to: 'e5' }], null, null, 'w'), black.fen(), 'it is their move now, so White is next and the ghosts show White\'s best');
+    assert.equal(position(initialFEN, [{ from: 'e7', to: 'e5' }], null, null, 'w'), black.fen(), 'it is their move now, so White is next');
     assert.equal(position(initialFEN, [{ from: 'e7', to: 'e5' }], null, null, 'w').split(' ')[1], 'w');
     // their move, then yours, then theirs again: every drawn move is followed in the order it can be played
     const chain = new Chess('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1'); ['e5', 'Nf3', 'Nc6'].forEach(m => chain.move(m));
@@ -242,5 +242,54 @@ test('changing a move of either side rebuilds the line from it, and a gap on eit
     assert.equal(position(e4.fen(), [{ from: 'e7', to: 'e5' }, { from: 'g1', to: 'f3' }, { from: 'd7', to: 'd5' }], null, null, 'b'), other.fen(), 'the changed move is followed');
     const other2 = new Chess(e5.fen()); other2.move('d4'); other2.move('d5');
     assert.equal(position(e4.fen(), [{ from: 'e7', to: 'e5' }, { from: 'd2', to: 'd4' }, { from: 'd7', to: 'd5' }], null, null, 'b'), other2.fen());
+  } finally { f.close(); }
+});
+
+test('Ghost AI never shows your own best move: a line that ends on your turn shows only what it assumed for the opponent', () => {
+  const f = setup();
+  try {
+    Object.assign(f.api.settings.ghosts, { on: true, ai: true });
+    Object.assign(f.api.settings.arrows, { on: false, aim: false });
+    f.api.settings.book.on = false;
+    const board = f.board();
+    board.game.getPlayingAs = () => 1;                           // you are White, White to move
+    f.rightClick();
+    // your own move: the opponent's replies are worked out
+    board.innerHTML = '<svg class="arrows"><polygon class="arrow" data-arrow="e2e4"></polygon></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    assert.ok(f.api.ghostAI.sessions.get(board), 'replies are searched for Black');
+    // the move you expect from them instead: it ends on your turn, so nothing is searched or shown for White
+    board.querySelector('polygon').setAttribute('data-arrow', 'e7e5'); f.rightClick(); ctl.syncGhosts();
+    assert.equal(f.api.ghostAI.sessions.get(board), undefined, 'no search for your side');
+    assert.equal(board.querySelector('.bs-ghost-ai'), null, 'no ghosts for your side');
+    assert.equal((ctl.engineArrows || []).length, 0, 'and no arrow to your best move');
+    assert.equal(board.game.getFEN(), initialFEN, 'never plays a real move');
+  } finally { f.close(); }
+});
+
+test('your arrows by age: the newest a deeper orange, the older ones your colour, each 35% fainter than the next', () => {
+  const f = setup();
+  try {
+    f.api.settings.arrows.color = '#3366ffcc';
+    const a = 0xcc / 255;
+    const aged = f.api.agedArrowColors(['a', 'b', 'c']);
+    assert.equal(aged.get('c').rgb, '#ff7b00', 'the newest is orange'); assert.equal(aged.get('c').a, a);
+    assert.equal(aged.get('b').rgb, '#3366ff'); assert.ok(Math.abs(aged.get('b').a - a * 0.65) < 1e-9);
+    assert.equal(aged.get('a').rgb, '#3366ff'); assert.ok(Math.abs(aged.get('a').a - a * 0.65 * 0.65) < 1e-9);
+    assert.equal(f.api.agedArrowColors(['x']).get('x').rgb, '#ff7b00', 'a lone arrow is the newest');
+    // on a board: three plain arrows and one shift (green) arrow, which keeps its own colour and is not counted
+    Object.assign(f.api.settings.arrows, { on: true, aim: false });
+    f.api.settings.book.on = false;
+    const board = f.board();
+    board.innerHTML = '<svg class="arrows">' + ['e2e4', 'g1f3', 'b1c3'].map(u => '<polygon class="arrow" data-arrow="' + u + '" style="fill: rgb(255, 170, 0); opacity: 0.8"></polygon>').join('') +
+      '<polygon class="arrow" data-arrow="d2d4" style="fill: rgb(159, 207, 63); opacity: 0.8"></polygon></svg>';
+    const ctl = new f.api.Controller(board.querySelector('svg'));
+    ctl.syncArrows();
+    const arrow = id => ctl.arrows.get(id);
+    assert.equal(arrow('b1c3').color, '#ff7b00', 'the last drawn is orange');
+    assert.equal(arrow('g1f3').color, '#3366ff'); assert.equal(arrow('e2e4').color, '#3366ff');
+    assert.ok(arrow('e2e4').target.opacity < arrow('g1f3').target.opacity && arrow('g1f3').target.opacity < arrow('b1c3').target.opacity, 'older is fainter');
+    assert.ok(Math.abs(arrow('e2e4').target.opacity / arrow('g1f3').target.opacity - 0.65) < 0.02, '35% less each step');
+    assert.notEqual(arrow('d2d4').color, '#3366ff', 'a coloured (shift) arrow keeps its colour');
   } finally { f.close(); }
 });

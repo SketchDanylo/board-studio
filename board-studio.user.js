@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.42.1
+// @version      6.43.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -147,6 +147,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function splitColor(hex) {
     const h = /^#[0-9a-f]{8}$/i.test(hex) ? hex : /^#[0-9a-f]{6}$/i.test(hex) ? hex + 'ff' : '#ffaa00cc';
     return { rgb: h.slice(0, 7).toLowerCase(), a: parseInt(h.slice(7, 9), 16) / 255 };
+  }
+
+  // Your arrows by age: the newest is a deeper orange, the older ones take your picked color, each 35% fainter than the
+  // one drawn after it. ids: your plain arrows in drawing order. Returns id -> { rgb, a }.
+  const NEWEST_ARROW = '#ff7b00';
+  function agedArrowColors(ids) {
+    const { rgb, a } = splitColor(settings.arrows.color);
+    const out = new Map();
+    ids.forEach((id, i) => {
+      const age = ids.length - 1 - i;
+      out.set(id, age === 0 ? { rgb: NEWEST_ARROW, a } : { rgb, a: a * Math.pow(0.65, age) });
+    });
+    return out;
   }
 
   // requestAnimationFrame, but never stuck: a tab that is not painting still gets the call.
@@ -1123,6 +1136,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         return m && { id: m[0], from: m[1] + m[2], to: settings.arrows.on ? aimed.get(m[0]) || m[3] + m[4] : m[3] + m[4] };
       }).filter(Boolean);
       const grades = arrowEval.sync(this, inputs);
+      const plain = [];
+      this.svg.querySelectorAll('polygon.arrow').forEach(poly => {
+        const m = MOVE.exec(poly.getAttribute('data-arrow') || '');
+        if (m && !(m[1] === m[3] && m[2] === m[4]) && arrowEval.nativeColor(poly).color === SITE_ORANGE && !plain.includes(m[0])) plain.push(m[0]);
+      });
+      const aged = agedArrowColors(plain);
       this.svg.querySelectorAll('polygon.arrow').forEach(poly => {
         let m = MOVE.exec(poly.getAttribute('data-arrow') || '');
         const base = arrowEval.nativeColor(poly);
@@ -1135,8 +1154,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (seen.has(id)) return;
         seen.add(id);
         let { color, alpha } = base;
-        // Your picked color replaces chess.com's plain orange; shift/ctrl/alt arrows keep theirs.
-        if (color === SITE_ORANGE) ({ rgb: color, a: alpha } = splitColor(settings.arrows.color));
+        // Your picked color replaces chess.com's plain orange (the newest one orange, the older fading); shift/ctrl/alt arrows keep theirs.
+        if (color === SITE_ORANGE) ({ rgb: color, a: alpha } = aged.get(id) || splitColor(settings.arrows.color));
         if (grade) color = ARROW_GRADES[grade].color;
         if (this.arrowTint?.has(id)) color = this.arrowTint.get(id);
         const to = aimed.get(id);
@@ -1570,6 +1589,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const seen = new Set();
       if (settings.arrows.on) {
         this.place();
+        const plainColor = c => { const rgba = String(c || SITE_ORANGE).match(/rgba?\(([^)]+)\)/); if (!rgba) return c || SITE_ORANGE; const p = rgba[1].split(',').map(x => x.trim()); return `rgb(${p[0]}, ${p[1]}, ${p[2]})`; };
+        const plain = [];
+        this.nativeArrows.forEach(item => {
+          const d = item.data || {};
+          const m = MOVE.exec(`${d.from}${aimed.get(item.key) || d.to}`);
+          if (m && d.from !== d.to && plainColor(d.color) === SITE_ORANGE && !plain.includes(m[0])) plain.push(m[0]);
+        });
+        const aged = agedArrowColors(plain);
         this.nativeArrows.forEach(item => {
           const d = item.data || {};
           const m = MOVE.exec(`${d.from}${aimed.get(item.key) || d.to}`);
@@ -1583,7 +1610,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
             const p = rgba[1].split(',').map(x => x.trim());
             color = `rgb(${p[0]}, ${p[1]}, ${p[2]})`;
           }
-          if (color === SITE_ORANGE) ({ rgb: color, a: alpha } = splitColor(settings.arrows.color));
+          if (color === SITE_ORANGE) ({ rgb: color, a: alpha } = aged.get(id) || splitColor(settings.arrows.color));
           const grade = grades.get(item.key);
           if (grade) color = ARROW_GRADES[grade].color;
           if (this.arrowTint?.has(id)) color = this.arrowTint.get(id);
@@ -2612,7 +2639,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // The position the ghosts are shown for: after the line you drew, whoever is to move there. Moves drawn for
   // either side are taken as played, in the order they can be played (an out-of-order one jumps ahead), and
   // wherever the line has a gap for a side the engine's best move for that side is assumed. A move you draw
-  // for your opponent while it is your turn is taken as their next move, so the ghosts show your best reply.
+  // for your opponent while it is your turn is taken as their next move (the ghosts then show nothing for your own side).
   function ghostReplyPosition(fen, arrows, need, out, userColor) {
     if (!fen || !arrows.length) return null;
     try {
@@ -2655,7 +2682,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         line = [];
         if (!play(arrow)) return null;
       }
-      if (out) out.line = line;
+      if (out) { out.line = line; out.player = player; }
       return !game.isGameOver() ? game.fen() : null;
     } catch (e) { return null; }
   }
@@ -2732,6 +2759,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // Playing on before the opponent's best reply is known: work it out first, then carry on.
       this.feed(ctl, need.values().next().value);
       if (!fen) { if (!need.size) this.stop(board); return; }
+      // Ghost AI shows what your opponent may play, never your own best move: a line that ends with you to move (you drew
+      // their move) shows nothing more than the replies it assumed for them on the way.
+      if (out.player && fen.split(' ')[1] === out.player) {
+        this.stop(board, true);
+        this.setEngineArrows(ctl, (out.line || []).filter(m => m.assumed).map(m => ({ id: 'ai:' + m.from + m.to, uci: m.from + m.to })));
+        return;
+      }
       let session = this.sessions.get(board);
       if (!session || session.fen !== fen || session.base !== base) {
         this.stop(board, true);

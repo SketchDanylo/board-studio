@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.44.0
+// @version      6.45.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -2941,16 +2941,30 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // Legal static exchanges distinguish a genuine material offer from an equal
   // trade, a pinned defender, or a capture that already wins more material.
+  // (A static exchange: each side takes back with its least valuable piece, and may stop when going on would lose. One move
+  // list per capture, so it stays cheap: trying every capturer at every step grows exponentially and was most of a decision.)
   function exchangeGain(game, square, remaining = 5) {
     if (!remaining) return 0;
-    let best = 0;
-    for (const move of game.moves({ verbose: true }).filter(m => m.to === square && m.captured)) {
-      game.move(move);
-      const gain = PIECE_VALUE[move.captured] - exchangeGain(game, square, remaining - 1);
-      game.undo();
-      best = Math.max(best, gain);
+    let least = null;
+    if (typeof game.attackers === 'function') {
+      // only the pieces that attack the square are asked for their moves, cheapest first (the move list of one piece is
+      // some thirty times cheaper than the whole position's)
+      const from = game.attackers(square, game.turn()).map(sq => ({ sq, v: PIECE_VALUE[game.get(sq).type] })).sort((a, b) => a.v - b.v);
+      for (const { sq } of from) {
+        const caps = game.moves({ square: sq, verbose: true }).filter(m => m.to === square && m.captured);
+        if (caps.length) { least = caps.find(m => m.promotion === 'q') || caps[0]; break; }
+      }
+    } else {
+      for (const move of game.moves({ verbose: true })) {
+        if (move.to !== square || !move.captured) continue;
+        if (!least || PIECE_VALUE[move.piece] < PIECE_VALUE[least.piece] || (move.promotion && !least.promotion && move.piece === least.piece)) least = move;
+      }
     }
-    return best;
+    if (!least) return 0;
+    game.move(least);
+    const gain = PIECE_VALUE[least.captured] - exchangeGain(game, square, remaining - 1);
+    game.undo();
+    return Math.max(0, gain);
   }
 
   function isSoundSacrifice(fen, uci) {
@@ -3823,7 +3837,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   const sameFen = (a, b) => String(a).split(' ').slice(0, 4).join(' ') === String(b).split(' ').slice(0, 4).join(' ');
 
   // One move as a step, from a uci string in a position.
+  // (the same position and move are asked about many times in one decision: kept for a while)
+  const stepCache = new Map();
   function stepFor(fen, uci) {
+    const key = fen + '|' + uci;
+    if (stepCache.has(key)) { const hit = stepCache.get(key); return hit && { ...hit }; }
+    const step = stepForUncached(fen, uci);
+    if (stepCache.size > 2000) stepCache.clear();
+    stepCache.set(key, step);
+    return step && { ...step };
+  }
+  function stepForUncached(fen, uci) {
     const game = new BoardStudioRules.Chess(fen);
     const move = game.moves({ verbose: true }).find(m => m.from + m.to + (m.promotion || '') === uci);
     if (!move) return null;
@@ -4147,7 +4171,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return r < win ? 'win' : r < win + draw ? 'draw' : 'lose';
   }
 
-  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0, evalNow = null, expected = null, clock = 99, onIdea = null, debug = null, ideaLines = null } = {}, elo, analyse) {
+  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0, evalNow = null, expected = null, clock = 99, onIdea = null, debug = null, ideaLines = null, mateAnalyse = null } = {}, elo, analyse) {
     // The whole decision is held to a budget: a move that costs the game on time is worth nothing.
     const deadline = Date.now() + budget, left = () => deadline - Date.now();
     // In an ending the play should match or beat what the opponent shows: better when playing to win,
@@ -4190,11 +4214,22 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // (a weaker player gets there more slowly: the reach grows with the rating)
     const technique = Math.round(Math.min(countPieces(fen) <= 4 ? 14 : 10, Math.max(5, 4 + elo / 150)));
     const reach = countPieces(fen) <= 6 ? Math.max(p.mateReach, technique) : p.mateReach;
-    const mateLook = await analyse(fen, { mate: reach, depth: 2 * reach + 2, ms: Math.max(40, Math.min(reach > 4 ? 1500 : 220, left() * 0.3)), multipv: 1, fresh: true });
-    if (!mateLook) return null;
     // (playing for the draw, a simple mate is still delivered (see isSimpleMate); a complex one is left. Playing to lose, no mate is taken.)
-    const plain = mode === 'win' || mode === 'free' ? reach : mode === 'draw' && isSimpleMate(fen, mateLook) ? reach : 0;
-    if (mateLook.mate > 0 && mateLook.mate <= plain) return { ...mateLook, human: true, lines: [mateLook] };
+    const plainFor = m => mode === 'win' || mode === 'free' ? reach : mode === 'draw' && isSimpleMate(fen, m) ? reach : 0;
+    const mateOpts = { mate: reach, depth: 2 * reach + 2, ms: Math.max(40, Math.min(reach > 4 ? 1500 : 220, left() * 0.3)), multipv: 1, fresh: true };
+    // With an engine of its own for it, the mate search runs beside everything else (most positions have none, and it was the
+    // longest single look of a decision); whatever is decided waits for it at the end and gives way to a mate worth playing.
+    const matePending = mateAnalyse && mode !== 'lose' ? mateAnalyse(fen, mateOpts) : null;
+    const mateLook = matePending ? null : await analyse(fen, mateOpts);
+    if (!matePending && !mateLook) return null;
+    if (mateLook && mateLook.mate > 0 && mateLook.mate <= plainFor(mateLook)) return { ...mateLook, human: true, lines: [mateLook] };
+    const mateNow = async () => matePending ? await matePending : mateLook;
+    const withMate = async res => {
+      if (!matePending) return res;
+      const m = await matePending;
+      if (m && m.mate > 0 && m.mate <= plainFor(m)) return { ...m, human: true, lines: [m] };
+      return res;
+    };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
     // Until the aim is secured (a win at six pawns up, a draw at one) nothing is left to the rating: every move is looked
     // at, as deep as the time allows, and the best is played. (Measured: with less, a low rating drifts out of a won game and a
@@ -4219,7 +4254,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           const score = l => { const st = stepFor(fen, l.pv[0]); return -Math.abs(val(l)) + (st ? seen(st.fen) * 100 : 0); };
           if (pool.length) best = pool.slice().sort((a, b) => score(b) - score(a))[0];
         }
-        return { ...best, human: true, lines: [best, ...lines.filter(l => l !== best)] };
+        return withMate({ ...best, human: true, lines: [best, ...lines.filter(l => l !== best)] });
       }
     }
     // A master simply plays the engine's move (no attention rules left to slip on); the lose plan keeps its own path below.
@@ -4227,7 +4262,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const hurried = mode === 'win' && evalNow !== null && evalNow >= 250 && clock < 20;
     if ((trueElo >= 2200 || hurried) && mode !== 'lose' && mode !== 'draw' && left() > 200) {
       const top = await analyse(fen, { depth: 14, ms: Math.max(150, Math.min(700, left() * 0.6)), multipv: 2, fresh: true });
-      if (top && top.pv && top.pv.length) return { ...top, human: true, lines: top.lines && top.lines.length ? top.lines : [top] };
+      if (top && top.pv && top.pv.length) return withMate({ ...top, human: true, lines: top.lines && top.lines.length ? top.lines : [top] });
     }
     // A player a queen up looks at every move, not only the checks and captures that catch the eye.
     const ahead = (() => {
@@ -4257,7 +4292,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (move) cands.push({ move, uci, forcing: !!move.captured || /[+#]/.test(move.san) || !!move.promotion, capture: !!move.captured, check: /[+#]/.test(move.san), salience: 5, free: false, net: 0 });
       });
     }
-    if (!cands.length) return { ...mateLook, human: true, lines: [mateLook] };
+    if (!cands.length) { const m = await mateNow(); return m ? { ...m, human: true, lines: [m] } : null; }
     const value = l => l.mate !== undefined ? Math.sign(l.mate) * (10000 - Math.abs(l.mate)) : l.cp;
     const rated = [];
     for (const [group, extra] of [[cands.filter(c => c.forcing), p.forcingExtra], [cands.filter(c => !c.forcing), 0]]) {
@@ -4281,7 +4316,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     // The moves under consideration are shown at once, before they have been checked any further.
     if (onIdea && rated.length) { try { onIdea(rated.slice().sort((a, b) => value(b.line) - value(a.line)).map(r => ({ uci: r.c.uci, pv: r.line.pv || [r.c.uci], cp: value(r.line) }))); } catch (e) { /* display only */ } }
-    if (!rated.length) return cands.length ? { depth: 1, cp: 0, pv: [cands[0].uci], human: true, lines: [] } : { ...mateLook, human: true, lines: [mateLook] };
+    if (!rated.length) { if (cands.length) return withMate({ depth: 1, cp: 0, pv: [cands[0].uci], human: true, lines: [] }); const m = await mateNow(); return m ? { ...m, human: true, lines: [m] } : null; }
     // Clearly winning: convert. No taste for checks, a position seen before is avoided (that is how a won
     // game gets drawn), and when the fifty moves loom, a capture or a pawn move is progress.
     const halfmove = +String(fen).split(' ')[4] || 0;
@@ -4410,7 +4445,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
     }
     if (debug) { try { debug({ elo, p, topValue, evalNow, rated: rated.map(r => ({ uci: r.c.uci, v: value(r.line), score: Math.round(r.score), d: r.line.depth })) }); } catch (e) { /* debugging only */ } }
-    return { ...best.line, human: true, depth: p.quietDepth, lines: [best.line, ...rated.map(r => r.line).filter(l => l !== best.line)] };
+    return withMate({ ...best.line, human: true, depth: p.quietDepth, lines: [best.line, ...rated.map(r => r.line).filter(l => l !== best.line)] });
   }
 
 
@@ -4521,6 +4556,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // holds, where the ghosts go next) runs on it, so when their move comes the decision has an engine that is free: it never waits for
   // a search to be stopped. The two do not share a queue.
   const ponderEngine = Object.assign(Object.create(null), clutchEngine, { worker: null, starting: false, ready: false, job: null, pending: null });
+  // A third, for the mate search of a decision: it runs beside the rest of the thinking instead of before it.
+  const mateEngine = Object.assign(Object.create(null), clutchEngine, { worker: null, starting: false, ready: false, job: null, pending: null });
 
   // A drag from one square to another, as a hand would do it. On your turn it is a move; on the
   // opponent's turn chess.com takes it as a premove.
@@ -4955,7 +4992,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (quick) { evalNow = quick.mate !== undefined ? Math.sign(quick.mate) * 5000 : quick.cp; ideaLines = quick.lines || [quick]; }
       }
       const expected = clutch.lastValue === undefined ? null : clutch.lastValue;
-      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, evalNow, expected, clock, seen: s.seen, mode: s.mode, onIdea, ideaLines }, s.elo, (f, o) => clutchEngine.analyse(f, o));
+      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, evalNow, expected, clock, seen: s.seen, mode: s.mode, onIdea, ideaLines, mateAnalyse: (f, o) => mateEngine.analyse(f, o) }, s.elo, (f, o) => clutchEngine.analyse(f, o));
       if (result) clutch.lastValue = result.mate !== undefined ? Math.sign(result.mate) * 5000 : result.cp;
       // A loss is decided: when the position has been lost for a long time and the game still goes on (the other side does not
       // finish it), the loss is brought about on the clock instead.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.43.0
+// @version      6.44.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4165,14 +4165,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // How strong a player this is, 0 (a beginner) to 1 (strong). It decides the way the outcome is reached, never the outcome.
     let skill = Math.max(0, Math.min(1, (elo - 400) / 1800));
     const played = evalNow !== null && expected !== null && evalNow - expected < -60;
-    // The rating is the baseline; the play follows how the outcome is headed. On course (a win: an edge of about a pawn; a draw:
-    // not worse than level) it plays as its rating does. Off course it bumps up, the further the more, until at five pawns down
-    // it is the engine. Losing, it is the other way: when the eval is above where a loss would come from, the play drops below
-    // the rating, so the slips come and the position slides.
+    // The outcome is made certain where it can be: until a win is secured (six pawns up) or a draw is (a pawn up), the engine
+    // plays (below). Once secured the rating plays, lifted toward the aim while the edge is not yet decisive (a win: up to nine pawns,
+    // a draw: up to four, so a low rating neither drifts nor blunders it away). Losing, it is the other way: when the eval is above where a loss would come
+    // from, the play drops below the rating, so the slips come and the position slides.
     const trueElo = elo;
     if ((mode === 'win' || mode === 'draw') && evalNow !== null) {
-      const deficit = Math.max(0, (mode === 'win' ? 80 : -30) - evalNow);
-      if (deficit > 0) elo = Math.min(2600, elo + Math.min(1800, deficit * 4.5 + (pressure || played ? 200 : 0)));
+      const deficit = Math.max(0, (mode === 'win' ? 900 : 400) - evalNow);
+      if (deficit > 0) elo = Math.min(2600, elo + Math.min(1800, deficit * 4 + (pressure || played ? 200 : 0)));
     } else if (mode === 'lose' && evalNow !== null && evalNow > 100) {
       elo = Math.max(300, elo - Math.min(700, (evalNow - 100) * 1.2));
     }
@@ -4196,10 +4196,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const plain = mode === 'win' || mode === 'free' ? reach : mode === 'draw' && isSimpleMate(fen, mateLook) ? reach : 0;
     if (mateLook.mate > 0 && mateLook.mate <= plain) return { ...mateLook, human: true, lines: [mateLook] };
     if (legal.length === 1) return { depth: 1, cp: 0, pv: [legal[0].from + legal[0].to + (legal[0].promotion || '')], human: true, lines: [] };
-    // The rating is kept whatever the aim: play is that of the rating, lifted a notch toward the aim and held to floors that guard it.
-    // Only when the position is truly lost for the aim (more than five pawns down) is nothing left to the rating: every move is
-    // looked at, as deep as the time allows, and the best is played.
-    if ((mode === 'win' || mode === 'draw') && evalNow !== null && evalNow < -500 && left() > 200) {
+    // Until the aim is secured (a win at six pawns up, a draw at one) nothing is left to the rating: every move is looked
+    // at, as deep as the time allows, and the best is played. (Measured: with less, a low rating drifts out of a won game and a
+    // draw slips to a loss against a stronger opponent.)
+    if ((mode === 'win' || mode === 'draw') && evalNow !== null && evalNow < (mode === 'win' ? 600 : 100) && left() > 200) {
       const full = await analyse(fen, { depth: 14, ms: Math.max(150, Math.min(1000, left() * 0.7)), multipv: 3, fresh: true });
       if (full && full.pv && full.pv.length) {
         let lines = full.lines && full.lines.length ? full.lines : [full], best = full;
@@ -4371,7 +4371,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const reply = await analyse(after.fen, { depth: 10, ms, multipv: 1, fresh: true });
       if (!reply) return false;
       const ours = reply.mate !== undefined ? -Math.sign(reply.mate) * (10000 - Math.abs(reply.mate)) : -reply.cp;
-      if (ours < Math.min(value(r.line), topValue) - 150) { r.score -= 6000 + (reply.mate > 0 ? 14000 : 0); return true; }
+      if (ours < Math.min(value(r.line), topValue) - (mode === 'draw' ? 80 : 100)) { r.score -= 6000 + (reply.mate > 0 ? 14000 : 0); return true; }
       return false;
     };
     for (const r of mode === 'lose' ? [] : rated.slice(0, 6)) {

@@ -664,7 +664,8 @@ test('the rating colours how a draw is held: a weak player trades, a strong one 
   try {
     // 1.e4 d5: exd5 is an even trade of pawns, the other moves are quiet; everything is level
     const fen = 'rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2';
-    const play = elo => f.api.humanAnalyse(fen, { lastMove: { from: 'd7', to: 'd5' }, ms: 300, mode: 'draw' }, elo, async (x, o) => {
+    // (a draw already held: no lift toward the aim, the rating alone decides the way)
+    const play = elo => f.api.humanAnalyse(fen, { lastMove: { from: 'd7', to: 'd5' }, ms: 300, mode: 'draw', evalNow: 450 }, elo, async (x, o) => {
       if (o.mate) return { depth: 4, cp: 0, pv: [] };
       if (!o.searchMoves) return { depth: 8, cp: 0, pv: [] };
       const lines = o.searchMoves.map(u => ({ depth: 6, cp: 0, pv: [u] }));
@@ -682,13 +683,15 @@ test('slips are logical and bounded, and they depend on the outcome: a win may s
     const base = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 4 4';
     // ten moves, best first, each a little worse; the slip cap is a fraction of the spread
     const values = [250, 170, 90, 10, -70, -150, -230, -310, -390, -470];
+    // (a win is looked at once it is secured and decisive, so the rating plays it: the same spread, seven pawns higher)
     const run = async (mode, elo, n) => {
+      const up = mode === 'win' ? 700 : 0, top = 250 + up;
       let slips = 0, worst = 0, minCp = Infinity;
       for (let i = 0; i < n; i++) {
         const fen = base.replace(' 4 4', ' ' + i + ' 4');
-        const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: 250, expected: 250, clock: 60 }, elo, listed(values));
+        const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: top, expected: top, clock: 60 }, elo, listed(values.map(v => v + up)));
         minCp = Math.min(minCp, r.cp);
-        if (r.cp < 250) { slips++; worst = Math.min(worst, r.cp - 250); }
+        if (r.cp < top) { slips++; worst = Math.min(worst, r.cp - top); }
       }
       return { slips, worst, minCp };
     };
@@ -729,7 +732,7 @@ test('ideas are shown as soon as they exist: the moves under consideration are h
       return { depth: 6, cp: lines[0].cp, pv: lines[0].pv, lines };
     };
     let ideas = null, at = null;
-    const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', onIdea: list => { ideas = list; at = Date.now(); } }, 1200, eng);
+    const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', evalNow: 950, onIdea: list => { ideas = list; at = Date.now(); } }, 1200, eng);
     assert.ok(ideas && ideas.length >= 2, 'ideas were handed over');
     assert.ok(ideas[0].cp >= ideas[ideas.length - 1].cp, 'best first');
     assert.ok(ideas.every(i => i.pv && i.pv[0] === i.uci), 'each with its line');
@@ -921,7 +924,7 @@ test('there are two engines: pondering has its own queue and never cancels a dec
   } finally { f.close(); }
 });
 
-test('the rating is kept whatever the aim: the engine takes over only when the position is disastrous for it', async () => {
+test('until the aim is secured the engine plays (a win at +6, a draw at +1); after that the rating, and a loss never', async () => {
   const f = setup();
   try {
     const fen = 'rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2';
@@ -934,13 +937,12 @@ test('the rating is kept whatever the aim: the engine takes over only when the p
       return { depth: 6, cp: evalNow, pv: lines[0].pv, lines };
     };
     const play = (mode, ev, elo = 500) => f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: ev, clock: 60 }, elo, eng(ev));
-    await play('win', 100); assert.equal(full, 0, 'a win not yet secured is still played with the rating');
-    await play('draw', 10); assert.equal(full, 0, 'so is a draw held from a level position');
-    await play('win', -300); assert.equal(full, 0, 'and a position a little worse');
-    await play('win', -700); assert.equal(full, 1, 'a disastrous position (over five pawns down) is played by the engine');
-    full = 0; await play('draw', -700); assert.equal(full, 1);
+    await play('win', 100); assert.equal(full, 1, 'a win at +1 is not secured: the engine plays');
+    full = 0; await play('win', 700); assert.equal(full, 0, 'a secured win (+7) is played by the rating');
+    full = 0; await play('draw', 10); assert.equal(full, 1, 'a draw at level is not secured');
+    full = 0; await play('draw', 300); assert.equal(full, 0, 'a draw with a clear edge is the rating, giving it back');
     full = 0; await play('lose', -700); assert.equal(full, 0, 'a loss is never played by the full engine');
-    full = 0; await play('win', 100, 2400); assert.equal(full, 1, 'a master plays the engine move at any aim');
+    full = 0; await play('win', 700, 2400); assert.equal(full, 1, 'a master plays the engine move at any aim');
   } finally { f.close(); }
 });
 
@@ -956,9 +958,9 @@ test('a won game with the clock running low is converted directly by the engine,
       const lines = o.searchMoves.map(u => ({ depth: 6, cp: 500, pv: [u] }));
       return { depth: 6, cp: 500, pv: lines[0].pv, lines };
     };
-    await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', evalNow: 500, clock: 60 }, 500, eng);
+    await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', evalNow: 700, clock: 60 }, 500, eng);
     assert.equal(full, 0, 'with a minute left a secured win is played the way of the rating');
-    const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', evalNow: 500, clock: 12 }, 500, eng);
+    const r = await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode: 'win', evalNow: 700, clock: 12 }, 500, eng);
     assert.equal(full, 1, 'with 12 s left it is hurried'); assert.equal(r.pv[0], 'e2e4');
   } finally { f.close(); }
 });
@@ -980,9 +982,9 @@ test('the play follows the outcome: on course it is the rating, off course it bu
       await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: ev, clock: 60 }, 800, wrapped);
       return max;
     };
-    const onCourse = await depthAt('win', 200), behind = await depthAt('win', -200), draw = await depthAt('draw', -250), drawOk = await depthAt('draw', 10);
-    assert.ok(behind > onCourse, 'a win going wrong is looked at deeper (' + behind + ' > ' + onCourse + ')');
-    assert.ok(draw > drawOk, 'so is a draw going wrong (' + draw + ' > ' + drawOk + ')');
+    const onCourse = await depthAt('win', 1000), behind = await depthAt('win', 650), draw = await depthAt('draw', 120), drawOk = await depthAt('draw', 800);
+    assert.ok(behind > onCourse, 'a secured win not yet decisive is looked at deeper (' + behind + ' > ' + onCourse + ')');
+    assert.ok(draw > drawOk, 'so is a draw edge being given back (' + draw + ' > ' + drawOk + ')');
     const loseWell = await depthAt('lose', -300), loseBad = await depthAt('lose', 500);
     assert.ok(loseBad <= loseWell, 'a loss that is not coming is played at a lower level (' + loseBad + ' <= ' + loseWell + ')');
   } finally { f.close(); }

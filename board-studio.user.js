@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.45.0
+// @version      6.46.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -68,6 +68,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // ---------- settings ----------
 
+  // The two ends of the Clutch Elo slider are not ratings but ways to play: 0 loses on purpose as fast as it can, 3501 plays at
+  // the engine's full strength to win. Everything between is a rating, played to the outcome rolled from the bar.
+  const ELO_THROW = 0, ELO_MAX = 3501;
   const STORE_KEY = 'board-studio-settings-v1';
   const DEFAULTS = {
     style: { on: true },
@@ -1914,6 +1917,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .elo-row > span { flex: 1; }
     .elo-input { width: 64px; padding: 3px 6px; border-radius: 6px; border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.25); color: #f7c045; font: 600 12px inherit; text-align: right; }
     .elo-row .sub { margin: 0; padding: 2px 6px; flex: none; gap: 8px; }
+    .elo-hint { font-style: normal; font-size: 10px; font-weight: 600; color: #f7c045; white-space: nowrap; }
+    .elo-hint[data-end="throw"] { color: #fa5146; }
+    .elo-hint[data-end="max"] { color: #81c45b; }
+    .elo-range { display: block; width: 100%; margin: 2px 0 6px; accent-color: #f7c045; }
+    .elo-range[data-end="throw"] { accent-color: #fa5146; }
+    .elo-range[data-end="max"] { accent-color: #81c45b; }
     .rng { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 4px 0; font-size: 12px; }
     .rng input { grid-column: 1 / -1; width: 100%; accent-color: #f7c045; margin: 0; }
     .rng b { font-weight: 600; color: #f7c045; }
@@ -2222,8 +2231,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       <div class="item" data-group="clutch">${row('clutch', 'Clutch', 10)}
         <div class="body flow" style="--i:11">
           <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0.1" max="60" step="0.1"></label>
-          <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="100" max="3500" step="50" aria-label="Clutch Elo">
-            <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo in the box"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
+          <div class="elo-row"><span>Elo</span><em class="elo-hint"></em><input type="number" class="elo-input" data-key="elo" min="0" max="3501" step="1" aria-label="Clutch Elo">
+            <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo set here (0 and 3501 always apply)"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
+          <input type="range" class="elo-range" min="0" max="3501" step="1" aria-label="Clutch Elo slider" title="0: loses on purpose, as fast as it can. 3501: full engine strength, played to win. In between: that rating, with the outcome from the bar below.">
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
           </div>
@@ -2279,8 +2289,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         seg.innerHTML = v < 12 ? '' : v < 22 ? `<span class="n">${v}</span>` : v < 42 ? `<span class="n">${v}<i>%</i></span>` : `<span class="t">${name}</span><span class="n">${v}<i>%</i></span>`;
       });
     }
-    const eloInput = shadow.querySelector('.elo-input');
+    const eloInput = shadow.querySelector('.elo-input'), eloRange = shadow.querySelector('.elo-range'), eloHint = shadow.querySelector('.elo-hint');
     if (eloInput && shadow.activeElement !== eloInput) eloInput.value = String(c.elo);
+    if (eloRange && shadow.activeElement !== eloRange) eloRange.value = String(c.elo);
+    const eloEnd = c.elo <= ELO_THROW ? 'throw' : c.elo >= ELO_MAX ? 'max' : '';
+    if (eloHint) { eloHint.textContent = eloEnd === 'throw' ? 'loses on purpose' : eloEnd === 'max' ? 'maximum' : ''; eloHint.dataset.end = eloEnd; }
+    if (eloRange) eloRange.dataset.end = eloEnd;
     const cs = shadow.querySelector('.clutch-status');
     if (cs) cs.textContent = clutchState.text;
     const status = shadow.querySelector('.panel > .status');
@@ -2322,9 +2336,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   });
   shadow.querySelectorAll('.rng input').forEach(input => input.addEventListener('input', () => setSetting('clutch', input.dataset.key, +input.value)));
   // The field is its own value (what plays with Auto off, or when no rating can be read).
-  shadow.querySelector('.elo-input').addEventListener('input', e => {
-    setSetting('clutch', 'elo', Math.max(100, Math.min(3500, Math.round(+e.target.value) || 100)));
-  });
+  // The box and the slider are one value, 0 to 3501; either one sets it.
+  const setElo = v => { v = Math.round(+v); if (Number.isFinite(v)) setSetting('clutch', 'elo', Math.max(ELO_THROW, Math.min(ELO_MAX, v))); };
+  shadow.querySelector('.elo-input').addEventListener('input', e => { if (e.target.value !== '') setElo(e.target.value); });
+  shadow.querySelector('.elo-range').addEventListener('input', e => setElo(e.target.value));
   // The two balls on the bar split it into win | draw | lose; dragging one moves a boundary.
   shadow.querySelectorAll('.odds-bar .ball').forEach(ball => {
     ball.addEventListener('pointerdown', e => {
@@ -3900,8 +3915,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return m ? +m[1] : null;
   }
 
-  // The rating Clutch plays at. Auto leaves the field alone: it only decides which rating applies.
-  const clutchEloFor = (base, opponentElo) => (base.auto && opponentElo ? opponentElo : base.elo);
+  // The rating Clutch plays at. Auto leaves the field alone: it only decides which rating applies (the two ends always do).
+  const clutchEloFor = (base, opponentElo) => (base.elo <= ELO_THROW || base.elo >= ELO_MAX ? base.elo : base.auto && opponentElo ? opponentElo : base.elo);
 
   // The opponent's rating from their player row (the one at the top of the board).
   function readOpponentElo() {
@@ -4973,8 +4988,33 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return Math.max(45, Math.round(ms * (0.75 + 0.5 * random())));
   }
 
+  // Losing on purpose, as fast as it can: every move is the worst one the engine finds (the one that lets them mate soonest,
+  // or failing that gives the most away). No book, no premoves, no thought for how it looks.
+  async function clutchThrow(fen, analyse = (f, o) => clutchEngine.analyse(f, o)) {
+    const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
+    if (!legal.length) return null;
+    const res = await analyse(fen, { depth: 8, ms: 300, multipv: Math.min(legal.length, 60), fresh: true });
+    const lines = (res && res.lines && res.lines.length ? res.lines : res ? [res] : []).filter(l => l && l.pv && l.pv[0]);
+    const first = legal[0].from + legal[0].to + (legal[0].promotion || '');
+    if (!lines.length) return { depth: 1, cp: 0, pv: [first], human: true, lines: [] };
+    const val = l => l.mate !== undefined ? Math.sign(l.mate) * (10000 - Math.abs(l.mate)) : l.cp;
+    const worst = lines.reduce((a, b) => (val(b) < val(a) ? b : a));
+    return { ...worst, human: true, lines: [worst] };
+  }
+
+  // How long a move may think at full strength: a share of the clock that shrinks as it drains, so a long game never runs out
+  // (measured: a fixed share flagged around move 70 of a one minute game).
+  const clutchMaxMs = clock => Math.round(Math.max(40, Math.min(3000, clock * 1000 / (clock > 20 ? 30 : clock > 8 ? 40 : 70))));
+
   // Look at a position for our move: a quick look, then a deeper one when winning and the clock allows.
   async function clutchSearch(fen, clock, oppClock, s, onIdea = () => {}) {
+    if (s.throw) { setClutch('Clutch: losing on purpose, as fast as it can'); return clutchThrow(fen); }
+    // Full strength: one deep search a move, one line only, its time cut to what is left (the moves go out at once, no hand).
+    if (s.max) {
+      const ms = clutchMaxMs(clock);
+      setClutch(`Clutch: full strength, thinking ${(ms / 1000).toFixed(1)} s`);
+      return clutchEngine.analyse(fen, { depth: 40, ms, multipv: 1, onInfo: lines => onIdea(lines.filter(l => l && l.pv && l.pv[0]).map(l => ({ uci: l.pv[0], pv: l.pv, cp: l.cp }))) });
+    }
     const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
     const hurry = oppClock !== null && oppClock < clock * 0.7 ? 0.5 : 1;
@@ -5356,9 +5396,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     s = clutchStrengthen(clutchParams(base, clock, countPieces(fen)), elo);
     // Each game is played to win (six in ten) or, in the rest, to draw whatever the position is.
-    const odds = base.win + '/' + base.draw;
-    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = clutchRollMode(base); clutch.odds = odds; clutch.way = clutch.mode === 'lose' && Math.random() < 0.4 ? 'time' : 'board'; }
-    s.mode = clutch.mode;
+    // (the ends of the Elo slider decide the outcome themselves: 0 loses, 3501 wins)
+    const throwing = elo <= ELO_THROW, maxed = elo >= ELO_MAX;
+    const odds = throwing ? 'throw' : maxed ? 'max' : base.win + '/' + base.draw;
+    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = throwing ? 'lose' : maxed ? 'win' : clutchRollMode(base); clutch.odds = odds; clutch.way = !throwing && clutch.mode === 'lose' && Math.random() < 0.4 ? 'time' : 'board'; }
+    s.mode = clutch.mode; s.throw = throwing; s.max = maxed;
     setClutchMode(clutch.mode, clutch.mode === 'lose' ? clutch.way : null);
     if (s.mode !== 'win') s.human = true; // a game not played to win goes through the human model at any rating
     s.seen = after => (clutch.seen && clutch.seen[String(after).split(' ').slice(0, 3).join(' ')]) || 0;
@@ -5455,10 +5497,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         showClutchGhosts(ctl, (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv[0]).slice(0, 4).map(l => ({ fen, uci: l.pv[0], line: [l.pv[0]], then: l.pv[2] && l.pv[2].slice(0, 2) === l.pv[0].slice(2, 4) ? l.pv[2] : null, analysis: l.pv.slice(0, 2), color: CLUTCH_BLUE })));
         if (decision.plan) clutch.plan = decision.plan;
         clutchShow(ctl, [{ id: 'cl:' + decision.step.uci, uci: decision.step.uci, color: CLUTCH_COLOR }]);
-        act(decision.step, false, decision.note, false);
+        act(decision.step, false, s.throw ? 'losing on purpose' : decision.note, !!(s.throw || s.max));
       });
       return;
     }
+    // Losing on purpose: nothing is prepared on their time.
+    if (s.throw) { clutchStopBook(); showClutchGhosts(ctl, []); setClutch('Clutch: losing on purpose, waiting for their move'); return; }
 
     // 3. Their move: build the book of answers on their time.
     if (clutch.book && clutch.book.key === key) return;

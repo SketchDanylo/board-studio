@@ -1423,3 +1423,67 @@ test('a premove is only a move Clutch is certain of, or a trade it is counting o
     assert.equal(P(trade, 'g8f6', true), null);
   } finally { f.close(); }
 });
+
+test('the Elo is a slider and a box together, 0 to 3501; the two ends say what they do', () => {
+  const f = setup();
+  try {
+    const root = f.w.document.querySelector('#board-studio').shadowRoot;
+    const box = root.querySelector('.elo-input'), range = root.querySelector('.elo-range'), hint = root.querySelector('.elo-hint');
+    assert.ok(box && range && hint);
+    assert.equal(range.min, '0'); assert.equal(range.max, '3501'); assert.equal(box.min, '0'); assert.equal(box.max, '3501');
+    range.value = '2400'; range.dispatchEvent(new f.w.Event('input'));
+    assert.equal(f.api.settings.clutch.elo, 2400, 'the slider sets it');
+    assert.equal(box.value, '2400', 'and the box follows');
+    box.value = '9999'; box.dispatchEvent(new f.w.Event('input'));
+    assert.equal(f.api.settings.clutch.elo, 3501, 'typed past the end: clamped to 3501');
+    assert.equal(hint.textContent, 'maximum'); assert.equal(range.dataset.end, 'max');
+    box.value = '-20'; box.dispatchEvent(new f.w.Event('input'));
+    assert.equal(f.api.settings.clutch.elo, 0);
+    assert.equal(hint.textContent, 'loses on purpose'); assert.equal(range.dataset.end, 'throw');
+    box.value = ''; box.dispatchEvent(new f.w.Event('input'));
+    assert.equal(f.api.settings.clutch.elo, 0, 'an empty box while typing changes nothing');
+    range.value = '1200'; range.dispatchEvent(new f.w.Event('input'));
+    assert.equal(hint.textContent, ''); assert.equal(range.dataset.end, '');
+    assert.equal(JSON.parse(f.w.localStorage.getItem('board-studio-settings-v1')).clutch.elo, 1200, 'and it is kept');
+  } finally { f.close(); }
+});
+
+test('the ends of the Elo slider always apply, Auto or not; in between Auto picks the rating', () => {
+  const f = setup();
+  try {
+    const e = f.api.clutchEloFor;
+    assert.equal(e({ auto: true, elo: 0 }, 1500), 0, '0 is a choice, not a rating');
+    assert.equal(e({ auto: true, elo: 3501 }, 1500), 3501);
+    assert.equal(e({ auto: true, elo: 1800 }, 1500), 1500);
+    assert.equal(f.api.ELO_MAX, 3501);
+  } finally { f.close(); }
+});
+
+test('at 0 every move is the worst the engine finds: the soonest mate against it, else the most given away', async () => {
+  const f = setup();
+  try {
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    let asked = null;
+    const eng = lines => async (x, o) => { asked = o; return { depth: 8, ...lines[0], lines }; };
+    let r = await f.api.clutchThrow(fen, eng([{ cp: 20, pv: ['e2e4'] }, { cp: -150, pv: ['g2g4'] }, { cp: -90, pv: ['f2f3'] }]));
+    assert.equal(r.pv[0], 'g2g4', 'the most given away');
+    assert.ok(asked.multipv >= 20, 'every move is looked at (' + asked.multipv + ')');
+    r = await f.api.clutchThrow(fen, eng([{ cp: -900, pv: ['e2e4'] }, { mate: -2, pv: ['f2f3'] }, { mate: -5, pv: ['g2g4'] }]));
+    assert.equal(r.pv[0], 'f2f3', 'a mate against it, the soonest one, beats any material');
+    assert.ok(r.human, 'played as it is, no other choice made on top');
+  } finally { f.close(); }
+});
+
+test('at 3501 a move thinks for a share of the clock that shrinks as it drains, so a long one-minute game never runs out', () => {
+  const f = setup();
+  try {
+    const ms = f.api.clutchMaxMs;
+    assert.ok(ms(60) <= 3000 && ms(60) >= 1500, 'a minute: up to a couple of seconds (' + ms(60) + ')');
+    assert.ok(ms(15) < ms(30) && ms(5) < ms(15), 'less and less');
+    assert.ok(ms(5) / 5000 < ms(30) / 30000, 'and a smaller share when short');
+    assert.equal(ms(0.5), 40, 'never below a flash');
+    // seventy more moves from 10 s still fit
+    let clock = 10; for (let i = 0; i < 70; i++) clock -= ms(clock) / 1000 + 0.03;
+    assert.ok(clock > 0, 'seventy moves from ten seconds left: ' + clock.toFixed(2) + ' s remain');
+  } finally { f.close(); }
+});

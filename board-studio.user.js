@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.46.0
+// @version      6.46.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1917,7 +1917,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .elo-row > span { flex: 1; }
     .elo-input { width: 64px; padding: 3px 6px; border-radius: 6px; border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.25); color: #f7c045; font: 600 12px inherit; text-align: right; }
     .elo-row .sub { margin: 0; padding: 2px 6px; flex: none; gap: 8px; }
-    .elo-hint { font-style: normal; font-size: 10px; font-weight: 600; color: #f7c045; white-space: nowrap; }
+    .elo-hint { display: block; margin: -3px 0 5px; font-style: normal; font-size: 10px; font-weight: 600; text-align: center; color: #f7c045; }
+    .elo-hint:empty { display: none; }
     .elo-hint[data-end="throw"] { color: #fa5146; }
     .elo-hint[data-end="max"] { color: #81c45b; }
     .elo-range { display: block; width: 100%; margin: 2px 0 6px; accent-color: #f7c045; }
@@ -2231,9 +2232,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       <div class="item" data-group="clutch">${row('clutch', 'Clutch', 10)}
         <div class="body flow" style="--i:11">
           <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0.1" max="60" step="0.1"></label>
-          <div class="elo-row"><span>Elo</span><em class="elo-hint"></em><input type="number" class="elo-input" data-key="elo" min="0" max="3501" step="1" aria-label="Clutch Elo">
+          <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="0" max="3501" step="1" aria-label="Clutch Elo">
             <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo set here (0 and 3501 always apply)"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
           <input type="range" class="elo-range" min="0" max="3501" step="1" aria-label="Clutch Elo slider" title="0: loses on purpose, as fast as it can. 3501: full engine strength, played to win. In between: that rating, with the outcome from the bar below.">
+          <em class="elo-hint"></em>
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
           </div>

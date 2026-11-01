@@ -69,8 +69,8 @@ test('the badge sits on the move shown, and follows when you step back', () => {
     f.api.rater.bookWait = 1; // no opening book in the test page
     f.api.rater.pump = () => {};
     const { board, select } = fakeGame(f, GAME);
-    f.api.rater.cache.set(f.api.rater.key(GAME[1].beforeFen, 'e7e5'), 'blunder');
-    f.api.rater.cache.set(f.api.rater.key(GAME[0].beforeFen, 'e2e4'), 'brilliant');
+    f.api.rater.cache.set(f.api.rater.key(GAME[1].beforeFen, 'e7e5'), { grade: 'blunder', depth: 99, done: true });
+    f.api.rater.cache.set(f.api.rater.key(GAME[0].beforeFen, 'e2e4'), { grade: 'brilliant', depth: 99, done: true });
     f.api.rateSync();
     let badge = board.querySelector('.bs-rate-badge:not(.bs-leave)');
     assert.equal(badge.dataset.grade, 'blunder');
@@ -93,8 +93,8 @@ test('Rate Self: your own moves are rated only with it on', () => {
     f.api.rater.bookWait = 1;
     f.api.rater.pump = () => {};
     const { board, select } = fakeGame(f, GAME, { playingAs: 1 }); // you are White
-    f.api.rater.cache.set(f.api.rater.key(GAME[0].beforeFen, 'e2e4'), 'best');
-    f.api.rater.cache.set(f.api.rater.key(GAME[1].beforeFen, 'e7e5'), 'good');
+    f.api.rater.cache.set(f.api.rater.key(GAME[0].beforeFen, 'e2e4'), { grade: 'best', depth: 99, done: true });
+    f.api.rater.cache.set(f.api.rater.key(GAME[1].beforeFen, 'e7e5'), { grade: 'good', depth: 99, done: true });
     select(0);
     f.api.rateSync();
     assert.equal(board.querySelectorAll('.bs-rate-badge:not(.bs-leave)').length, 0, 'your move, Rate Self off');
@@ -214,5 +214,68 @@ test('real engine: the smothered-mate queen sacrifice is Brilliant, missing the 
       assert.ok(['best', 'excellent', 'good'].includes(quiet), `Bb5 in the Ruy Lopez: ${quiet}`);
       console.log('Real ratings: Qg8+ Brilliant, Qe5', other, ', g4?? Blunder, Bb5', quiet);
     });
+  } finally { f.close(); }
+});
+
+test('a rating shows after the first quick look and changes as deeper looks come in', async () => {
+  const f = setup();
+  try {
+    f.api.setSetting('rate', 'on', true);
+    f.api.rater.bookWait = 1;
+    const { board } = fakeGame(f, GAME);
+    const asked = [];
+    // shallow: e7e5 looks poor (third, a pawn and more behind); from depth 12 on it is the engine's own move
+    f.api.rateEngine.analyse = async (fen, o) => {
+      asked.push(o.depth);
+      const lines = o.depth <= 8
+        ? [{ pv: ['c7c5'], cp: 30, depth: o.depth }, { pv: ['e7e6'], cp: 10, depth: o.depth }, { pv: ['e7e5'], cp: -110, depth: o.depth }]
+        : [{ pv: ['e7e5'], cp: 30, depth: o.depth }, { pv: ['c7c5'], cp: 25, depth: o.depth }, { pv: ['e7e6'], cp: 10, depth: o.depth }];
+      return { depth: o.depth, lines };
+    };
+    const tick = () => new Promise(r => setTimeout(r, 5));
+    const grade = () => board.querySelector('.bs-rate-badge:not(.bs-leave)')?.dataset.grade;
+    const shown = [], show = f.api.rater.show;
+    f.api.rater.show = function (b, n, g) { if (g && shown[shown.length - 1] !== g) shown.push(g); return show.call(this, b, n, g); };
+    f.api.rateSync();
+    for (let i = 0; i < 40 && f.api.rater.cache.get(f.api.rater.key(GAME[1].beforeFen, 'e7e5'))?.depth !== 20; i++) await tick();
+    assert.equal(shown[0], 'mistake', 'the first look gives a rating at once');
+    assert.equal(asked[0], 8);
+    assert.equal(grade(), 'best', 'and the deeper looks replace it');
+    assert.deepEqual(shown, ['mistake', 'best']);
+    assert.deepEqual(asked.slice(0, 4), [8, 12, 16, 20]);
+  } finally { f.close(); }
+});
+
+test('chess.com\'s own Game Review rating stands: no badge of ours over it', () => {
+  const f = setup();
+  try {
+    f.api.setSetting('rate', 'on', true);
+    f.api.rater.bookWait = 1;
+    f.api.rater.pump = () => {};
+    const { board } = fakeGame(f, GAME);
+    board.game.getMarkings = () => ({ effect: { e5: { markingType: 'effect', key: 'e5', square: 'e5', type: 'Brilliant' } } });
+    f.api.rater.cache.set(f.api.rater.key(GAME[1].beforeFen, 'e7e5'), { grade: 'miss', depth: 20, done: true });
+    f.api.rateSync();
+    assert.equal(board.querySelectorAll('.bs-rate-badge:not(.bs-leave), .bs-rate-tint:not(.bs-leave)').length, 0);
+    assert.equal(f.api.rater.cache.get(f.api.rater.key(GAME[1].beforeFen, 'e7e5')).grade, 'brilliant', 'theirs is what the move is rated');
+    assert.equal(f.api.nativeGrade(board, 'e5'), 'brilliant');
+    board.game.getMarkings = () => ({ effect: { e5: { type: 'GreatFind' } } });
+    assert.equal(f.api.nativeGrade(board, 'e5'), 'great');
+    board.game.getMarkings = () => ({ effect: { e5: { type: 'Winner' } } });
+    assert.equal(f.api.nativeGrade(board, 'e5'), null, 'game-over icons are not ratings');
+  } finally { f.close(); }
+});
+
+test('a move that gives material away is looked at deeper before it is called a mistake or a Miss', () => {
+  const f = setup();
+  try {
+    const smother = f.api.rateBasics('q4r1k/6pp/4Q2N/8/8/8/8/6K1 w - - 0 1', 'e6g8');
+    assert.equal(smother.offers, true);
+    assert.equal(f.api.rateTarget(smother, 'miss', 20), 24);
+    assert.equal(f.api.rateTarget(smother, 'brilliant', 20), 20);
+    assert.equal(f.api.rateTarget(smother, 'miss', 12), 12, 'background ratings stay shallow');
+    const quiet = f.api.rateBasics('r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3', 'f1b5');
+    assert.equal(quiet.offers, false);
+    assert.equal(f.api.rateTarget(quiet, 'miss', 20), 20);
   } finally { f.close(); }
 });

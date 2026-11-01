@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.47.0
+// @version      6.48.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5871,8 +5871,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // An engine of its own, so rating never waits on the crown or Clutch.
   const rateEngine = Object.assign(Object.create(null), clutchEngine, { worker: null, starting: false, ready: false, job: null, pending: null });
-  const RATE_DEPTH = 16;
-
+  
   // Expected points from a score in centipawns, from the mover's side (the curve chess.com-style reviews use).
   const expectedPoints = cp => 1 / (1 + Math.exp(-0.00368208 * cp));
   // An engine line as a score arrowGrade understands (wdl made from the expected points).
@@ -5908,8 +5907,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   const uciOf = node => node.from + node.to + (node.promotion ? String(node.promotion).toLowerCase()[0] : '');
 
-  // Rates one move: the position before it, the move (uci), the move before it (for recaptures).
-  async function rateMove(before, uci, prev = null) {
+  // How deep each round of a rating looks, and how long it may take. The first round answers in a moment; each
+  // next one replaces the rating with a better-founded one, so a badge shows at once and can change as it firms up.
+  const RATE_ROUNDS = [{ depth: 8, ms: 350 }, { depth: 12, ms: 900 }, { depth: 16, ms: 2200 }, { depth: 20, ms: 4500 }, { depth: 24, ms: 9000 }];
+  const RATE_SHOWN = 20;      // the move on the board is looked at this deep
+  const RATE_SPARE = 12;      // the rest of the game, in the spare time
+  const RATE_SACRIFICE = 24;  // a move that gives material away is checked deeper before it is called a mistake
+
+  // What is fixed about a move before any search: the move as chess.js knows it, Book, a forced move.
+  function rateBasics(before, uci, prev) {
     let game;
     try { game = new BoardStudioRules.Chess(before); } catch (e) { return null; }
     const legal = game.moves({ verbose: true });
@@ -5918,51 +5924,113 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     uci = played.from + played.to + (played.promotion || '');
     // a book move is real theory: a move played in at least 2% of the book's games from here
     const theory = bookMoves(before), games = theory.reduce((n, m) => n + m.count, 0) || 1;
-    if (theory.some(m => m.uci === uci && m.count / games >= .02)) return 'book';
-    if (legal.length === 1) return 'best';
-    const top = await rateEngine.analyse(before, { depth: RATE_DEPTH, ms: 4000, multipv: Math.min(3, legal.length) });
-    if (!top || !top.lines || !top.lines.length) return null;
-    const lines = top.lines.filter(l => l && l.pv && l.pv.length);
+    const fixed = theory.some(m => m.uci === uci && m.count / games >= .02) ? 'book' : legal.length === 1 ? 'best' : null;
+    return {
+      uci, played, legalCount: legal.length, fixed,
+      // gives material away (whatever the engine thinks of it yet): such a move is judged deeper
+      offers: !fixed && isSoundSacrifice(before, uci),
+      recapture: !!(prev && prev.to === played.to && played.captured && (prev.capturedStr || prev.captured))
+    };
+  }
+
+  // One round of a rating at the given depth: the grade, null if it was called off (to be tried again), or 'fail'
+  // if the engine gave no usable answer (that depth is then passed over, never retried in a loop).
+  async function rateRound(before, basics, round) {
+    const { uci } = basics;
+    const top = await rateEngine.analyse(before, { depth: round.depth, ms: round.ms, multipv: Math.min(3, basics.legalCount) });
+    if (!top || top.partial) return null;
+    const lines = (top.lines || []).filter(l => l && l.pv && l.pv.length);
+    if (!lines.length) return 'fail';
     let move = lines.find(l => l.pv[0] === uci);
     if (!move) {
       // the move is not among the top lines: score it on its own (with a second move beside it, the engine
       // returns nothing for a single searchmove)
-      const other = lines[0].pv[0];
-      const own = await rateEngine.analyse(before, { depth: Math.max(10, top.depth), ms: 3000, multipv: 2, searchMoves: [uci, other] });
-      if (!own || !own.lines) return null;
-      move = own.lines.find(l => l && l.pv && l.pv[0] === uci);
-      if (!move) return null;
+      const own = await rateEngine.analyse(before, { depth: Math.max(round.depth, top.depth), ms: round.ms, multipv: 2, searchMoves: [uci, lines[0].pv[0]] });
+      if (!own || own.partial) return null;
+      move = (own.lines || []).find(l => l && l.pv && l.pv[0] === uci);
+      if (!move) return 'fail';
     }
     const near = blunderExpected(rateScore(move)) >= .38 && blunderExpected(rateScore(lines[0])) - blunderExpected(rateScore(move)) <= .104;
-    const sacrifice = near && isSoundSacrifice(before, uci);
-    const recapture = !!(prev && prev.to === played.to && played.captured && (prev.capturedStr || prev.captured));
-    return rateGrade(lines, move, { sacrifice, legalCount: legal.length, recapture });
+    return rateGrade(lines, move, { sacrifice: near && basics.offers, legalCount: basics.legalCount, recapture: basics.recapture }) || 'fail';
+  }
+
+  // Rates one move all the way (used by tests and anywhere a single final answer is wanted).
+  async function rateMove(before, uci, prev = null, depth = RATE_SHOWN) {
+    const basics = rateBasics(before, uci, prev);
+    if (!basics) return null;
+    if (basics.fixed) return basics.fixed;
+    let grade = null;
+    for (const round of RATE_ROUNDS) {
+      if (round.depth > rateTarget(basics, grade, depth)) break;
+      const got = await rateRound(before, basics, round);
+      if (got && got !== 'fail') grade = got;
+    }
+    return grade;
+  }
+
+  // How deep a move is to be looked at: deeper when it gives material away and does not look good yet, since a
+  // sacrifice is often only seen for what it is at depth (chess.com calls it Brilliant where a shallow look calls it a Miss).
+  function rateTarget(basics, grade, depth) {
+    const doubtful = !grade || ['inaccuracy', 'mistake', 'miss', 'blunder'].includes(grade);
+    return basics.offers && doubtful && depth >= RATE_SHOWN ? RATE_SACRIFICE : depth;
+  }
+
+  // chess.com's own rating of a move, when its Game Review has put one on the board (an "effect" marking on the
+  // square the move went to). Where it has, that is the rating shown: ours never covers theirs.
+  const NATIVE_GRADES = { brilliant: 'brilliant', greatfind: 'great', great: 'great', bestmove: 'best', best: 'best', excellent: 'excellent',
+    good: 'good', book: 'book', bookmove: 'book', inaccuracy: 'inaccuracy', mistake: 'mistake', miss: 'miss', missedwin: 'miss', blunder: 'blunder', forced: 'best' };
+  function nativeGrade(board, square) {
+    try {
+      const marks = board.game.getMarkings && board.game.getMarkings();
+      const effect = marks && marks.effect && marks.effect[square];
+      if (!effect || !effect.type) return null;
+      return NATIVE_GRADES[String(effect.type).toLowerCase().replace(/[^a-z]/g, '')] || null;
+    } catch (e) { return null; }
   }
 
   const rater = {
+    // key -> { grade, depth, done }: the rating so far, how deep it was looked at, and whether it is final
     cache: new Map(), queue: [], busy: false, shown: null, layer: null,
     key: (before, uci) => before + '|' + uci,
-    // Runs the queued ratings one at a time, the move on the board first.
+    basics: new Map(),
+    // Runs one round at a time, always for the first job that still needs one (the move on the board first), so
+    // the move you look at gets its first rating at once and every later round in turn.
     async pump() {
-      if (this.busy || !this.queue.length) return;
-      this.busy = true;
-      const job = this.queue.shift();
-      this.current = job;
+      if (this.busy) return;
+      let job = null, basics = null, round = null;
+      for (const j of this.queue) {
+        if (!this.basics.has(j.key)) this.basics.set(j.key, rateBasics(j.before, j.uci, j.prev));
+        const b = this.basics.get(j.key);
+        const have = this.cache.get(j.key);
+        if (!b) { if (!have) this.cache.set(j.key, { grade: 'none', depth: 99, done: true }); continue; }
+        if (b.fixed) { if (!have) this.cache.set(j.key, { grade: b.fixed, depth: 99, done: true }); continue; }
+        if (have && have.done) continue;
+        const target = rateTarget(b, have && have.grade, j.top ? RATE_SHOWN : RATE_SPARE);
+        const next = RATE_ROUNDS.find(r => r.depth > (have ? have.depth : 0) && r.depth <= target);
+        if (!next) continue;
+        job = j; basics = b; round = next; break;
+      }
+      if (!job) return;
+      this.busy = true; this.current = job;
       try {
-        if (!this.cache.has(job.key)) {
-          const grade = await rateMove(job.before, job.uci, job.prev);
-          if (grade || !this.queue.some(j => j.key === job.key)) this.cache.set(job.key, grade || 'none');
+        const got = await rateRound(job.before, basics, round);
+        const prev = this.cache.get(job.key);
+        if (got) {
+          // a depth with no usable answer keeps the rating it had, and the next round goes deeper
+          const grade = got === 'fail' ? (prev ? prev.grade : 'none') : got;
+          const done = round.depth >= rateTarget(basics, grade, RATE_SHOWN) || round === RATE_ROUNDS[RATE_ROUNDS.length - 1];
+          this.cache.set(job.key, { grade, depth: round.depth, done });
         }
-      } catch (e) { this.cache.set(job.key, 'none'); }
+      } catch (e) { this.cache.set(job.key, { grade: 'none', depth: 99, done: true }); }
       this.busy = false; this.current = null;
       rateSync();
-      this.pump();
+      setTimeout(() => this.pump(), 0);
     },
     want(jobs) {
       // the first job is the move on the board; the rest are the game's other moves, rated in the spare time
-      this.queue = jobs.filter(j => !this.cache.has(j.key));
-      // a move from the rest of the game gives way at once to the move on the board
-      const first = this.queue[0];
+      this.queue = jobs;
+      // a round for another move gives way at once to the move on the board
+      const first = jobs[0];
       if (this.busy && first && first.top && this.current && this.current.key !== first.key) rateEngine.halt();
       this.pump();
     },
@@ -6039,9 +6107,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     // the rest of the game, newest first (the moves you are most likely to look at)
     for (let i = line.length - 1; i >= 0; i--) if (rated(line[i])) jobs.push(jobOf(line[i], i));
+    // where chess.com's own Game Review has rated the move on the board, that rating stands and ours stays away
+    const native = rated(node) && nativeGrade(board, node.to);
+    if (native) rater.cache.set(rater.key(node.beforeFen, uciOf(node)), { grade: native, depth: 99, done: true, native: true });
     rater.want(jobs);
-    const grade = rated(node) ? rater.cache.get(rater.key(node.beforeFen, uciOf(node))) : null;
-    rater.show(board, rated(node) ? node : null, grade || null);
+    const entry = rated(node) ? rater.cache.get(rater.key(node.beforeFen, uciOf(node))) : null;
+    rater.show(board, entry && !entry.native ? node : null, entry ? entry.grade : null);
   }
   listeners.add(rateSync);
   setInterval(rateSync, 150);

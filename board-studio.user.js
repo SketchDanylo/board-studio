@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.49.2
+// @version      6.50.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -86,7 +86,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Rate Moves: chess.com-style badges for the move that led to the position on the board (self: yours too).
     rate: { on: false, self: false },
     // Fake Review: the Game Review button opens a review made here, in chess.com's style
-    review: { on: false },
+    review: { on: false, arrows: true },
     ghosts: { on: true, opacity: 0.25, ai: false },
     // Clutch: from `time` seconds on your clock down, the engine takes over, playing at `elo`
     // (with `auto` the opponent's rating). Everything else (what counts as winning, how deep to look,
@@ -3046,10 +3046,27 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const offered = exchangeGain(game, capture.to) - (PIECE_VALUE[move.captured] || 0);
         const alreadyOffered = capture.to === move.to ? 0 : exchangeGain(before, capture.to);
         // Newly offered, or a piece that was already en prise and is deliberately left there
-        // (Fischer's 17...Be6 leaves the queen hanging).
-        if (offered >= 200 && (offered - alreadyOffered >= 200 || alreadyOffered >= 200)) return true;
+        // (Fischer's 17...Be6 leaves the queen hanging). Deliberately: some other move would have saved it. A piece
+        // that was lost whatever was played (a king forced out of check, say) was not given, so it is no sacrifice.
+        if (offered >= 200 && (offered - alreadyOffered >= 200 || (alreadyOffered >= 200 && couldSave(fen, uci, capture.to)))) return true;
       }
     } catch (e) { /* Invalid or unsupported positions are never Brilliant. */ }
+    return false;
+  }
+
+  // Could some other legal move than uci have kept the piece on square from being lost (moved it to safety, defended
+  // it, blocked or taken the attacker)?
+  function couldSave(fen, uci, square) {
+    const game = new BoardStudioRules.Chess(fen);
+    for (const alt of game.moves({ verbose: true })) {
+      if (alt.from + alt.to + (alt.promotion || '') === uci) continue;
+      game.move(alt);
+      const where = alt.from === square ? alt.to : square;
+      const piece = game.get(where);
+      const safe = !piece || piece.color === game.turn() ? false : exchangeGain(game, where) < 200;
+      game.undo();
+      if (safe) return true;
+    }
     return false;
   }
 
@@ -5895,6 +5912,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!scores.some(s => s.move === score.move)) scores.push(score);
     const completed = { best, scores, depth: Math.min(best.depth, score.depth) };
     let grade = arrowGrade(best, score, { sacrifice, completed });
+    // Brilliant is only given on a look of depth 16 or more (a forced mate excepted): a sacrifice that a shallow
+    // search likes often has a refutation a little deeper
+    if (grade === 'brilliant' && !(score.mate > 0) && completed.depth < 16) grade = arrowGrade(best, score, { sacrifice: false, completed });
     if (!grade) return null;
     const a = blunderExpected(best), b = blunderExpected(score);
     if (grade === 'missed') grade = 'miss';
@@ -6131,7 +6151,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // is open (the move on the board first), so the ratings settle and firm up while you go through the moves.
   // Nothing is sent anywhere and chess.com's own review is not used.
 
-  const REVIEW_FIRST = 16, REVIEW_MAX = 40;
+  const REVIEW_FIRST = 16, REVIEW_MAX = 40, REVIEW_BRILLIANT = 20;
   const winPct = cp => 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * cp)) - 1);
   const lineWin = l => (l.mate !== undefined ? (l.mate > 0 ? 100 : l.mate < 0 ? 0 : 50) : winPct(l.cp));
   // a move's accuracy from the winning chances before and after it (the published Lichess curve; chess.com's own is close)
@@ -6231,6 +6251,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const best = before.lines[0];
       const near = blunderExpected(rateScore(line)) >= .38 && blunderExpected(rateScore(best)) - blunderExpected(rateScore(line)) <= .104;
       m.grade = rateGrade(before.lines, line, { sacrifice: near && m.basics.offers, legalCount: m.basics.legalCount, recapture: m.basics.recapture });
+      // In the review a Brilliant must hold at depth 20 on both sides of the move before it is shown (a mate is proof
+      // enough); until then the move is rated as if it were no sacrifice and the two positions are looked at first.
+      m.checking = false;
+      if (m.grade === 'brilliant' && !(line.mate > 0) && Math.min(before.reached || 0, after.terminal ? 99 : (after.reached || 0)) < REVIEW_BRILLIANT) {
+        m.grade = rateGrade(before.lines, line, { sacrifice: false, legalCount: m.basics.legalCount, recapture: m.basics.recapture });
+        m.checking = true;
+      }
       m.acc = moveAccuracy(lineWin(best), lineWin(line));
     });
   }
@@ -6240,6 +6267,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function reviewNext() {
     const n = review.evals.length, wanted = (i, d) => i >= 0 && i < n && !review.busy.has(i) && review.evals[i].depth < d && review.evals[i].depth < 99;
     const focus = [review.cur - 1, review.cur];
+    // a possible Brilliant (a move that gives material away, looking good) is confirmed at depth 20 straight after the sweep
+    if (review.firstDone) for (let k = 0; k < review.moves.length; k++) {
+      const m = review.moves[k];
+      if (!m.basics || !m.basics.offers || !(m.checking || m.grade === 'best' || m.grade === 'great' || m.grade === 'excellent')) continue;
+      for (const i of [k, k + 1]) if (wanted(i, REVIEW_BRILLIANT) && (review.evals[i].reached || 0) < REVIEW_BRILLIANT) return { i, depth: Math.max(REVIEW_BRILLIANT, review.pass), ms: 12000 };
+    }
     for (const i of focus) if (wanted(i, Math.min(REVIEW_MAX, review.pass + (review.firstDone ? 4 : 0)))) return { i, depth: Math.min(REVIEW_MAX, review.pass + (review.firstDone ? 4 : 0)) };
     for (;;) {
       for (let i = 0; i < n; i++) if (wanted(i, review.pass)) return { i, depth: review.pass };
@@ -6257,7 +6290,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       review.busy.add(job.i);
       const fen = review.fens[job.i];
       // the first sweep is thorough but bounded in time; later passes may take longer per position
-      const ms = review.firstDone ? Math.min(30000, 1500 * Math.pow(1.45, (job.depth - REVIEW_FIRST) / 2)) : 3500;
+      const ms = job.ms || (review.firstDone ? Math.min(30000, 1500 * Math.pow(1.45, (job.depth - REVIEW_FIRST) / 2)) : 3500);
       let result = null;
       try { result = await engine.analyse(fen, { depth: job.depth, ms, multipv: 2 }); } catch (e) { result = null; }
       review.busy.delete(job.i);
@@ -6285,7 +6318,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     @keyframes rv-in { from { opacity: 0; transform: translateX(14px); } }
     .hd { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: #21201d; font-weight: 800; font-size: 17px; }
     .hd svg { width: 24px; height: 24px; }
-    .hd .x { margin-left: auto; background: none; border: 0; color: #9e9b97; font-size: 20px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+    .hd .cog { margin-left: auto; background: none; border: 0; padding: 4px; border-radius: 4px; cursor: pointer; display: grid; place-items: center; }
+    .hd .cog svg { width: 20px; height: 20px; fill: #9e9b97; transition: transform 300ms, fill 150ms; }
+    .hd .cog:hover svg, .hd .cog.on svg { fill: #fff; } .hd .cog.on svg { transform: rotate(60deg); }
+    .menu { position: absolute; right: 10px; top: 46px; z-index: 2; background: #312e2b; border-radius: 6px; padding: 6px; min-width: 210px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none; }
+    .menu.open { display: block; animation: rv-menu 160ms ease-out; }
+    @keyframes rv-menu { from { opacity: 0; transform: translateY(-4px); } }
+    .menu label { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 13px; color: #e1e0df; }
+    .menu label:hover { background: rgba(255,255,255,.07); }
+    .menu input { appearance: none; width: 18px; height: 18px; border-radius: 4px; border: 2px solid #6b6965; display: grid; place-items: center; margin: 0; cursor: pointer; flex: none; }
+    .menu input:checked { background: #81b64c; border-color: #81b64c; }
+    .menu input:checked::after { content: ''; width: 5px; height: 9px; border: solid #fff; border-width: 0 2.5px 2.5px 0; transform: translate(0, -1px) rotate(45deg); }
+    .hd .x { margin-left: 2px; background: none; border: 0; color: #9e9b97; font-size: 20px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
     .hd .x:hover { color: #fff; background: rgba(255,255,255,.08); }
     .scroll { flex: 1; overflow-y: auto; padding: 0 14px 14px; scrollbar-width: thin; }
     .coach { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0 10px; }
@@ -6385,7 +6430,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!g) return { title: `${m.san}`, sub: 'Still looking at this move…' };
     const name = { best: 'best', excellent: 'excellent', good: 'good', book: 'a book move', brilliant: 'brilliant', great: 'a great move', inaccuracy: 'an inaccuracy', mistake: 'a mistake', miss: 'a miss', blunder: 'a blunder' }[m.grade];
     let sub = '';
-    if (!['best', 'book', 'brilliant', 'great'].includes(m.grade) && m.bestUci && m.bestUci !== m.uci) {
+    if (m.checking) sub = 'Possibly brilliant: checking it deeper…';
+    else if (!['best', 'book', 'brilliant', 'great'].includes(m.grade) && m.bestUci && m.bestUci !== m.uci) {
       let san = m.bestUci;
       try { san = new BoardStudioRules.Chess(review.fens[i]).move({ from: m.bestUci.slice(0, 2), to: m.bestUci.slice(2, 4), promotion: m.bestUci[4] }).san; } catch (e) { /* keep uci */ }
       sub = `Best was <b>${san}</b>`;
@@ -6472,16 +6518,28 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!board) return;
     const m = review.cur > 0 ? review.moves[review.cur - 1] : null;
     rater.show(board, m && m.grade ? m.node : null, m && m.grade);
+    // what should have been played instead of the move shown (none when the engine's move was played), and, with the
+    // Best button, the engine's move in the position on the board
+    const arrows = [];
+    if (rawSettings.review.arrows && m && m.bestUci && m.bestUci.slice(0, 4) !== m.uci.slice(0, 4) && m.grade && m.grade !== 'book') arrows.push({ uci: m.bestUci, color: '#81b64c' });
     const next = review.evals[review.cur], best = review.showBest && next && next.lines[0] && next.lines[0].pv[0];
+    if (best && !arrows.some(x => x.uci.slice(0, 4) === best.slice(0, 4))) arrows.push({ uci: best, color: '#5fa8d3' });
     let svg = board.querySelector(':scope > svg.bs-review-best');
-    if (!best) { svg && svg.remove(); return; }
+    if (!arrows.length) { if (svg) svg.remove(); return; }
+    const key = arrows.map(x => x.uci + x.color).join() + (board.classList.contains('flipped') ? 'f' : '');
+    if (svg && svg.dataset.key === key) return;
     if (!svg) { svg = document.createElementNS(NS, 'svg'); svg.setAttribute('class', 'bs-review-best'); svg.setAttribute('viewBox', '0 0 800 800'); board.appendChild(svg); }
+    svg.dataset.key = key;
+    svg.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:25;overflow:visible';
     const flipped = board.classList.contains('flipped');
     const at = sq => { const f = sq.charCodeAt(0) - 97, r = +sq[1] - 1; return [((flipped ? 7 - f : f) + .5) * 100, ((flipped ? r : 7 - r) + .5) * 100]; };
-    const [x1, y1] = at(best.slice(0, 2)), [x2, y2] = at(best.slice(2, 4));
-    const a = Math.atan2(y2 - y1, x2 - x1), ex = x2 - Math.cos(a) * 30, ey = y2 - Math.sin(a) * 30;
-    const head = `${x2},${y2} ${ex - Math.sin(a) * 22},${ey + Math.cos(a) * 22} ${ex + Math.sin(a) * 22},${ey - Math.cos(a) * 22}`;
-    svg.innerHTML = `<line x1="${x1}" y1="${y1}" x2="${ex}" y2="${ey}" stroke="#81b64c" stroke-width="16" stroke-linecap="round" opacity=".85"/><polygon points="${head}" fill="#81b64c" opacity=".85"/>`;
+    svg.innerHTML = arrows.map(({ uci, color }) => {
+      const [x1, y1] = at(uci.slice(0, 2)), [x2, y2] = at(uci.slice(2, 4));
+      const t = Math.atan2(y2 - y1, x2 - x1), ex = x2 - Math.cos(t) * 34, ey = y2 - Math.sin(t) * 34;
+      const sx = x1 + Math.cos(t) * 18, sy = y1 + Math.sin(t) * 18;
+      const head = `${x2 - Math.cos(t) * 6},${y2 - Math.sin(t) * 6} ${ex - Math.sin(t) * 24},${ey + Math.cos(t) * 24} ${ex + Math.sin(t) * 24},${ey - Math.cos(t) * 24}`;
+      return `<g opacity=".82"><line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" stroke="${color}" stroke-width="17" stroke-linecap="round"/><polygon points="${head}" fill="${color}" stroke="${color}" stroke-width="4" stroke-linejoin="round"/></g>`;
+    }).join('');
   }
 
   function reviewOpen(board) {
@@ -6494,13 +6552,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const host = document.createElement('div'); host.id = 'bs-fake-review';
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = `<style>${REVIEW_CSS}</style><div class="rv" role="region" aria-label="Game Review">
-      <div class="hd"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#81b64c" d="m12 22.5c-5.8 0-10.5-4.7-10.5-10.5s4.7-10.5 10.5-10.5 10.5 4.7 10.5 10.5-4.7 10.5-10.5 10.5zm-4.63-4.63c-.2.8.07 1 .77.53l3.87-2.73 3.83 2.73c.7.47.97.27.77-.53l-1.17-4.6 3.47-2.7c.67-.53.57-.87-.27-.93l-4.53-.33-1.63-4.13c-.3-.77-.67-.77-.97 0l-1.53 4.13-4.63.33c-.83.07-.93.4-.27.9l3.5 2.73z"/></svg>Game Review<button class="x" type="button" aria-label="Close review">✕</button></div>
+      <div class="hd"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#81b64c" d="m12 22.5c-5.8 0-10.5-4.7-10.5-10.5s4.7-10.5 10.5-10.5 10.5 4.7 10.5 10.5-4.7 10.5-10.5 10.5zm-4.63-4.63c-.2.8.07 1 .77.53l3.87-2.73 3.83 2.73c.7.47.97.27.77-.53l-1.17-4.6 3.47-2.7c.67-.53.57-.87-.27-.93l-4.53-.33-1.63-4.13c-.3-.77-.67-.77-.97 0l-1.53 4.13-4.63.33c-.83.07-.93.4-.27.9l3.5 2.73z"/></svg>Game Review<button class="cog" type="button" aria-label="Review settings" aria-haspopup="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.57 20.53-1.17 1.27c-.37.4-.67.43-1.13.17l-1.53-.87c-.47-.27-.57-.57-.43-1.07l.53-1.67c.13-.5.1-.87-.17-1.33l-1.17-2.07c-.27-.47-.57-.67-1.07-.8l-1.73-.4c-.5-.13-.7-.37-.7-.9v-1.77c0-.5.2-.73.7-.87l1.73-.4c.5-.13.8-.33 1.07-.8l1.17-2.07c.27-.47.3-.83.17-1.33l-.53-1.67c-.13-.5-.03-.8.43-1.07l1.53-.87c.47-.27.77-.23 1.13.17l1.17 1.27c.37.4.7.53 1.23.53h2.43c.5 0 .83-.13 1.2-.53l1.17-1.27c.37-.4.67-.43 1.13-.17l1.53.87c.47.27.57.57.43 1.07l-.53 1.67c-.13.5-.1.87.17 1.33l1.17 2.07c.27.47.57.67 1.07.8l1.73.4c.5.13.7.37.7.87v1.77c0 .53-.2.77-.7.9l-1.73.4c-.5.13-.8.33-1.07.8l-1.17 2.07c-.27.47-.3.83-.17 1.33l.53 1.67c.13.5.03.8-.43 1.07l-1.53.87c-.47.27-.77.23-1.13-.17l-1.17-1.27c-.37-.4-.7-.53-1.2-.53h-2.43c-.53 0-.87.13-1.23.53zm2.46-5.03c1.9 0 3.5-1.57 3.5-3.53 0-1.9-1.6-3.47-3.5-3.47-1.93 0-3.5 1.57-3.5 3.47 0 1.97 1.57 3.53 3.5 3.53z"/></svg></button><button class="x" type="button" aria-label="Close review">✕</button></div>
+      <div class="menu" role="menu"><label><input type="checkbox" class="opt-arrows">Show best move arrows</label></div>
       <div class="scroll"><div class="body"></div></div>
       <div class="ft"><button type="button" class="prev" aria-label="Previous move">‹</button><button type="button" class="best">Best</button><button type="button" class="go next">Next ›</button></div>
     </div>`;
     document.body.appendChild(host);
     review.host = host; review.root = root;
     root.querySelector('.x').addEventListener('click', reviewClose);
+    // the cogwheel: review options (kept with the other settings)
+    const cog = root.querySelector('.cog'), menu = root.querySelector('.menu'), optArrows = root.querySelector('.opt-arrows');
+    optArrows.checked = !!rawSettings.review.arrows;
+    const shut = () => { menu.classList.remove('open'); cog.classList.remove('on'); };
+    cog.addEventListener('click', e => { e.stopPropagation(); menu.classList.toggle('open'); cog.classList.toggle('on', menu.classList.contains('open')); });
+    root.querySelector('.rv').addEventListener('click', e => { if (!menu.contains(e.target) && !cog.contains(e.target)) shut(); });
+    optArrows.addEventListener('change', () => { setSetting('review', 'arrows', optArrows.checked); reviewBoardMarks(); });
     root.querySelector('.prev').addEventListener('click', () => reviewGo(review.cur - 1));
     root.querySelector('.next').addEventListener('click', () => reviewGo(review.cur + 1));
     root.querySelector('.best').addEventListener('click', () => { review.showBest = !review.showBest; reviewDraw(true); });

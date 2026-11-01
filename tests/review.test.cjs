@@ -121,3 +121,61 @@ test('real engine: Fool\'s mate is reviewed (g4 a blunder, Qh4# best), then the 
     });
   } finally { f.close(); }
 });
+
+test('a piece lost whatever was played is no sacrifice (a king forced out of check); one left hanging by choice still is', () => {
+  const f = setup();
+  try {
+    // after Rxe7+ the king must move; the bishop on d1 falls either way: Kf8 is the only good move (Great), not Brilliant
+    const fen = 'rn2k2r/ppp1Rppp/8/6B1/3q4/2N5/PPP2PPP/R2b2K1 b kq - 0 12';
+    assert.equal(f.api.isSoundSacrifice(fen, 'e8f8'), false);
+    assert.equal(f.api.isSoundSacrifice(fen, 'e8d8'), false);
+    // the smothered-mate queen offer is still a sacrifice
+    assert.equal(f.api.isSoundSacrifice('q4r1k/6pp/4Q2N/8/8/8/8/6K1 w - - 0 1', 'e6g8'), true);
+  } finally { f.close(); }
+});
+
+test('Brilliant waits for depth: a shallow look rates the sacrifice as an ordinary move', () => {
+  const f = setup();
+  try {
+    const lines = d => [{ pv: ['e6g8'], cp: 150, depth: d }, { pv: ['e6e5'], cp: -300, depth: d }];
+    const ctx = { sacrifice: true, legalCount: 30 };
+    assert.notEqual(f.api.rateGrade(lines(12), lines(12)[0], ctx), 'brilliant');
+    assert.equal(f.api.rateGrade(lines(18), lines(18)[0], ctx), 'brilliant');
+  } finally { f.close(); }
+});
+
+test('best-move arrows: drawn for a move that was not the engine\'s, none for the engine\'s own; the cogwheel switches them', () => {
+  const f = setup();
+  try {
+    f.api.setSetting('review', 'on', true);
+    f.api.reviewEngines.forEach(e => { e.analyse = () => new Promise(() => {}); });
+    const { board } = gameBoard(f, ['e4', 'e5', 'Nf3']);
+    board.getBoundingClientRect = () => ({ left: 0, top: 0, right: 400, bottom: 400, width: 400, height: 400 });
+    f.api.reviewOpen(board);
+    const r = f.api.review;
+    const ev = (best, cp = 20) => ({ depth: 16, reached: 16, lines: [{ pv: [best], cp, depth: 16 }, { pv: ['a2a3'], cp: cp - 30, depth: 16 }] });
+    r.evals[0] = ev('d2d4'); r.evals[1] = ev('e7e5'); r.evals[2] = ev('g1f3'); r.evals[3] = ev('b8c6');
+    r.moves.forEach(m => { m.book = false; });
+    f.api.reviewGrade();
+    const arrow = () => board.querySelector('svg.bs-review-best');
+    // the 1.e4 arrow (the engine wanted d4), then none on 1...e5 (the engine's own move)
+    f.api.review.cur = 1;
+    f.api.reviewBoardMarks();
+    assert.ok(arrow(), 'an arrow for the better move');
+    assert.equal(arrow().dataset.key.startsWith('d2d4'), true);
+    f.api.review.cur = 2;
+    f.api.reviewBoardMarks();
+    assert.equal(arrow(), null, 'no arrow when the engine\'s move was played');
+    // the cogwheel's checkbox turns them off
+    f.api.review.cur = 1;
+    const root = f.w.document.getElementById('bs-fake-review').shadowRoot;
+    root.querySelector('.cog').click();
+    assert.ok(root.querySelector('.menu.open'), 'the menu opens');
+    const box = root.querySelector('.opt-arrows');
+    assert.equal(box.checked, true, 'on by default');
+    box.checked = false; box.dispatchEvent(new f.w.Event('change'));
+    assert.equal(f.api.settings.review.arrows, false);
+    assert.equal(arrow(), null);
+    f.api.reviewClose();
+  } finally { f.close(); }
+});

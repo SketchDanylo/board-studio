@@ -114,9 +114,9 @@ test('real engine: Fool\'s mate is reviewed (g4 a blunder, Qh4# best), then the 
       assert.ok(['mistake', 'inaccuracy', 'blunder', 'good'].includes(grades[0]) || grades[0] === 'book', `f3: ${grades}`);
       const st = f.api.reviewStats();
       assert.ok(f.api.sideAccuracy(st.acc.b) > f.api.sideAccuracy(st.acc.w), 'Black played better');
-      for (let i = 0; i < 100 && r.pass <= 16; i++) await new Promise(res => setTimeout(res, 100));
-      assert.ok(r.pass > 16, 'and it goes on deeper');
-      console.log('Fool\'s mate review:', grades.join(' '), '| accuracy', f.api.sideAccuracy(st.acc.w).toFixed(1), f.api.sideAccuracy(st.acc.b).toFixed(1), '| pass', r.pass);
+      for (let i = 0; i < 300 && r.round < 2; i++) await new Promise(res => setTimeout(res, 100));
+      assert.ok(r.round >= 2, 'and it goes on, round after round');
+      console.log('Fool\'s mate review:', grades.join(' '), '| accuracy', f.api.sideAccuracy(st.acc.w).toFixed(1), f.api.sideAccuracy(st.acc.b).toFixed(1), '| round', r.round);
       f.api.reviewClose();
     });
   } finally { f.close(); }
@@ -197,7 +197,7 @@ test('a reviewed game is saved: opening it again shows it at once and only goes 
     };
     const r = f.api.review;
     open(['e4', 'e5', 'Nf3', 'Nc6']);
-    for (let i = 0; i < 200 && !(r.firstDone && r.pass >= 20); i++) await new Promise(res => setTimeout(res, 5));
+    for (let i = 0; i < 200 && !(r.firstDone && r.round >= 2); i++) await new Promise(res => setTimeout(res, 5));
     f.api.reviewClose();
     assert.equal(f.api.reviewStored().length, 1, 'saved when the review closed');
     // open it again: the first sweep is not done again
@@ -205,7 +205,7 @@ test('a reviewed game is saved: opening it again shows it at once and only goes 
     open(['e4', 'e5', 'Nf3', 'Nc6']);
     assert.equal(r.restored, true);
     assert.equal(r.firstDone, true, 'no new sweep');
-    assert.ok(r.pass >= 18);
+    assert.ok(r.round >= 2, 'the next round, with more time');
     assert.match(f.w.document.getElementById('bs-fake-review').shadowRoot.textContent, /Saved review/);
     for (let i = 0; i < 50 && !asked.length; i++) await new Promise(res => setTimeout(res, 5));
     assert.ok(asked.length && asked.every(d => d > 18), `only deeper looks: ${asked}`);
@@ -215,5 +215,43 @@ test('a reviewed game is saved: opening it again shows it at once and only goes 
     const kept = f.api.reviewStored();
     assert.equal(kept.length, 4);
     assert.ok(kept.every(g => g.n === 1), 'the 4-move game was dropped');
+  } finally { f.close(); }
+});
+
+test('an exchange left hanging is a sacrifice, as on chess.com (O-O leaving Ra3 to ...Bxa3)', () => {
+  const f = setup();
+  try {
+    assert.equal(f.api.isSoundSacrifice('8/2k2ppp/B2bp3/3p1bq1/P2P4/R7/1rP2PPP/1N1QK2R w K - 0 1', 'e1g1'), true);
+  } finally { f.close(); }
+});
+
+test('after the sweep every move gets the same time, round after round with twice the time; possible Brilliants get a longer look first', async () => {
+  const f = setup();
+  try {
+    f.api.setSetting('review', 'on', true);
+    const asked = [];
+    f.api.reviewEngines.forEach(e => {
+      e.analyse = async (fen, o) => { asked.push({ fen, ms: o.ms, depth: o.depth }); await new Promise(r => setTimeout(r, 1)); return { depth: 18, lines: [{ pv: ['a2a3'], cp: 10, depth: 18 }, { pv: ['h2h3'], cp: 0, depth: 18 }] }; };
+    });
+    // Black's 2...Qxe5?? style offer is not needed: Nxe5 offers a knight (a sacrifice candidate) in a short game
+    const { Chess } = require('chess.js');
+    const c = new Chess(); const nodes = [];
+    for (const san of ['e4', 'e5', 'Nf3', 'Nc6', 'Nxe5']) { const before = c.fen(), m = c.move(san); nodes.push({ from: m.from, to: m.to, san: m.san, color: m.color === 'w' ? 1 : 2, beforeFen: before, fen: c.fen() }); }
+    const b = f.board(c.fen()); let sel = nodes.length;
+    b.game = { getFEN: () => (sel ? nodes[sel - 1].fen : nodes[0].beforeFen), getSelectedNode: () => nodes[sel - 1], getRawLines: () => [nodes], getPlayingAs: () => null, moveForward() {}, moveBackward() {} };
+    b.getBoundingClientRect = () => ({ left: 0, top: 0, right: 400, bottom: 400, width: 400, height: 400 });
+    f.api.reviewOpen(b);
+    const r = f.api.review;
+    for (let i = 0; i < 400 && r.round < 3; i++) await new Promise(res => setTimeout(res, 5));
+    const after = asked.filter(a => a.depth === 99);
+    const share1 = after.filter(a => a.ms === 3000), share2 = after.filter(a => a.ms === 6000), long = after.filter(a => a.ms === 9000);
+    // round 1: every position its 3 s, or (around the offer) the longer look in its place
+    assert.equal(new Set([...share1, ...long.slice(0, 2)].map(x => x.fen)).size, nodes.length + 1, 'round 1: every position 3 s');
+    assert.equal(share1.length, nodes.length + 1 - 2);
+    assert.ok(share2.length >= nodes.length + 1 - 2, 'round 2: every position 6 s');
+    assert.ok(long.length >= 1, 'the knight offer got a longer look of its own');
+    assert.ok(after.indexOf(long[0]) < after.indexOf(share1[0]), 'and before the even shares');
+    f.api.reviewClose();
+    await new Promise(res => setTimeout(res, 50));
   } finally { f.close(); }
 });

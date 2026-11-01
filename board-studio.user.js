@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.51.0
+// @version      6.53.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -91,7 +91,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Clutch: from `time` seconds on your clock down, the engine takes over, playing at `elo`
     // (with `auto` the opponent's rating). Everything else (what counts as winning, how deep to look,
     // how much clock a deep search may cost) it works out itself.
-    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40, mouse: false },
+    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40, mouse: false, witty: false },
     global: { on: true }
   };
 
@@ -2283,6 +2283,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <input type="range" class="elo-range" min="0" max="3501" step="1" aria-label="Clutch Elo slider" title="0: loses on purpose, as fast as it can. 3501: full engine strength, played to win. In between: that rating, with the outcome from the bar below.">
           <em class="elo-hint"></em>
           <div class="sub" data-key="mouse" title="Shows Clutch's hand as a second mouse pointer: how it goes to a piece, picks it up, carries it and lets go, and the premove it holds ready. Its speed is clutchDPI at the top of the script."><span>Show Mouse</span><button class="sw" role="switch" type="button" aria-label="Show Mouse"></button></div>
+          <div class="sub" data-key="witty" title="Plays like Witty_Alien: his gambits (Alien, Martian, Elephant, Englund) where the rating leaves room for them, and the sacrifice or the move that tears the king open rather than the plain best move, a mate with a sacrifice rather than the quickest. Never at the cost of the outcome Clutch plays for."><span>Witty Alieeeen</span><button class="sw" role="switch" type="button" aria-label="Witty Alieeeen"></button></div>
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
           </div>
@@ -3007,13 +3008,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // trade, a pinned defender, or a capture that already wins more material.
   // (A static exchange: each side takes back with its least valuable piece, and may stop when going on would lose. One move
   // list per capture, so it stays cheap: trying every capturer at every step grows exponentially and was most of a decision.)
-  function exchangeGain(game, square, remaining = 5) {
+  // What a sacrifice is measured in: chess.com's piece values (pawn 1, knight and bishop 3, rook 5, queen 9). With them an
+  // exchange (a rook for a minor piece) is two pawns, enough to be a sacrifice, as on chess.com; the engine-style values
+  // above (bishop 330) made it 1.7 and an exchange sacrifice was never Brilliant.
+  const SAC_VALUE = { p: 100, n: 300, b: 300, r: 500, q: 900, k: 20000 };
+
+  function exchangeGain(game, square, remaining = 5, values = PIECE_VALUE) {
     if (!remaining) return 0;
     let least = null;
     if (typeof game.attackers === 'function') {
       // only the pieces that attack the square are asked for their moves, cheapest first (the move list of one piece is
       // some thirty times cheaper than the whole position's)
-      const from = game.attackers(square, game.turn()).map(sq => ({ sq, v: PIECE_VALUE[game.get(sq).type] })).sort((a, b) => a.v - b.v);
+      const from = game.attackers(square, game.turn()).map(sq => ({ sq, v: values[game.get(sq).type] })).sort((a, b) => a.v - b.v);
       for (const { sq } of from) {
         const caps = game.moves({ square: sq, verbose: true }).filter(m => m.to === square && m.captured);
         if (caps.length) { least = caps.find(m => m.promotion === 'q') || caps[0]; break; }
@@ -3026,7 +3032,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     if (!least) return 0;
     game.move(least);
-    const gain = PIECE_VALUE[least.captured] - exchangeGain(game, square, remaining - 1);
+    const gain = values[least.captured] - exchangeGain(game, square, remaining - 1, values);
     game.undo();
     return Math.max(0, gain);
   }
@@ -3043,8 +3049,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       for (const capture of captures) {
         if (checked.has(capture.to)) continue;
         checked.add(capture.to);
-        const offered = exchangeGain(game, capture.to) - (PIECE_VALUE[move.captured] || 0);
-        const alreadyOffered = capture.to === move.to ? 0 : exchangeGain(before, capture.to);
+        const offered = exchangeGain(game, capture.to, 5, SAC_VALUE) - (SAC_VALUE[move.captured] || 0);
+        const alreadyOffered = capture.to === move.to ? 0 : exchangeGain(before, capture.to, 5, SAC_VALUE);
         // Newly offered, or a piece that was already en prise and is deliberately left there
         // (Fischer's 17...Be6 leaves the queen hanging). Deliberately: some other move would have saved it. A piece
         // that was lost whatever was played (a king forced out of check, say) was not given, so it is no sacrifice.
@@ -3063,7 +3069,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       game.move(alt);
       const where = alt.from === square ? alt.to : square;
       const piece = game.get(where);
-      const safe = !piece || piece.color === game.turn() ? false : exchangeGain(game, where) < 200;
+      const safe = !piece || piece.color === game.turn() ? false : exchangeGain(game, where, 5, SAC_VALUE) < 200;
       game.undo();
       if (safe) return true;
     }
@@ -3990,7 +3996,121 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // The opening book: the most played move of the position, if it is in the book. Nothing to search.
-  function clutchBookStep(fen) {
+  // ---------- Witty Alieeeen (a Clutch style) ----------
+
+  // Plays like Witty_Alien (CM Volen Dyulgerov): his gambits in the opening, and in the game itself the sacrifice or the
+  // move that tears the enemy king open rather than the plain best move, a mate that starts with a sacrifice rather than
+  // the quickest one. Never at the cost of the outcome Clutch is playing for: a style move must keep the result the
+  // plain move would (a win still a win, a draw still a draw), within a small margin, or the plain move is played.
+  //
+  // The gambits cost against a perfect opponent (Stockfish, depth 18, from the gambit side: Alien 6.Nxf7 -2.0,
+  // Martian 7.Ne6 -1.5, Elephant 2...d5 -0.9, Englund 1...e5 -1.1 / 3...Qe7 -1.7), so they are only played where the
+  // rating Clutch plays at leaves room to win it back: the deeper ones (tier 2) to 1800 to win and 1500 to draw, the
+  // milder ones (tier 1) to 2200 and 2000; never at full strength; always when losing on purpose.
+  const WITTY_LINES = [
+    // White: the Caro-Kann gambits of his own
+    { name: 'Alien Gambit', side: 'w', tier: 2, san: 'e4 c6 d4 d5 Nc3 dxe4 Nxe4 Nf6 Ng5 h6 Nxf7' },
+    { name: 'Alien Gambit', side: 'w', tier: 2, san: 'e4 c6 d4 d5 Nd2 dxe4 Nxe4 Nf6 Ng5 h6 Nxf7' },
+    { name: 'Martian Gambit', side: 'w', tier: 2, san: 'e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5 Ng5 Bg6 N1f3 h6 Ne6 fxe6 Ne5' },
+    { name: 'Martian Gambit', side: 'w', tier: 2, san: 'e4 c6 d4 d5 Nd2 dxe4 Nxe4 Bf5 Ng5 Bg6 N1f3 h6 Ne6 fxe6 Ne5' },
+    // Black: the Elephant against 1.e4 e5 2.Nf3, the Englund against 1.d4
+    { name: 'Elephant Gambit', side: 'b', tier: 1, san: 'e4 e5 Nf3 d5' },
+    { name: 'Englund Gambit', side: 'b', tier: 1, san: 'd4 e5 dxe5 Nc6' },
+    { name: 'Englund Gambit', side: 'b', tier: 2, san: 'd4 e5 dxe5 Nc6 Nf3 Qe7' }
+  ];
+  let wittyBook = null;
+  const wittyKey = fen => String(fen).split(' ').slice(0, 3).join(' ');
+  function wittyBookMap() {
+    if (wittyBook) return wittyBook;
+    wittyBook = new Map();
+    for (const line of WITTY_LINES) {
+      const game = new BoardStudioRules.Chess();
+      for (const san of line.san.split(' ')) {
+        const before = game.fen(), move = game.move(san);
+        if (move.color !== line.side) continue;
+        const key = wittyKey(before), uci = move.from + move.to + (move.promotion || ''), have = wittyBook.get(key);
+        // a move on the way into several lines takes the mildest tier among them: the road is taken whenever one of
+        // its gambits may be played, and where the deeper one may not, the game goes on without it
+        if (!have) wittyBook.set(key, { uci, name: line.name, tier: line.tier });
+        else if (have.uci === uci && line.tier < have.tier) { have.tier = line.tier; have.name = line.name; }
+      }
+    }
+    return wittyBook;
+  }
+  // Whether a gambit of this tier fits the game Clutch is playing (its rating and the outcome it plays for).
+  function wittyAllows(tier, s) {
+    if (!s) return true;
+    if (s.mode === 'lose' || s.throw) return true;
+    if (s.max) return false;
+    const elo = s.elo === undefined ? 1500 : s.elo;
+    const cap = s.mode === 'draw' ? (tier >= 2 ? 1500 : 2000) : (tier >= 2 ? 1800 : 2200);
+    return elo <= cap;
+  }
+  // The Witty move in this position, if the repertoire has one and it may be played: { step, name }.
+  function wittyBookStep(fen, s) {
+    const hit = wittyBookMap().get(wittyKey(fen));
+    if (!hit || !wittyAllows(hit.tier, s)) return null;
+    const step = stepFor(fen, hit.uci);
+    return step ? { step, name: hit.name } : null;
+  }
+
+  // How much a move has his style: a sacrifice, then tearing open the enemy king (taking the pawns in front of it,
+  // checks, pieces landing next to it, pawns storming it).
+  function wittyFlair(fen, uci) {
+    let score = 0;
+    try {
+      if (isSoundSacrifice(fen, uci)) score += 3;
+      const game = new BoardStudioRules.Chess(fen), us = game.turn(), them = us === 'w' ? 'b' : 'w';
+      const move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || 'q' });
+      if (!move) return 0;
+      const king = (game.board().flat().find(p => p && p.type === 'k' && p.color === them) || {}).square;
+      if (!king) return score;
+      const dist = (a, b) => Math.max(Math.abs(a.charCodeAt(0) - b.charCodeAt(0)), Math.abs(+a[1] - +b[1]));
+      if (move.captured && dist(move.to, king) <= 1) score += move.captured === 'p' ? 2 : 1;   // the shield goes
+      if (game.inCheck()) score += 1;
+      if (move.piece !== 'k' && move.piece !== 'p' && dist(move.to, king) <= 2) score += 1;
+      if (move.piece === 'p' && Math.abs(move.to.charCodeAt(0) - king.charCodeAt(0)) <= 1 && dist(move.to, king) <= 3) score += 1;
+    } catch (e) { return 0; }
+    return score;
+  }
+
+  // Does a style move keep the outcome the plain move holds? Values from the mover's side.
+  function wittyKeeps(mode, base, alt) {
+    if (!alt || !base) return false;
+    if (base.mate !== undefined && base.mate > 0) return alt.mate !== undefined && alt.mate > 0 && alt.mate <= base.mate + 3;
+    if (alt.mate !== undefined) return alt.mate > 0 && mode !== 'draw';
+    if (base.mate !== undefined) return false;                 // already being mated: no style, only defence
+    if (mode === 'lose') return false;
+    if (mode === 'draw') return Math.abs(alt.cp - base.cp) <= 50 && alt.cp >= -60 && alt.cp <= Math.max(base.cp, 150);
+    // to win: little given up, and a win that was safe stays safe
+    if (alt.cp < base.cp - (base.cp >= 400 ? 120 : 60)) return false;
+    if (base.cp >= 250 && alt.cp < 250) return false;
+    return true;
+  }
+
+  // The style choice among the lines a decision had: the move with the most flair that keeps the outcome, if it has more
+  // flair than the plain move. lines: engine lines (best first), mover's side. Null to keep the plain move.
+  function wittyChoose(fen, lines, s, baseUci) {
+    if (!s || !s.witty || s.throw || !lines || lines.length < 2) return null;
+    const base = lines.find(l => l.pv && l.pv[0] === baseUci) || lines[0];
+    const own = wittyFlair(fen, base.pv[0]);
+    let best = null;
+    for (const l of lines) {
+      if (!l || !l.pv || !l.pv[0] || l.pv[0] === base.pv[0] || !wittyKeeps(s.mode || 'win', base, l)) continue;
+      const flair = wittyFlair(fen, l.pv[0]);
+      if (flair > own && (!best || flair > best.flair)) best = { line: l, flair };
+    }
+    return best;
+  }
+
+  // The opening-book move (the most played), or with Witty Alieeeen on the move of his repertoire where it has one.
+  // s: the Clutch settings of the game (rating, outcome); without it only the book is asked.
+  function clutchBookStep(fen, s = null) {
+    if (s && s.witty) {
+      const witty = wittyBookStep(fen, s);
+      if (witty) return { step: witty.step, games: 0, share: 1, name: witty.name };
+    }
+    if (s && s.elo !== undefined && s.elo < 800) return null;
     const moves = bookMoves(fen);
     if (!moves.length) return null;
     const total = moves.reduce((sum, m) => sum + m.count, 0);
@@ -5312,7 +5432,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         clutch.sunk = clutch.lastValue !== null && clutch.lastValue !== undefined && clutch.lastValue < -500 ? (clutch.sunk || 0) + 1 : 0;
         if (clutch.sunk >= 10) { clutch.way = 'time'; setClutchMode('lose', 'time'); }
       }
-      return result;
+      return wittyWiden(fen, result, s, clock);
     }
     let result = await clutchEngine.analyse(fen, { depth: s.depth, ms: budget.stage1Ms * hurry, multipv: s.multipv || 4 });
     if (result && !(result.mate > 0) && clutchWinning(result, s) && budget.canDeepen && budget.stage2Ms > 0 && !(s.strength && s.strength.limited)) {
@@ -5327,17 +5447,45 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         result = (await clutchEngine.analyse(fen, { depth: Math.min(budget.maxDepth, s.depth + 2 * decision.crit + 4), ms, multipv: s.multipv || 4 })) || result;
       }
     }
-    return result;
+    return wittyWiden(fen, result, s, clock);
+  }
+
+  // With Witty Alieeeen on and a mate found, a quick look at the other mating lines, so one that starts with a sacrifice
+  // can be chosen over the quickest (only with time to spare).
+  async function wittyWiden(fen, result, s, clock) {
+    if (!s.witty || s.max || s.throw || s.mode === 'draw' || !result || !(result.mate > 0) || clock < 6) return result;
+    if ((result.lines || []).filter(l => l && l.mate > 0).length >= 2) return result;
+    const more = await clutchEngine.analyse(fen, { depth: 18, ms: Math.min(700, clock * 25), multipv: 5 });
+    const lines = more && more.lines ? more.lines.filter(l => l && l.pv && l.pv.length) : [];
+    return lines.some(l => l.mate > 0) ? { ...result, lines } : result;
   }
 
   // From a result to what to do: a mate becomes a plan, anything else one move.
   function clutchDecide(fen, result, s) {
     if (result.mate > 0 && (s.mode !== 'draw' || isSimpleMate(fen, result)) && result.pv && (result.human || !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2)))) {
+      // Witty Alieeeen: a mate that starts with a sacrifice (at most three moves longer) before the quickest one
+      if (s.witty && s.mode !== 'draw' && !isSoundSacrifice(fen, result.pv[0])) {
+        const brilliant = (result.lines || []).find(l => l && l.pv && l.pv[0] && l.mate > 0 && l.mate <= result.mate + 3 && isSoundSacrifice(fen, l.pv[0]));
+        if (brilliant) {
+          const line = mateLine(fen, brilliant.pv);
+          if (line[0] && line[0].ours) return { plan: { start: fen, line }, step: line[0], witty: true, note: `Witty: mate in ${brilliant.mate} with a sacrifice (depth ${result.depth})` };
+        }
+      }
       const line = mateLine(fen, result.pv);
       if (line[0] && line[0].ours) return { plan: { start: fen, line }, step: line[0], note: `mate in ${result.mate} (depth ${result.depth})` };
     }
-    const step = clutchPick(fen, result, s);
+    let step = clutchPick(fen, result, s);
     if (!step) return null;
+    // Witty Alieeeen: among the moves that keep the outcome, the one with the most flair (a sacrifice, the king torn open)
+    if (s.witty) {
+      const lines = (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv.length);
+      const pick = wittyChoose(fen, lines, s, step.uci);
+      const styled = pick && stepFor(fen, pick.line.pv[0]);
+      if (styled) {
+        const score = pick.line.mate !== undefined ? `mate ${pick.line.mate}` : (pick.line.cp / 100).toFixed(2);
+        return { plan: null, step: styled, crit: 0, gap: Infinity, witty: true, note: `Witty: ${styled.from}-${styled.to} (${score}, flair ${pick.flair}, depth ${result.depth})` };
+      }
+    }
     const score = result.mate !== undefined ? `mate ${result.mate}` : (result.cp / 100).toFixed(2);
     const { crit, gap } = result.human ? { crit: 0, gap: Infinity } : clutchCritical(fen, result, step);
     return { plan: null, step, crit, gap, note: `${step.check && clutchLosing(result, s) ? 'perpetual try' : 'best move'} ${step.from}-${step.to} (${score}, depth ${result.depth}${crit ? ', care ' + crit : ''})` };
@@ -5419,11 +5567,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const topReply = options.length ? options[0].uci : null;
     // Replies that lead into the opening book need no search: the book move is the answer.
     for (const option of options) {
-      const hit = (s.elo === undefined || s.elo >= 800) ? clutchBookStep(option.fen) : null;
+      const hit = clutchBookStep(option.fen, s);
       if (!hit) continue;
       option.book = true;
       const key = repKey(option.fen);
-      const entry = { plan: null, step: hit.step, pv: [hit.step.uci], note: `opening book, ${hit.games} games`, depth: 99, reply: option.uci, replyCapture: option.capture, replyTo: option.to, book: true, fen: option.fen, topReply };
+      const entry = { plan: null, step: hit.step, pv: [hit.step.uci], note: hit.name ? `${hit.name} (Witty)` : `opening book, ${hit.games} games`, depth: 99, reply: option.uci, replyCapture: option.capture, replyTo: option.to, book: true, fen: option.fen, topReply };
       entries.set(key, entry);
       onEntry(key, entry);
     }
@@ -5721,10 +5869,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const entry = book && book.entries.get(key);
       clutchStopBook();
       showClutchGhosts(ctl, []);
-      const opening = s.elo >= 800 ? clutchBookStep(fen) : null;
+      const opening = clutchBookStep(fen, s);
       if (opening && !(entry && !entry.book && entry.plan)) {
         clutchShow(ctl, [{ id: 'cl:' + opening.step.uci, uci: opening.step.uci, color: CLUTCH_COLOR }]);
-        act(opening.step, false, `opening book, ${opening.games} games`, false);
+        act(opening.step, false, opening.name ? `${opening.name} (Witty)` : `opening book, ${opening.games} games`, false);
         return;
       }
       let fixedStep = clutchAuthenticStep(book && book.premove, fen, entry);
@@ -6266,7 +6414,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // In the review a Brilliant must hold at depth 20 on both sides of the move before it is shown (a mate is proof
       // enough); until then the move is rated as if it were no sacrifice and the two positions are looked at first.
       m.checking = false;
-      if (m.grade === 'brilliant' && !(line.mate > 0) && Math.min(before.reached || 0, after.terminal ? 99 : (after.reached || 0)) < REVIEW_BRILLIANT) {
+      const held = ev => ev.terminal || (ev.reached || 0) >= REVIEW_BRILLIANT || (ev.brill || 0) > 0;
+      if (m.grade === 'brilliant' && !(line.mate > 0) && !(held(before) && held(after))) {
         m.grade = rateGrade(before.lines, line, { sacrifice: false, legalCount: m.basics.legalCount, recapture: m.basics.recapture });
         m.checking = true;
       }
@@ -6276,23 +6425,41 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // The next position to look at: the move on the board (the positions before and after it) a little deeper than the
   // rest, then the whole game at the current pass depth; once every position has it, the pass goes two deeper.
+  // What to look at next. First the sweep: every position to depth 16, the move on the board first. Then rounds: in
+  // each round every position gets the same time (3 s in the first, doubled each round after), one after the other
+  // through the game, the move on the board first. Before each round's even share, the moves that may be Brilliant
+  // (they give material away and do not look bad) get a long look of their own (three shares) on both sides of the
+  // move, so a sacrifice is judged on more than a quick search.
+  const REVIEW_SLICE = 3000, REVIEW_SLICE_MAX = 48000;
+  const reviewSlice = () => Math.min(REVIEW_SLICE_MAX, REVIEW_SLICE * Math.pow(2, Math.max(0, review.round - 1)));
+  const MAYBE_BRILLIANT = ['brilliant', 'great', 'best', 'excellent', 'good', 'inaccuracy'];
   function reviewNext() {
-    const n = review.evals.length, wanted = (i, d) => i >= 0 && i < n && !review.busy.has(i) && review.evals[i].depth < d && review.evals[i].depth < 99;
-    const focus = [review.cur - 1, review.cur];
-    // a possible Brilliant (a move that gives material away, looking good) is confirmed at depth 20 straight after the sweep
-    if (review.firstDone) for (let k = 0; k < review.moves.length; k++) {
-      const m = review.moves[k];
-      if (!m.basics || !m.basics.offers || !(m.checking || m.grade === 'best' || m.grade === 'great' || m.grade === 'excellent')) continue;
-      for (const i of [k, k + 1]) if (wanted(i, REVIEW_BRILLIANT) && (review.evals[i].reached || 0) < REVIEW_BRILLIANT) return { i, depth: Math.max(REVIEW_BRILLIANT, review.pass), ms: 12000 };
+    const n = review.evals.length;
+    const free = i => i >= 0 && i < n && !review.busy.has(i) && !review.evals[i].terminal;
+    const busy = () => review.busy.size > 0;
+    if (!review.firstDone) {
+      for (const i of [review.cur - 1, review.cur]) if (free(i) && review.evals[i].depth < REVIEW_FIRST) return { i, depth: REVIEW_FIRST, ms: 3500 };
+      for (let i = 0; i < n; i++) if (free(i) && review.evals[i].depth < REVIEW_FIRST) return { i, depth: REVIEW_FIRST, ms: 3500 };
+      if (busy()) return null;
+      review.firstDone = true; review.round = Math.max(1, review.round || 0);
+      reviewDraw(true);
     }
-    for (const i of focus) if (wanted(i, Math.min(REVIEW_MAX, review.pass + (review.firstDone ? 4 : 0)))) return { i, depth: Math.min(REVIEW_MAX, review.pass + (review.firstDone ? 4 : 0)) };
-    for (;;) {
-      for (let i = 0; i < n; i++) if (wanted(i, review.pass)) return { i, depth: review.pass };
-      if ([...Array(n).keys()].some(i => review.busy.has(i))) return null;     // the pass is still being finished
-      if (!review.firstDone) { review.firstDone = true; reviewDraw(true); }
-      if (review.pass >= REVIEW_MAX) return null;
-      review.pass += 2;
+    for (let guard = 0; guard < 2; guard++) {
+      const slice = reviewSlice(), round = review.round;
+      // the possible Brilliants first
+      for (let k = 0; k < review.moves.length; k++) {
+        const m = review.moves[k];
+        if (!m.basics || !m.basics.offers || !(m.checking || MAYBE_BRILLIANT.includes(m.grade))) continue;
+        for (const i of [k, k + 1]) if (free(i) && (review.evals[i].brill || 0) < round) return { i, depth: 99, ms: slice * 3, brill: true };
+      }
+      // then the even share: the move on the board, then the game from the start
+      for (const i of [review.cur - 1, review.cur]) if (free(i) && (review.evals[i].round || 0) < round) return { i, depth: 99, ms: slice };
+      for (let i = 0; i < n; i++) if (free(i) && (review.evals[i].round || 0) < round) return { i, depth: 99, ms: slice };
+      if (busy()) return null;       // the round is still being finished
+      review.round++;                // every position had its share: the next round, with twice the time
+      reviewDraw(true);
     }
+    return null;
   }
 
   async function reviewWorker(engine, token) {
@@ -6300,20 +6467,18 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const job = reviewNext();
       if (!job) { await new Promise(r => setTimeout(r, 400)); continue; }
       review.busy.add(job.i);
-      const fen = review.fens[job.i];
-      // the first sweep is thorough but bounded in time; later passes may take longer per position
-      const ms = job.ms || (review.firstDone ? Math.min(30000, 1500 * Math.pow(1.45, (job.depth - REVIEW_FIRST) / 2)) : 3500);
+      const fen = review.fens[job.i], round = review.round;
       let result = null;
-      try { result = await engine.analyse(fen, { depth: job.depth, ms, multipv: 2 }); } catch (e) { result = null; }
+      try { result = await engine.analyse(fen, { depth: job.depth, ms: job.ms, multipv: 2 }); } catch (e) { result = null; }
       review.busy.delete(job.i);
       if (!review.open || review.token !== token) break;
       const ev = review.evals[job.i];
       if (result) {
-        // the deepest answer is kept; the pass counts as done for this position even when the time ran out first
-        // (it is asked again, with more time, on the next pass)
+        // the deepest answer is kept (a later, longer look replaces it); the share counts as given either way
         const lines = (result.lines || []).filter(l => l && l.pv && l.pv.length);
         if (lines.length && (result.depth || 0) >= (ev.reached || 0)) { ev.lines = lines; ev.reached = result.depth || 0; }
-        ev.depth = Math.max(ev.depth, job.depth);
+        ev.depth = Math.max(ev.depth, job.depth === 99 ? (result.depth || 0) : job.depth);
+        if (review.firstDone) { ev.round = Math.max(ev.round || 0, round); if (job.brill) ev.brill = Math.max(ev.brill || 0, round); }
       }
       reviewGrade();
       reviewDraw();
@@ -6506,7 +6671,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     review.root.querySelector('.body').innerHTML = `
       <div class="coach"><div class="face">♞</div><div class="bubble"><div class="t">${coach.title}${coach.ev ? `<span class="ev${coach.evWhite ? ' w' : ''}">${coach.ev}</span>` : ''}</div>${coach.sub ? `<div class="sub">${coach.sub}</div>` : ''}</div></div>
-      ${review.firstDone ? `<div class="note">${review.restored ? 'Saved review · ' : ''}Depth ${review.pass}${review.pass >= REVIEW_MAX ? ' (deepest)' : ', still going deeper'}</div>` : `<div class="note">Analyzing the game… ${Math.round(done / total * 100)}%</div><div class="prog"><i style="width:${done / total * 100}%"></i></div>`}
+      ${review.firstDone ? `<div class="note">${review.restored ? 'Saved review · ' : ''}Round ${review.round} · ${(reviewSlice() / 1000).toFixed(0)} s per move, still going</div>` : `<div class="note">Analyzing the game… ${Math.round(done / total * 100)}%</div><div class="prog"><i style="width:${done / total * 100}%"></i></div>`}
       ${reviewGraph()}
       <table>
         <tr class="players"><td class="c1">${names.w}</td><td class="c2"></td><td class="c3">${names.b}</td></tr>
@@ -6580,7 +6745,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     });
     const depths = review.evals.filter(e => !e.terminal).map(e => e.depth);
     const least = depths.length ? Math.min(...depths) : REVIEW_MAX;
-    if (least >= REVIEW_FIRST) { review.firstDone = true; review.pass = Math.min(REVIEW_MAX, least - (least % 2)); }
+    // a saved game goes on with the next round (each position's share twice the last one)
+    if (least >= REVIEW_FIRST) { review.firstDone = true; review.round = (hit.round || 0) + 1; }
     review.restored = true;
     return true;
   }
@@ -6589,7 +6755,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     clearTimeout(review.saveTimer); review.saveTimer = 0;
     if (!review.key || !review.evals.some(e => e.lines && e.lines.length)) return;
     const entry = {
-      key: review.key, at: Date.now(), n: review.moves.length,
+      key: review.key, at: Date.now(), n: review.moves.length, round: review.round,
       e: review.evals.map(e => (e.terminal || !e.lines.length ? null : {
         d: e.depth, r: e.reached || 0,
         l: e.lines.slice(0, 2).map(l => ({ p: l.pv.slice(0, 4), d: l.depth, ...(l.mate !== undefined ? { m: l.mate } : { c: l.cp }) }))
@@ -6609,7 +6775,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     reviewClose();
     review.bookDone = false;
     if (!reviewLoad(board)) return false;
-    review.open = true; review.token++; review.pass = REVIEW_FIRST; review.bookDone = false; review.firstDone = false; review.busy.clear(); review.showBest = false;
+    review.open = true; review.token++; review.pass = REVIEW_FIRST; review.round = 0; review.bookDone = false; review.firstDone = false; review.busy.clear(); review.showBest = false;
     review.restored = false; review.key = reviewKey();
     reviewRestore();
     review.cur = reviewPly();

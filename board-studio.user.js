@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.48.0
+// @version      6.49.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -85,6 +85,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     crown: { on: true },
     // Rate Moves: chess.com-style badges for the move that led to the position on the board (self: yours too).
     rate: { on: false, self: false },
+    // Fake Review: the Game Review button opens a review made here, in chess.com's style
+    review: { on: false },
     ghosts: { on: true, opacity: 0.25, ai: false },
     // Clutch: from `time` seconds on your clock down, the engine takes over, playing at `elo`
     // (with `auto` the opponent's rating). Everything else (what counts as winning, how deep to look,
@@ -2215,6 +2217,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     danger: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="#739552"/><circle cx="12" cy="12" r="7.2" fill="none" stroke="#e5534b" stroke-width="2.4" opacity=".9"/><circle cx="12" cy="12" r="3" fill="#e5534b"/></svg>`,
     book: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.2c3-.9 6-.6 8.6 1v13.4c-2.6-1.6-5.6-1.9-8.6-1z" fill="#c4955f"/><path d="M21 5.2c-3-.9-6-.6-8.6 1v13.4c2.6-1.6 5.6-1.9 8.6-1z" fill="#e0b47f"/><path d="M14.5 10.5h4M14.5 13.5h4" stroke="#8f6338" stroke-width="1.4" stroke-linecap="round"/></svg>`,
     crown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 8l4.6 3.9L12 4l4.9 7.9L21.5 8l-1.9 9.2H4.4z" fill="#f5b52e" stroke="#c47d12" stroke-width="1" stroke-linejoin="round"/><rect x="4.2" y="16.8" width="15.6" height="2.7" rx="1" fill="#e09a1f"/><circle cx="12" cy="13" r="1.6" fill="#e5534b"/></svg>`,
+    review: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#81b64c" d="m12 22.5c-5.8 0-10.5-4.7-10.5-10.5s4.7-10.5 10.5-10.5 10.5 4.7 10.5 10.5-4.7 10.5-10.5 10.5zm-4.63-4.63c-.2.8.07 1 .77.53l3.87-2.73 3.83 2.73c.7.47.97.27.77-.53l-1.17-4.6 3.47-2.7c.67-.53.57-.87-.27-.93l-4.53-.33-1.63-4.13c-.3-.77-.67-.77-.97 0l-1.53 4.13-4.63.33c-.83.07-.93.4-.27.9l3.5 2.73z"/></svg>`,
     rate: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#26c2a3"/><text x="12" y="16.4" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="11.5" letter-spacing="-.6" fill="#fff">!!</text></svg>`,
     ghosts: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5c-4.4 0-7.5 3.3-7.5 7.6v10.6l2.5-1.8 2.5 1.8 2.5-1.8 2.5 1.8 2.5-1.8 2.5 1.8V10.1c0-4.3-3.1-7.6-7.5-7.6z" fill="#fff" opacity=".82"/><circle cx="9.3" cy="10.3" r="1.6" fill="#312e2b"/><circle cx="14.7" cy="10.3" r="1.6" fill="#312e2b"/></svg>`
   };
@@ -2256,6 +2259,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <div class="rate-legend">${Object.keys(RATE_GRADES).map(k => `<span>${rateBadgeSvg(k)}${RATE_GRADES[k].label}</span>`).join('')}</div>
         </div>
       </div>
+      <div class="item" data-group="review" title="Test feature. The Game Review button opens a review made here with the built-in engine, in chess.com's style: a thorough first look at every move, then deeper and deeper for as long as it is open. chess.com's own review is not used.">${row('review', 'Fake Review', 7)}</div>
       <div class="item" data-group="danger">${row('danger', 'Take squares', 6)}
         <div class="body flow" style="--i:7">
           <div class="sub" data-key="blunders" title="Conservative Stockfish estimates; Chess.com review labels may differ. Keep a piece selected for deeper analysis."><span>Show Blunders</span><button class="sw" role="switch" type="button" aria-label="Show Blunders"></button></div>
@@ -5898,7 +5902,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if ((grade === 'mistake' || grade === 'blunder') && a >= .75 && b <= .6 && !(score.mate < 0)) grade = 'miss';
     // The only good move: the best, with every other move clearly worse, in a game not already lost.
     // Taking back a piece that was just taken is not counted (chess.com does not call recaptures Great).
-    if (grade === 'best' && legalCount > 1 && lines.length > 1 && !recapture && a >= .3) {
+    if (grade === 'best' && legalCount > 1 && lines.length > 1 && !recapture && a >= .3 && lines[0].mate !== 1) { // a mate in one is Best, as on chess.com
       const second = blunderExpected(rateScore(lines[1]));
       if (second !== null && a - second >= .15 && !(lines[1].mate > 0)) grade = 'great';
     }
@@ -6079,6 +6083,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   };
 
   function rateSync() {
+    if (review.open) return; // the review draws the ratings itself
     const board = document.querySelector('wc-chess-board, chess-board');
     if (!settings.rate.on || !board || !board.game || document.hidden) { rater.clear(); return; }
     // the opening book first (a book move is rated Book, not by the engine); a few seconds at most
@@ -6116,6 +6121,446 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
   listeners.add(rateSync);
   setInterval(rateSync, 150);
+
+  // ---------- fake review ----------
+
+  // "Fake Review": the Game Review button opens a review made right here, in the style of chess.com's own: the
+  // game-over window closes and the sidebar becomes a review (accuracy, the count of every kind of move, game
+  // rating, phases, an evaluation graph, the moves with their ratings, a coach line for the move on the board).
+  // Two engines first sweep the whole game thoroughly (depth 16), then keep going deeper for as long as the review
+  // is open (the move on the board first), so the ratings settle and firm up while you go through the moves.
+  // Nothing is sent anywhere and chess.com's own review is not used.
+
+  const REVIEW_FIRST = 16, REVIEW_MAX = 40;
+  const winPct = cp => 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * cp)) - 1);
+  const lineWin = l => (l.mate !== undefined ? (l.mate > 0 ? 100 : l.mate < 0 ? 0 : 50) : winPct(l.cp));
+  // a move's accuracy from the winning chances before and after it (the published Lichess curve; chess.com's own is close)
+  const moveAccuracy = (before, after) => Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * Math.max(0, before - after)) - 3.1669));
+  function sideAccuracy(list) {
+    if (!list.length) return null;
+    const mean = list.reduce((a, b) => a + b, 0) / list.length;
+    const harmonic = list.length / list.reduce((a, b) => a + 1 / Math.max(5, b), 0);
+    return (mean + harmonic) / 2;
+  }
+  // a rough playing strength for an accuracy (a game, not a rating: chess.com shows the same kind of estimate)
+  function accuracyElo(acc) {
+    const pts = [[0, 100], [40, 400], [55, 800], [65, 1100], [75, 1500], [82, 1800], [88, 2100], [93, 2500], [97, 2900], [100, 3200]];
+    for (let i = 1; i < pts.length; i++) if (acc <= pts[i][0]) {
+      const [a, ea] = pts[i - 1], [b, eb] = pts[i];
+      return Math.round((ea + (eb - ea) * (acc - a) / (b - a)) / 50) * 50;
+    }
+    return 3200;
+  }
+  const phaseGrade = acc => acc === null ? null : acc >= 90 ? 'best' : acc >= 80 ? 'excellent' : acc >= 70 ? 'good' : acc >= 60 ? 'inaccuracy' : acc >= 50 ? 'mistake' : 'blunder';
+  // pieces other than pawns and kings, in pawns: an endgame once both sides together have 26 or less (of 62)
+  function material(fen) {
+    let n = 0;
+    for (const c of fen.split(' ')[0]) n += { q: 9, r: 5, b: 3, n: 3 }[c.toLowerCase()] || 0;
+    return n;
+  }
+
+  // The engine line of the move played, from the mover's side: one of the top lines before it, or else the best line of
+  // the position after it turned round (the opponent's score is ours with the sign changed).
+  function playedLine(before, after, uci, afterFen) {
+    const hit = before.lines.find(l => l.pv[0] === uci);
+    if (hit) return hit;
+    if (after.terminal === 'mate') return { pv: [uci], mate: 1, depth: 99 };
+    if (after.terminal) return { pv: [uci], cp: 0, depth: 99 };
+    const top = after.lines[0];
+    if (!top) return null;
+    return top.mate !== undefined ? { pv: [uci], mate: top.mate === 0 ? 1 : -top.mate, depth: top.depth } : { pv: [uci], cp: -top.cp, depth: top.depth };
+  }
+
+  const reviewEngines = [0, 1].map(() => Object.assign(Object.create(null), clutchEngine, { worker: null, starting: false, ready: false, job: null, pending: null }));
+
+  const review = {
+    open: false, board: null, nodes: [], fens: [], evals: [], moves: [], pass: REVIEW_FIRST, busy: new Set(), token: 0,
+    cur: 0, showBest: false, host: null, root: null, lastDraw: 0, firstDone: false
+  };
+
+  // The game on the board: its main line, the positions (0 = the start) and the moves.
+  function reviewLoad(board) {
+    let line = [];
+    try { line = (board.game.getRawLines && board.game.getRawLines()[0]) || []; } catch (e) { line = []; }
+    line = line.filter(n => n && n.from && n.to && n.beforeFen && n.fen);
+    if (!line.length) return false;
+    review.board = board;
+    review.nodes = line;
+    review.fens = [line[0].beforeFen, ...line.map(n => n.fen)];
+    review.evals = review.fens.map(fen => {
+      try {
+        const g = new BoardStudioRules.Chess(fen);
+        if (g.isCheckmate()) return { depth: 99, lines: [], terminal: 'mate' };
+        if (g.isStalemate() || g.isInsufficientMaterial()) return { depth: 99, lines: [], terminal: 'draw' };
+      } catch (e) { /* the engine will tell */ }
+      return { depth: 0, lines: [] };
+    });
+    let inBook = true;
+    review.moves = line.map((n, i) => {
+      const uci = uciOf(n), before = review.fens[i];
+      const basics = rateBasics(before, uci, i > 0 ? line[i - 1] : null);
+      // chess.com's Book ends at the first move out of the book
+      if (!basics || basics.fixed !== 'book') inBook = false;
+      return { node: n, uci, san: n.san, mover: moverOf(n), basics, book: inBook && basics && basics.fixed === 'book', grade: null, acc: null };
+    });
+    return true;
+  }
+
+  // Works out every move's rating and accuracy from the evaluations there are so far.
+  function reviewGrade() {
+    review.moves.forEach((m, i) => {
+      const before = review.evals[i], after = review.evals[i + 1];
+      if (m.book) { m.grade = 'book'; m.acc = 100; return; }
+      if (!m.basics) { m.grade = null; return; }
+      if (m.basics.legalCount === 1) { m.grade = 'best'; m.acc = 100; return; }
+      if (!before.lines.length || (!after.lines.length && !after.terminal)) { m.grade = null; m.acc = null; return; }
+      const line = playedLine(before, after, m.uci, review.fens[i + 1]);
+      if (!line) { m.grade = null; return; }
+      const best = before.lines[0];
+      const near = blunderExpected(rateScore(line)) >= .38 && blunderExpected(rateScore(best)) - blunderExpected(rateScore(line)) <= .104;
+      m.grade = rateGrade(before.lines, line, { sacrifice: near && m.basics.offers, legalCount: m.basics.legalCount, recapture: m.basics.recapture });
+      m.acc = moveAccuracy(lineWin(best), lineWin(line));
+      m.bestUci = best.pv[0];
+      // the evaluation after the move, from White's side
+      const top = after.terminal ? null : after.lines[0];
+      const sign = review.fens[i + 1].split(' ')[1] === 'w' ? 1 : -1;
+      m.evalText = after.terminal === 'mate' ? (m.mover === 'w' ? '1-0' : '0-1') : after.terminal ? '½-½'
+        : top.mate !== undefined ? `${top.mate * sign > 0 ? '' : '-'}M${Math.abs(top.mate)}` : `${top.cp * sign >= 0 ? '+' : ''}${(top.cp * sign / 100).toFixed(2)}`;
+      m.whiteWin = after.terminal === 'mate' ? (m.mover === 'w' ? 100 : 0) : after.terminal ? 50 : (sign === 1 ? lineWin(top) : 100 - lineWin(top));
+    });
+  }
+
+  // The next position to look at: the move on the board (the positions before and after it) a little deeper than the
+  // rest, then the whole game at the current pass depth; once every position has it, the pass goes two deeper.
+  function reviewNext() {
+    const n = review.evals.length, wanted = (i, d) => i >= 0 && i < n && !review.busy.has(i) && review.evals[i].depth < d && review.evals[i].depth < 99;
+    const focus = [review.cur - 1, review.cur];
+    for (const i of focus) if (wanted(i, Math.min(REVIEW_MAX, review.pass + (review.firstDone ? 4 : 0)))) return { i, depth: Math.min(REVIEW_MAX, review.pass + (review.firstDone ? 4 : 0)) };
+    for (;;) {
+      for (let i = 0; i < n; i++) if (wanted(i, review.pass)) return { i, depth: review.pass };
+      if ([...Array(n).keys()].some(i => review.busy.has(i))) return null;     // the pass is still being finished
+      if (!review.firstDone) { review.firstDone = true; reviewDraw(true); }
+      if (review.pass >= REVIEW_MAX) return null;
+      review.pass += 2;
+    }
+  }
+
+  async function reviewWorker(engine, token) {
+    while (review.open && review.token === token) {
+      const job = reviewNext();
+      if (!job) { await new Promise(r => setTimeout(r, 400)); continue; }
+      review.busy.add(job.i);
+      const fen = review.fens[job.i];
+      // the first sweep is thorough but bounded in time; later passes may take longer per position
+      const ms = review.firstDone ? Math.min(30000, 1500 * Math.pow(1.45, (job.depth - REVIEW_FIRST) / 2)) : 3500;
+      let result = null;
+      try { result = await engine.analyse(fen, { depth: job.depth, ms, multipv: 2 }); } catch (e) { result = null; }
+      review.busy.delete(job.i);
+      if (!review.open || review.token !== token) break;
+      const ev = review.evals[job.i];
+      if (result) {
+        // the deepest answer is kept; the pass counts as done for this position even when the time ran out first
+        // (it is asked again, with more time, on the next pass)
+        const lines = (result.lines || []).filter(l => l && l.pv && l.pv.length);
+        if (lines.length && (result.depth || 0) >= (ev.reached || 0)) { ev.lines = lines; ev.reached = result.depth || 0; }
+        ev.depth = Math.max(ev.depth, job.depth);
+      }
+      reviewGrade();
+      reviewDraw();
+    }
+  }
+
+  // ----- the review panel -----
+
+  const REVIEW_CSS = `
+    :host { all: initial; }
+    .rv { position: fixed; z-index: 2147482990; display: flex; flex-direction: column; background: #262522; color: #fff;
+      border-radius: 6px; overflow: hidden; font: 14px/1.35 "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
+      box-shadow: 0 6px 24px rgba(0,0,0,.45); animation: rv-in 280ms cubic-bezier(.2,.8,.2,1) both; }
+    @keyframes rv-in { from { opacity: 0; transform: translateX(14px); } }
+    .hd { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: #21201d; font-weight: 800; font-size: 17px; }
+    .hd svg { width: 24px; height: 24px; }
+    .hd .x { margin-left: auto; background: none; border: 0; color: #9e9b97; font-size: 20px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+    .hd .x:hover { color: #fff; background: rgba(255,255,255,.08); }
+    .scroll { flex: 1; overflow-y: auto; padding: 0 14px 14px; scrollbar-width: thin; }
+    .coach { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0 10px; }
+    .coach .face { flex: none; width: 44px; height: 44px; border-radius: 8px; background: linear-gradient(135deg, #81b64c, #5d9948);
+      display: grid; place-items: center; font-size: 24px; }
+    .bubble { position: relative; flex: 1; background: #fff; color: #312e2b; border-radius: 8px; padding: 9px 11px; min-height: 26px; font-weight: 600; }
+    .bubble::before { content: ''; position: absolute; left: -7px; top: 14px; border: 7px solid transparent; border-left: 0; border-right-color: #fff; }
+    .bubble .t { display: flex; align-items: center; gap: 7px; font-weight: 800; }
+    .bubble .t svg { width: 20px; height: 20px; flex: none; }
+    .bubble .ev { margin-left: auto; font: 800 12px/1 Consolas, monospace; padding: 4px 6px; border-radius: 4px; background: #312e2b; color: #fff; }
+    .bubble .ev.w { background: #fff; color: #312e2b; box-shadow: inset 0 0 0 1px #c9c7c4; }
+    .bubble .sub { font-weight: 500; font-size: 13px; color: #5f5c58; margin-top: 4px; }
+    .bubble .sub b { color: #312e2b; }
+    .prog { height: 6px; border-radius: 3px; background: #3c3a37; overflow: hidden; margin: 2px 0 8px; }
+    .prog i { display: block; height: 100%; background: linear-gradient(90deg, #81b64c, #a3d160); transition: width 300ms; }
+    .note { font-size: 12px; color: #9e9b97; margin-bottom: 8px; }
+    .graph { display: block; width: 100%; height: 84px; border-radius: 4px; background: #403d39; cursor: pointer; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 5px 2px; }
+    .players td { font-weight: 700; color: #c3c2c1; font-size: 13px; }
+    .acc td { padding-bottom: 10px; }
+    .box { display: inline-block; min-width: 54px; text-align: center; padding: 6px 8px; border-radius: 5px; font-weight: 800; font-size: 18px; }
+    .box.w { background: #fff; color: #312e2b; } .box.b { background: #403d39; color: #fff; }
+    .c1, .c3 { width: 30%; text-align: center; } .c2 { text-align: center; color: #c3c2c1; font-size: 13px; }
+    .cls td { font-weight: 800; font-size: 15px; }
+    .cls .lbl { display: flex; align-items: center; justify-content: center; gap: 7px; font-weight: 600; color: #c3c2c1; font-size: 13px; }
+    .cls svg { width: 20px; height: 20px; flex: none; }
+    .cls tr { cursor: pointer; } .cls tr:hover { background: rgba(255,255,255,.04); }
+    .sep td { border-top: 1px solid #3c3a37; padding: 0; height: 8px; }
+    .ph svg { width: 22px; height: 22px; vertical-align: middle; }
+    .ph .none { color: #6b6965; }
+    .moves { display: grid; grid-template-columns: 34px 1fr 1fr; gap: 1px 4px; margin-top: 12px; font-size: 13.5px; }
+    .moves .n { color: #8b8987; padding: 4px 0; }
+    .moves .m { display: flex; align-items: center; gap: 5px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-weight: 600; color: #e1e0df; }
+    .moves .m:hover { background: rgba(255,255,255,.07); }
+    .moves .m.on { background: rgba(255,255,255,.16); color: #fff; }
+    .moves .m svg { width: 16px; height: 16px; flex: none; }
+    .ft { display: flex; gap: 8px; padding: 10px 14px; background: #21201d; }
+    .ft button { flex: 1; border: 0; border-radius: 6px; padding: 10px 0; font: 800 15px/1 inherit; font-family: inherit; color: #fff; background: #3c3a37; cursor: pointer;
+      box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); }
+    .ft button:hover { background: #4a4744; }
+    .ft button.go { background: #81b64c; } .ft button.go:hover { background: #95c45f; }
+    .ft button.on { background: #5d9948; }
+  `;
+  const PIECE_GLYPH = { k: '♔', q: '♕', r: '♖', b: '♗', n: '♘', p: '' };
+
+  function reviewNames() {
+    const name = side => {
+      const row = document.querySelector(`#player-${side}, #board-layout-player-${side}`);
+      const el = row && row.querySelector('.cc-user-username-component, .user-username-component, [data-test-element="user-tagline-username"], .user-tagline-username');
+      return (el && el.textContent.trim().replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]))) || null;
+    };
+    const flipped = review.board && review.board.classList.contains('flipped');
+    const bottom = name('bottom'), top = name('top');
+    return flipped ? { w: top || 'White', b: bottom || 'Black' } : { w: bottom || 'White', b: top || 'Black' };
+  }
+
+  function reviewPlace() {
+    if (!review.open || !review.host) return;
+    const panel = review.root.querySelector('.rv');
+    const side = [...document.querySelectorAll('#board-layout-sidebar, .board-layout-sidebar')].find(e => e.getClientRects().length && e.getBoundingClientRect().width > 200);
+    const br = review.board && review.board.getBoundingClientRect();
+    let r = side && side.getBoundingClientRect();
+    if (!r || r.height < 200) r = br ? { left: br.right + 16, top: br.top, width: 360, height: Math.max(br.height, 460) } : { left: window.innerWidth - 380, top: 60, width: 360, height: window.innerHeight - 80 };
+    panel.style.left = r.left + 'px'; panel.style.top = Math.max(0, r.top) + 'px';
+    panel.style.width = r.width + 'px'; panel.style.height = Math.min(r.height, window.innerHeight - Math.max(0, r.top) - 8) + 'px';
+  }
+
+  // Goes to the position after move ply (0 = the start) by stepping from where the board is.
+  function reviewGo(ply) {
+    const g = review.board && review.board.game;
+    if (!g) return;
+    ply = Math.max(0, Math.min(review.nodes.length, ply));
+    let guard = 400;
+    while (review.cur !== ply && guard-- > 0) {
+      try { review.cur < ply ? g.moveForward() : g.moveBackward(); } catch (e) { return; }
+      const now = reviewPly();
+      if (now === review.cur) break;
+      review.cur = now;
+    }
+    reviewDraw();
+  }
+
+  // Which position of the game the board shows (0 = the start).
+  function reviewPly() {
+    let fen = null;
+    try { fen = review.board.game.getFEN(); } catch (e) { return review.cur; }
+    const board = fen && fen.split(' ').slice(0, 2).join(' ');
+    const i = review.fens.findIndex(f => f.split(' ').slice(0, 2).join(' ') === board);
+    return i >= 0 ? i : review.cur;
+  }
+
+  const article = label => (/^[aeiou]/i.test(label) ? 'an' : 'a');
+  function coachLine(m, i) {
+    if (!m) return { title: 'Let\'s review this game!', sub: review.firstDone ? 'Step through the moves, or pick a rating below to jump to those moves.' : 'Looking at every move first. You can already go through the moves.' };
+    const g = m.grade && RATE_GRADES[m.grade];
+    if (!g) return { title: `${m.san}`, sub: 'Still looking at this move…' };
+    const name = { best: 'best', excellent: 'excellent', good: 'good', book: 'a book move', brilliant: 'brilliant', great: 'a great move', inaccuracy: 'an inaccuracy', mistake: 'a mistake', miss: 'a miss', blunder: 'a blunder' }[m.grade];
+    let sub = '';
+    if (!['best', 'book', 'brilliant', 'great'].includes(m.grade) && m.bestUci && m.bestUci !== m.uci) {
+      let san = m.bestUci;
+      try { san = new BoardStudioRules.Chess(review.fens[i]).move({ from: m.bestUci.slice(0, 2), to: m.bestUci.slice(2, 4), promotion: m.bestUci[4] }).san; } catch (e) { /* keep uci */ }
+      sub = `Best was <b>${san}</b>`;
+    } else if (m.grade === 'brilliant') sub = 'A sacrifice that works.';
+    else if (m.grade === 'great') sub = 'The only good move here.';
+    else if (m.grade === 'book') sub = 'Opening theory.';
+    return { title: `${rateBadgeSvg(m.grade)}<span>${m.san} is ${name}</span>`, sub, ev: m.evalText, evWhite: m.whiteWin >= 50 };
+  }
+
+  function reviewGraph() {
+    const n = review.moves.length, W = 300, H = 84;
+    if (!n) return '';
+    const pts = [[0, H / 2]];
+    review.moves.forEach((m, i) => pts.push([(i + 1) / n * W, m.whiteWin === undefined ? pts[pts.length - 1][1] : H * (1 - m.whiteWin / 100)]));
+    const area = `M0 ${H} ` + pts.map(p => `L${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ') + ` L${W} ${H} Z`;
+    const dots = review.moves.map((m, i) => (['brilliant', 'great', 'miss', 'mistake', 'blunder'].includes(m.grade)
+      ? `<circle cx="${pts[i + 1][0].toFixed(1)}" cy="${pts[i + 1][1].toFixed(1)}" r="3.2" fill="${RATE_GRADES[m.grade].color}" stroke="#fff" stroke-width=".8"/>` : '')).join('');
+    const cx = (review.cur / n * W).toFixed(1);
+    return `<svg class="graph" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><path d="${area}" fill="#fff" opacity=".92"/><line x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" stroke="#8b8987" stroke-width=".6" opacity=".6"/>${dots}<line x1="${cx}" y1="0" x2="${cx}" y2="${H}" stroke="#81b64c" stroke-width="1.6"/></svg>`;
+  }
+
+  function reviewStats() {
+    const out = { w: {}, b: {}, acc: { w: [], b: [] }, phase: { w: [[], [], []], b: [[], [], []] } };
+    review.moves.forEach((m, i) => {
+      if (m.grade) out[m.mover][m.grade] = (out[m.mover][m.grade] || 0) + 1;
+      if (m.acc !== null && m.acc !== undefined) out.acc[m.mover].push(m.acc);
+      // the opening: book moves and the first ten moves each; the endgame: little material left
+      const phase = material(review.fens[i]) <= 26 ? 2 : (m.book || i < 20) ? 0 : 1;
+      if (m.acc !== null && m.acc !== undefined) out.phase[m.mover][phase].push(m.acc);
+    });
+    return out;
+  }
+
+  function reviewDraw(force = false) {
+    if (!review.open || !review.root) return;
+    const now = Date.now();
+    if (!force && now - review.lastDraw < 120) { clearTimeout(review.drawTimer); review.drawTimer = setTimeout(() => reviewDraw(true), 130); return; }
+    review.lastDraw = now;
+    const total = review.evals.length, done = review.evals.filter(e => e.depth >= REVIEW_FIRST).length;
+    const st = reviewStats(), names = reviewNames();
+    const accW = sideAccuracy(st.acc.w), accB = sideAccuracy(st.acc.b);
+    const m = review.cur > 0 ? review.moves[review.cur - 1] : null;
+    const coach = coachLine(m, review.cur - 1);
+    const scroll = review.root.querySelector('.scroll'), keep = scroll ? scroll.scrollTop : 0;
+    const order = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'miss', 'blunder'];
+    const fmt = a => (a === null ? '–' : a.toFixed(1));
+    const ph = list => { const a = sideAccuracy(list); const g = phaseGrade(a); return g ? rateBadgeSvg(g) : '<span class="none">–</span>'; };
+    const rows = [];
+    for (let i = 0; i < review.moves.length; i += 2) {
+      const cell = j => {
+        const mv = review.moves[j];
+        if (!mv) return '<span></span>';
+        return `<span class="m${review.cur === j + 1 ? ' on' : ''}" data-ply="${j + 1}">${mv.grade ? rateBadgeSvg(mv.grade) : ''}${mv.san}</span>`;
+      };
+      rows.push(`<span class="n">${i / 2 + 1}.</span>${cell(i)}${cell(i + 1)}`);
+    }
+    review.root.querySelector('.body').innerHTML = `
+      <div class="coach"><div class="face">♞</div><div class="bubble"><div class="t">${coach.title}${coach.ev ? `<span class="ev${coach.evWhite ? ' w' : ''}">${coach.ev}</span>` : ''}</div>${coach.sub ? `<div class="sub">${coach.sub}</div>` : ''}</div></div>
+      ${review.firstDone ? `<div class="note">Depth ${review.pass}${review.pass >= REVIEW_MAX ? ' (deepest)' : ', still going deeper'}</div>` : `<div class="note">Analyzing the game… ${Math.round(done / total * 100)}%</div><div class="prog"><i style="width:${done / total * 100}%"></i></div>`}
+      ${reviewGraph()}
+      <table>
+        <tr class="players"><td class="c1">${names.w}</td><td class="c2"></td><td class="c3">${names.b}</td></tr>
+        <tr class="acc"><td class="c1"><span class="box w">${fmt(accW)}</span></td><td class="c2">Accuracy</td><td class="c3"><span class="box b">${fmt(accB)}</span></td></tr>
+      </table>
+      <table class="cls">${order.map(k => `<tr data-grade="${k}"><td class="c1" style="color:${RATE_GRADES[k].color}">${st.w[k] || 0}</td><td class="c2"><span class="lbl">${rateBadgeSvg(k)}${RATE_GRADES[k].label}</span></td><td class="c3" style="color:${RATE_GRADES[k].color}">${st.b[k] || 0}</td></tr>`).join('')}
+        <tr class="sep"><td colspan="3"></td></tr>
+        <tr><td class="c1"><span class="box w" style="font-size:15px">${accW === null ? '–' : accuracyElo(accW)}</span></td><td class="c2">Game Rating</td><td class="c3"><span class="box b" style="font-size:15px">${accB === null ? '–' : accuracyElo(accB)}</span></td></tr>
+        <tr class="ph"><td class="c1">${ph(st.phase.w[0])}</td><td class="c2">Opening</td><td class="c3">${ph(st.phase.b[0])}</td></tr>
+        <tr class="ph"><td class="c1">${ph(st.phase.w[1])}</td><td class="c2">Middlegame</td><td class="c3">${ph(st.phase.b[1])}</td></tr>
+        <tr class="ph"><td class="c1">${ph(st.phase.w[2])}</td><td class="c2">Endgame</td><td class="c3">${ph(st.phase.b[2])}</td></tr>
+      </table>
+      <div class="moves">${rows.join('')}</div>`;
+    const sc = review.root.querySelector('.scroll'); if (sc) sc.scrollTop = keep;
+    review.root.querySelector('.best').classList.toggle('on', review.showBest);
+    reviewBoardMarks();
+  }
+
+  // On the board: the rating badge of the move shown, and (with Best on) an arrow for the engine's move there.
+  function reviewBoardMarks() {
+    const board = review.board;
+    if (!board) return;
+    const m = review.cur > 0 ? review.moves[review.cur - 1] : null;
+    rater.show(board, m && m.grade ? m.node : null, m && m.grade);
+    const next = review.evals[review.cur], best = review.showBest && next && next.lines[0] && next.lines[0].pv[0];
+    let svg = board.querySelector(':scope > svg.bs-review-best');
+    if (!best) { svg && svg.remove(); return; }
+    if (!svg) { svg = document.createElementNS(NS, 'svg'); svg.setAttribute('class', 'bs-review-best'); svg.setAttribute('viewBox', '0 0 800 800'); board.appendChild(svg); }
+    const flipped = board.classList.contains('flipped');
+    const at = sq => { const f = sq.charCodeAt(0) - 97, r = +sq[1] - 1; return [((flipped ? 7 - f : f) + .5) * 100, ((flipped ? r : 7 - r) + .5) * 100]; };
+    const [x1, y1] = at(best.slice(0, 2)), [x2, y2] = at(best.slice(2, 4));
+    const a = Math.atan2(y2 - y1, x2 - x1), ex = x2 - Math.cos(a) * 30, ey = y2 - Math.sin(a) * 30;
+    const head = `${x2},${y2} ${ex - Math.sin(a) * 22},${ey + Math.cos(a) * 22} ${ex + Math.sin(a) * 22},${ey - Math.cos(a) * 22}`;
+    svg.innerHTML = `<line x1="${x1}" y1="${y1}" x2="${ex}" y2="${ey}" stroke="#81b64c" stroke-width="16" stroke-linecap="round" opacity=".85"/><polygon points="${head}" fill="#81b64c" opacity=".85"/>`;
+  }
+
+  function reviewOpen(board) {
+    if (!board || !board.game) return false;
+    reviewClose();
+    if (!reviewLoad(board)) return false;
+    review.open = true; review.token++; review.pass = REVIEW_FIRST; review.firstDone = false; review.busy.clear(); review.showBest = false;
+    review.cur = reviewPly();
+    requestBook();
+    const host = document.createElement('div'); host.id = 'bs-fake-review';
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `<style>${REVIEW_CSS}</style><div class="rv" role="region" aria-label="Game Review">
+      <div class="hd"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#81b64c" d="m12 22.5c-5.8 0-10.5-4.7-10.5-10.5s4.7-10.5 10.5-10.5 10.5 4.7 10.5 10.5-4.7 10.5-10.5 10.5zm-4.63-4.63c-.2.8.07 1 .77.53l3.87-2.73 3.83 2.73c.7.47.97.27.77-.53l-1.17-4.6 3.47-2.7c.67-.53.57-.87-.27-.93l-4.53-.33-1.63-4.13c-.3-.77-.67-.77-.97 0l-1.53 4.13-4.63.33c-.83.07-.93.4-.27.9l3.5 2.73z"/></svg>Game Review<button class="x" type="button" aria-label="Close review">✕</button></div>
+      <div class="scroll"><div class="body"></div></div>
+      <div class="ft"><button type="button" class="prev" aria-label="Previous move">‹</button><button type="button" class="best">Best</button><button type="button" class="go next">Next ›</button></div>
+    </div>`;
+    document.body.appendChild(host);
+    review.host = host; review.root = root;
+    root.querySelector('.x').addEventListener('click', reviewClose);
+    root.querySelector('.prev').addEventListener('click', () => reviewGo(review.cur - 1));
+    root.querySelector('.next').addEventListener('click', () => reviewGo(review.cur + 1));
+    root.querySelector('.best').addEventListener('click', () => { review.showBest = !review.showBest; reviewDraw(true); });
+    root.querySelector('.body').addEventListener('click', e => {
+      const mv = e.target.closest('[data-ply]');
+      if (mv) { reviewGo(+mv.dataset.ply); return; }
+      const row = e.target.closest('tr[data-grade]');
+      if (row) {
+        // the next move with that rating after the one shown (round to the first)
+        const k = row.dataset.grade, list = review.moves.map((m, i) => (m.grade === k ? i + 1 : 0)).filter(Boolean);
+        if (list.length) reviewGo(list.find(p => p > review.cur) || list[0]);
+        return;
+      }
+      const graph = e.target.closest('.graph');
+      if (graph) { const r = graph.getBoundingClientRect(); reviewGo(Math.round((e.clientX - r.left) / r.width * review.moves.length)); }
+    });
+    reviewPlace();
+    reviewGrade();
+    reviewDraw(true);
+    reviewEngines.forEach(engine => reviewWorker(engine, review.token));
+    return true;
+  }
+
+  function reviewClose() {
+    if (!review.open) return;
+    review.open = false; review.token++;
+    reviewEngines.forEach(e => { try { e.halt(); } catch (err) { /* not started */ } });
+    review.host && review.host.remove(); review.host = null; review.root = null;
+    review.board && review.board.querySelector(':scope > svg.bs-review-best')?.remove();
+    rater.show(null, null, null);
+  }
+
+  // Follows the board (moves stepped through with the keys or chess.com's own buttons) and keeps the panel in place.
+  setInterval(() => {
+    if (!review.open) return;
+    if (!review.board || !review.board.isConnected || !settings.review.on) { reviewClose(); return; }
+    const ply = reviewPly();
+    if (ply !== review.cur) { review.cur = ply; reviewDraw(true); }
+    else if (!review.board.querySelector(':scope > .bs-rate-badge:not(.bs-leave)') && review.cur > 0 && review.moves[review.cur - 1]?.grade) reviewBoardMarks();
+    reviewPlace();
+  }, 150);
+  window.addEventListener('resize', reviewPlace);
+
+  // The Game Review button (in the game-over window, or anywhere else) opens this review instead of chess.com's page.
+  function reviewButton(target) {
+    if (!(target instanceof Element)) return null;
+    return target.closest('a[aria-label="Game Review"], button[aria-label="Game Review"], a[href*="tab=review"], a[href$="/review"]');
+  }
+  // Closes the game-over window the button sat in.
+  function closeGameOver(button) {
+    const modal = button.closest('[class*="game-over-modal"], [class*="modal-component"], .cc-modal-component, [role="dialog"]');
+    if (!modal) return;
+    const close = modal.querySelector('[aria-label="Close"], [aria-label="close"], [class*="close"] button, button[class*="close"], [data-cy="close-board-modal"]');
+    if (close) close.click();
+    else modal.style.display = 'none';
+  }
+  window.addEventListener('click', e => {
+    if (!settings.review.on) return;
+    const button = reviewButton(e.target);
+    if (!button) return;
+    const board = document.querySelector('wc-chess-board, chess-board');
+    let moves = 0;
+    try { moves = ((board && board.game.getRawLines && board.game.getRawLines()[0]) || []).length; } catch (err) { moves = 0; }
+    if (!moves) return;  // no game on the board here: chess.com's page it is
+    e.preventDefault(); e.stopImmediatePropagation();
+    closeGameOver(button);
+    reviewOpen(board);
+  }, true);
 
   // ---------- boot ----------
 

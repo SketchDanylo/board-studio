@@ -16,7 +16,9 @@ Everything is switched on and off from the **Styles** item in chess.com's left s
   - **Aim assist** – an arrow drawn from a piece snaps to the nearest square that piece can reach.
 - **Arrow Eval** – independently colors native and custom arrows by estimated move grade, with smooth transitions as the engine refines its search. Enable it directly below **Custom arrows**.
 - **Opening book** – the book from [Chess Coach](https://sketchdanylo.github.io/chess), with thicker arrows for more popular moves.
-- **Winning side** – a crown on the avatar of whoever is ahead, from chess.com's eval bar or, where there is none, a built-in Stockfish that keeps searching deeper.
+- **Winning side** – a crown on the avatar of whoever is ahead, from chess.com's eval bar or, where there is none, a built-in Stockfish that keeps searching deeper. Every position is remembered and the game's earlier positions are looked at in spare time, so stepping back through the moves shows who was winning at that point.
+- **Rate Moves** – chess.com Game Review-style badges (Brilliant, Great, Best, Excellent, Good, Book, Inaccuracy, Mistake, Miss, Blunder) on the move that led to the shown position, with the move's squares tinted; works while stepping back through the game.
+  - **Rate Self** – also rate your own moves once you have made them (off: only the opponent's).
 - **Take squares** – move dots turn red where your piece could be taken.
   - If Chess.com's own move hints are absent or disabled, Board Studio draws legal move dots itself. This also works before an arrow controller or canvas sprite hook is available. Legal destinations appear without waiting for the engine.
   - **Show Blunders** – optional engine mode: move dots and capture rings morph into translucent red crosses for likely blunders, appearing from the first available engine scores and updating as analysis deepens. Crosses span about half a square. Their outlines morph back into dots or capture rings when a move is cleared, with only one marker visible at a time. Hold or keep a piece selected for deeper analysis. Supports normal and canvas boards.

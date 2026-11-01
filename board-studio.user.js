@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.46.1
+// @version      6.47.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -71,6 +71,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // The two ends of the Clutch Elo slider are not ratings but ways to play: 0 loses on purpose as fast as it can, 3501 plays at
   // the engine's full strength to win. Everything between is a rating, played to the outcome rolled from the bar.
   const ELO_THROW = 0, ELO_MAX = 3501;
+  // How fast Clutch's hand moves, like a mouse's DPI: higher is quicker, lower is slower. 800 is the speed it always had
+  // (about a third of a second for a normal move); 400 takes twice as long, 1600 half. "Show Mouse" draws this hand.
+  var clutchDPI = 800;
   const STORE_KEY = 'board-studio-settings-v1';
   const DEFAULTS = {
     style: { on: true },
@@ -80,11 +83,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     danger: { on: true, blunders: false, block: false },
     book: { on: true },
     crown: { on: true },
+    // Rate Moves: chess.com-style badges for the move that led to the position on the board (self: yours too).
+    rate: { on: false, self: false },
     ghosts: { on: true, opacity: 0.25, ai: false },
     // Clutch: from `time` seconds on your clock down, the engine takes over, playing at `elo`
     // (with `auto` the opponent's rating). Everything else (what counts as winning, how deep to look,
     // how much clock a deep search may cost) it works out itself.
-    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40 },
+    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40, mouse: false },
     global: { on: true }
   };
 
@@ -126,6 +131,33 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     mateWhite: { label: 'Forced mate, White', color: MATE_COLORS.w },
     mateBlack: { label: 'Forced mate, Black', color: MATE_COLORS.b }
   };
+  // Rate Moves badges, chess.com's colours and signs (used by the panel, so defined up here).
+  const RATE_GRADES = {
+    brilliant: { label: 'Brilliant', color: '#26c2a3', glyph: '!!' },
+    great: { label: 'Great Move', color: '#749bbf', glyph: '!' },
+    best: { label: 'Best Move', color: '#81b64c', icon: 'star' },
+    excellent: { label: 'Excellent', color: '#81b64c', icon: 'thumb' },
+    good: { label: 'Good', color: '#95b776', icon: 'check' },
+    book: { label: 'Book Move', color: '#d5a47d', icon: 'book' },
+    inaccuracy: { label: 'Inaccuracy', color: '#f7c631', glyph: '?!' },
+    mistake: { label: 'Mistake', color: '#ffa459', glyph: '?' },
+    miss: { label: 'Miss', color: '#ff7769', icon: 'cross' },
+    blunder: { label: 'Blunder', color: '#fa412d', glyph: '??' }
+  };
+  const RATE_ICONS = {
+    star: '<path d="M12 4.2l2.3 4.8 5.2.7-3.8 3.6.9 5.2-4.6-2.5-4.6 2.5.9-5.2L4.5 9.7l5.2-.7z" fill="#fff"/>',
+    thumb: '<path d="M6 10.5h2.6v8H6zM9.6 18.5v-8l3.2-5.3c.9 0 1.6.8 1.4 1.7l-.6 2.8h4c1 0 1.7.9 1.5 1.8l-1.2 5.6c-.2.8-.9 1.4-1.7 1.4z" fill="#fff"/>',
+    check: '<path d="M6.2 12.4l3.7 3.7 7.9-8" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>',
+    book: '<path d="M5 6.5c2.2-.7 4.4-.4 6.2.8v10.4c-1.8-1.2-4-1.5-6.2-.8zM19 6.5c-2.2-.7-4.4-.4-6.2.8v10.4c1.8-1.2 4-1.5 6.2-.8z" fill="#fff"/>',
+    cross: '<path d="M7.5 7.5l9 9M16.5 7.5l-9 9" stroke="#fff" stroke-width="3" stroke-linecap="round"/>'
+  };
+  function rateBadgeSvg(grade) {
+    const g = RATE_GRADES[grade];
+    const inner = g.icon ? RATE_ICONS[g.icon]
+      : `<text x="12" y="16.6" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="${g.glyph.length > 1 ? 11.5 : 14}" letter-spacing="-.6" fill="#fff">${g.glyph}</text>`;
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12.8" r="11" fill="rgba(0,0,0,.28)"/><circle cx="12" cy="12" r="11" fill="${g.color}"/><circle cx="12" cy="12" r="10.2" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="1"/>${inner}</svg>`;
+  }
+
   function setSetting(group, key, value) {
     rawSettings[group][key] = value;
     try { localStorage.setItem(STORE_KEY, JSON.stringify(rawSettings)); } catch (e) { /* ignore */ }
@@ -1917,6 +1949,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .elo-row > span { flex: 1; }
     .elo-input { width: 64px; padding: 3px 6px; border-radius: 6px; border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.25); color: #f7c045; font: 600 12px inherit; text-align: right; }
     .elo-row .sub { margin: 0; padding: 2px 6px; flex: none; gap: 8px; }
+    .rate-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; padding: 8px 0 4px; font-size: 11px; }
+    .rate-legend span { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .rate-legend svg { width: 15px; height: 15px; flex: none; }
     .elo-hint { display: block; margin: -3px 0 5px; font-style: normal; font-size: 10px; font-weight: 600; text-align: center; color: #f7c045; }
     .elo-hint:empty { display: none; }
     .elo-hint[data-end="throw"] { color: #fa5146; }
@@ -2180,6 +2215,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     danger: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5" fill="#739552"/><circle cx="12" cy="12" r="7.2" fill="none" stroke="#e5534b" stroke-width="2.4" opacity=".9"/><circle cx="12" cy="12" r="3" fill="#e5534b"/></svg>`,
     book: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.2c3-.9 6-.6 8.6 1v13.4c-2.6-1.6-5.6-1.9-8.6-1z" fill="#c4955f"/><path d="M21 5.2c-3-.9-6-.6-8.6 1v13.4c2.6-1.6 5.6-1.9 8.6-1z" fill="#e0b47f"/><path d="M14.5 10.5h4M14.5 13.5h4" stroke="#8f6338" stroke-width="1.4" stroke-linecap="round"/></svg>`,
     crown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 8l4.6 3.9L12 4l4.9 7.9L21.5 8l-1.9 9.2H4.4z" fill="#f5b52e" stroke="#c47d12" stroke-width="1" stroke-linejoin="round"/><rect x="4.2" y="16.8" width="15.6" height="2.7" rx="1" fill="#e09a1f"/><circle cx="12" cy="13" r="1.6" fill="#e5534b"/></svg>`,
+    rate: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#26c2a3"/><text x="12" y="16.4" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="11.5" letter-spacing="-.6" fill="#fff">!!</text></svg>`,
     ghosts: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5c-4.4 0-7.5 3.3-7.5 7.6v10.6l2.5-1.8 2.5 1.8 2.5-1.8 2.5 1.8 2.5-1.8 2.5 1.8V10.1c0-4.3-3.1-7.6-7.5-7.6z" fill="#fff" opacity=".82"/><circle cx="9.3" cy="10.3" r="1.6" fill="#312e2b"/><circle cx="14.7" cy="10.3" r="1.6" fill="#312e2b"/></svg>`
   };
 
@@ -2214,6 +2250,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       </div>
       <div class="item" data-group="book">${row('book', 'Opening book', 6)}</div>
       <div class="item" data-group="crown">${row('crown', 'Winning side', 7)}</div>
+      <div class="item" data-group="rate" title="Rates moves the way chess.com's Game Review does (local engine, so a label can now and then differ). Step back through the game to see each move's rating.">${row('rate', 'Rate Moves', 7)}
+        <div class="body flow" style="--i:8">
+          <div class="sub" data-key="self" title="Also rate your own moves, once you have made them"><span>Rate Self</span><button class="sw" role="switch" type="button" aria-label="Rate Self"></button></div>
+          <div class="rate-legend">${Object.keys(RATE_GRADES).map(k => `<span>${rateBadgeSvg(k)}${RATE_GRADES[k].label}</span>`).join('')}</div>
+        </div>
+      </div>
       <div class="item" data-group="danger">${row('danger', 'Take squares', 6)}
         <div class="body flow" style="--i:7">
           <div class="sub" data-key="blunders" title="Conservative Stockfish estimates; Chess.com review labels may differ. Keep a piece selected for deeper analysis."><span>Show Blunders</span><button class="sw" role="switch" type="button" aria-label="Show Blunders"></button></div>
@@ -2236,6 +2278,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
             <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo set here (0 and 3501 always apply)"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
           <input type="range" class="elo-range" min="0" max="3501" step="1" aria-label="Clutch Elo slider" title="0: loses on purpose, as fast as it can. 3501: full engine strength, played to win. In between: that rating, with the outcome from the bar below.">
           <em class="elo-hint"></em>
+          <div class="sub" data-key="mouse" title="Shows Clutch's hand as a second mouse pointer: how it goes to a piece, picks it up, carries it and lets go, and the premove it holds ready. Its speed is clutchDPI at the top of the script."><span>Show Mouse</span><button class="sw" role="switch" type="button" aria-label="Show Mouse"></button></div>
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
           </div>
@@ -3591,8 +3634,25 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
 
+  // The crown's engine. Every position it has looked at is remembered (its deepest score), so going back through the
+  // moves shows the side that was winning there at once. Once the position on the board is known well enough (depth 16)
+  // it uses the spare time to look at the game's other positions (depth 12), nearest first, then goes back to deepen
+  // the one on the board.
+  const CROWN_SURE = 16, CROWN_PREFETCH = 12, CROWN_MIN = 8;
   const engine = {
     worker: null, ready: false, searching: false, fen: null, next: null, result: null,
+    cache: new Map(), extra: [], done: new Set(), limit: 60, stopping: false,
+    known(fen) { const r = this.cache.get(fen); return r ? r.depth : 0; },
+    remember(fen, result) {
+      const prev = this.cache.get(fen);
+      if (prev && prev.depth > result.depth) return;
+      this.cache.delete(fen); this.cache.set(fen, result);
+      if (this.cache.size > 800) this.cache.delete(this.cache.keys().next().value);
+    },
+    // positions of the game still worth a look while the one on the board is known
+    spare() { return this.extra.find(f => f !== this.next && this.known(f) < CROWN_PREFETCH && !this.done.has(f + '@' + CROWN_PREFETCH)) || null; },
+    // the game's positions, nearest to the one on the board first
+    prefetch(fens) { this.extra = fens; if (!this.searching) this.go(); },
     start() {
       if (this.worker || this.starting) return;
       this.starting = true;
@@ -3612,8 +3672,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         this.ready = true;
         if (this.next) this.go();
       } else if (line.startsWith('bestmove')) {
-        this.searching = false;
-        if (this.next && this.next !== this.fen) this.go();
+        // a search that ran to its depth (not one stopped to make way) is finished for good
+        if (!this.stopping && this.fen) this.done.add(this.fen + '@' + this.limit);
+        this.searching = false; this.stopping = false;
+        this.go();
       } else if (line.startsWith('info ') && this.searching) {
         if (/ (lower|upper)bound/.test(line)) return;
         const depth = line.match(/ depth (\d+)/);
@@ -3622,46 +3684,73 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         // Scores come from the side to move; keep them from white's side.
         const sign = this.fen.split(' ')[1] === 'w' ? 1 : -1;
         const value = Number(score[2]);
-        this.result = score[1] === 'mate'
+        const result = score[1] === 'mate'
           ? { depth: +depth[1], mate: value === 0 ? -sign : value * sign }
           : { depth: +depth[1], cp: value * sign };
-        syncCrown();
+        this.result = result;
+        this.remember(this.fen, result);
+        if (this.fen === this.next) syncCrown();
+        // the board's position is known well enough: spend the time on the game's other positions
+        else if (this.next && this.known(this.next) < CROWN_SURE && !this.done.has(this.next + '@60') && !this.stopping) { this.stopping = true; this.send('stop'); }
+        if (this.fen === this.next && result.depth >= CROWN_SURE && this.spare() && !this.stopping) { this.stopping = true; this.send('stop'); }
       }
     },
-    // Search this position, keeping on going deeper until the position changes.
+    // Look at this position, going deeper until the position changes.
     analyse(fen) {
       if (!fen || fen === this.next) return;
       this.next = fen;
       this.start();
       if (!this.ready) return;
-      if (this.searching) this.send('stop'); // the new search starts once this one reports back
+      if (this.searching) { if (this.fen !== fen && !this.stopping) { this.stopping = true; this.send('stop'); } } // the next search starts once this one reports back
       else this.go();
     },
+    // What to look at next: the board's position until it is known, then the rest of the game, then the board's again, deeper.
     go() {
-      this.fen = this.next;
+      if (!this.ready || this.searching) return;
+      let fen = null, limit = 60;
+      const finished = this.next && this.done.has(this.next + '@60'); // a mate on the board ends its search early, at a low depth
+      if (this.next && this.known(this.next) < CROWN_SURE && !finished) fen = this.next;
+      else if (this.next && this.spare()) { fen = this.spare(); limit = CROWN_PREFETCH; }
+      else if (this.next && !this.done.has(this.next + '@60')) fen = this.next;
+      if (!fen) return;
+      this.fen = fen; this.limit = limit;
       this.result = null;
       this.searching = true;
       this.send(`position fen ${this.fen}`);
-      this.send('go depth 60');
+      this.send(`go depth ${limit}`);
     },
     stop() {
-      this.next = null;
-      if (this.searching) this.send('stop');
+      this.next = null; this.extra = [];
+      if (this.searching && !this.stopping) { this.stopping = true; this.send('stop'); }
     }
   };
 
+  // The positions of the game on the board, from the main line, nearest to the one shown first.
+  function gameFens(board, fen) {
+    try {
+      const line = board.game.getRawLines && board.game.getRawLines()[0];
+      if (!Array.isArray(line) || !line.length) return [];
+      const all = [line[0].beforeFen, ...line.map(n => n.fen)].filter(Boolean);
+      const at = Math.max(0, all.indexOf(fen));
+      return all.map((f, i) => [f, Math.abs(i - at) - (i < at ? 0.5 : 0)]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
+    } catch (e) { return []; }
+  }
+
+  // 'w', 'b', null for level, or undefined while the position is not known yet.
   function engineLeader() {
     const board = document.querySelector('wc-chess-board, chess-board');
     let fen = null;
     try { fen = board && board.game && board.game.getFEN(); } catch (e) { /* no game yet */ }
     if (!fen) { engine.stop(); return null; }
     engine.analyse(fen);
-    const r = engine.fen === fen ? engine.result : null;
-    if (!r) return null;
+    if (engine.ready && fen !== engine.prefetchedFor) { engine.prefetchedFor = fen; engine.prefetch(gameFens(board, fen)); }
+    const r = engine.cache.get(fen);
+    if (!r || r.depth < CROWN_MIN) return undefined;
     if (r.mate !== undefined) return r.mate > 0 ? 'w' : 'b';
     return r.cp > 0 ? 'w' : r.cp < 0 ? 'b' : null;
   }
 
+  let crownUnknownSince = 0;
   function syncCrown() {
     let leader = null;
     if (settings.crown.on) {
@@ -3675,6 +3764,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     } else {
       engine.stop();
     }
+    // A position not looked at yet (a new move, or a jump far back): the crown stays where it is for a moment
+    // instead of going and coming back, then goes if the answer is slow.
+    if (leader === undefined) {
+      if (!crownUnknownSince) crownUnknownSince = Date.now();
+      if (Date.now() - crownUnknownSince < 1500) { positionCrowns(); return; }
+      leader = null;
+    } else crownUnknownSince = 0;
     const board = document.querySelector('wc-chess-board, chess-board');
     const flipped = !!board && (board.__cc ? board.__cc.flipped : board.classList.contains('flipped'));
     // Current bot/live layouts use #player-top/bottom; older layouts use
@@ -4632,8 +4728,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // How long a hand takes to cover a distance (Fitts's law: a short start, then more the further it goes relative
   // to the size of the target). times: the leg to the piece and the leg with it. 'fast' is the hurry of a low clock.
+  // clutchDPI sets the hand's speed: at 800 the times are the ones Clutch always had, at 400 twice as long.
+  const handScale = () => 800 / Math.max(50, Number(clutchDPI) || 800);
   function mouseTimes(toPiece, withPiece, size, fast = false, random = Math.random) {
-    const leg = d => (d > 1 ? 35 + 60 * Math.log2(d / size + 1) : 0) * (0.85 + 0.3 * random()) * (fast ? 0.6 : 1);
+    const leg = d => (d > 1 ? 35 + 60 * Math.log2(d / size + 1) : 0) * (0.85 + 0.3 * random()) * (fast ? 0.6 : 1) * handScale();
     return { toPiece: Math.round(leg(toPiece)), withPiece: Math.round(leg(withPiece) * 0.85 + (withPiece > 1 ? 20 : 0)) };
   }
 
@@ -4650,6 +4748,148 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return near[Math.floor(random() * near.length) % near.length];
   }
 
+  // ---------- Clutch's hand, shown (Show Mouse) ----------
+
+  // A second mouse pointer, in Clutch's blue, that does on screen what Clutch does: it goes to the piece, closes on it,
+  // carries it to its square and lets go. A premove Clutch holds ready on the opponent's time (the red ghost) is shown
+  // as the hand already holding the piece over its square, in red, until their move comes and it lets go. It only
+  // draws; the move itself is made exactly as without it.
+  const HAND_CSS = `
+    .bs-hand { position: fixed; left: 0; top: 0; width: 0; height: 0; z-index: 2147483001; pointer-events: none;
+      opacity: 0; transition: opacity 220ms ease; }
+    .bs-hand.on { opacity: 1; }
+    .bs-hand .cur { position: absolute; left: -5px; top: -4px; width: 30px; height: 30px; transform-origin: 5px 4px;
+      transition: transform 140ms cubic-bezier(.3, 1.4, .5, 1); filter: drop-shadow(0 0 5px rgba(76, 194, 255, .85)) drop-shadow(0 2px 2px rgba(0, 0, 0, .45)); }
+    .bs-hand .cur path { fill: #4cc2ff; transition: fill 200ms; }
+    .bs-hand.grab .cur { transform: scale(.8) rotate(-8deg); }
+    .bs-hand.held .cur path { fill: #fa5146; }
+    .bs-hand.held .cur { filter: drop-shadow(0 0 6px rgba(250, 81, 70, .9)) drop-shadow(0 2px 2px rgba(0, 0, 0, .45)); }
+    .bs-hand .ring { position: absolute; left: -15px; top: -15px; width: 30px; height: 30px; border-radius: 50%;
+      border: 2px solid #4cc2ff; opacity: 0; }
+    .bs-hand.held .ring { border-color: #fa5146; }
+    .bs-hand.pulse .ring { animation: bs-hand-ring 420ms ease-out; }
+    .bs-hand .tag { position: absolute; left: 20px; top: 22px; font: 700 10px/1 system-ui, sans-serif; color: #fff;
+      background: #fa5146; border-radius: 6px; padding: 3px 5px; opacity: 0; transform: scale(.6); transition: opacity 160ms, transform 160ms; white-space: nowrap; }
+    .bs-hand.held .tag { opacity: 1; transform: scale(1); }
+    .bs-hand-piece { position: fixed; left: 0; top: 0; z-index: 2147483000; pointer-events: none; background-size: contain;
+      background-repeat: no-repeat; background-position: center; opacity: 0; transition: opacity 120ms;
+      filter: drop-shadow(0 7px 7px rgba(0, 0, 0, .35)); }
+    .bs-hand-piece.on { opacity: .96; }
+    .bs-hand-piece.held { opacity: .62; }
+    @keyframes bs-hand-ring { from { opacity: .95; transform: scale(.5); } to { opacity: 0; transform: scale(1.7); } }
+  `;
+  const shownHand = {
+    el: null, piece: null, x: null, y: null, timers: [], dimmed: null, held: null, hideTimer: 0, frame: 0, pieceSize: 0,
+    ensure() {
+      if (this.el && this.el.isConnected) return;
+      if (!document.getElementById('bs-hand-css')) {
+        const st = document.createElement('style'); st.id = 'bs-hand-css'; st.textContent = HAND_CSS; document.head.appendChild(st);
+      }
+      this.el = document.createElement('div'); this.el.className = 'bs-hand';
+      this.el.innerHTML = '<svg class="cur" viewBox="0 0 28 28" aria-hidden="true"><path d="M5 3.5l16.5 10.2-7.3 1.6 4.4 8.2-3.4 1.8-4.4-8.2-5.2 5.1z" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg><i class="ring"></i><b class="tag">premove</b>';
+      this.piece = document.createElement('div'); this.piece.className = 'bs-hand-piece';
+      document.body.append(this.piece, this.el);
+    },
+    point(board, sq) {
+      const rect = board.getBoundingClientRect(), size = rect.width / 8, flipped = board.classList.contains('flipped');
+      const f = sq.charCodeAt(0) - 97, r = +sq[1] - 1;
+      return { x: rect.left + ((flipped ? 7 - f : f) + .5) * size, y: rect.top + ((flipped ? r : 7 - r) + .5) * size, size };
+    },
+    place(x, y) {
+      this.x = x; this.y = y;
+      this.el.style.transform = `translate(${x}px, ${y}px)`;
+      const s = this.pieceSize;
+      this.piece.style.transform = `translate(${x - s / 2}px, ${y - s / 2}px)`;
+    },
+    // A glide from where the hand is to (x, y) in ms: eased in and out, on a slight curve, as a wrist moves.
+    glide(x, y, ms) {
+      const x0 = this.x ?? x, y0 = this.y ?? y, dx = x - x0, dy = y - y0, dist = Math.hypot(dx, dy);
+      const bend = Math.min(40, dist * .12) * (((x0 * 7 + y0 * 3) | 0) % 2 ? 1 : -1);
+      const start = performance.now();
+      const run = () => {
+        const t = ms <= 0 ? 1 : Math.min(1, (performance.now() - start) / ms);
+        const e = t < .5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+        const arc = Math.sin(Math.PI * e) * bend;
+        this.place(x0 + dx * e - (dist ? dy / dist : 0) * arc, y0 + dy * e + (dist ? dx / dist : 0) * arc);
+        if (t < 1) this.frame = requestAnimationFrame(run);
+      };
+      cancelAnimationFrame(this.frame);
+      run();
+      // animation frames stop in a hidden tab: make sure it ends where it should
+      this.later(() => { cancelAnimationFrame(this.frame); this.place(x, y); }, ms + 30);
+    },
+    later(fn, ms) { this.timers.push(setTimeout(fn, ms)); },
+    clearTimers() { this.timers.forEach(clearTimeout); this.timers = []; cancelAnimationFrame(this.frame); },
+    show() { this.ensure(); clearTimeout(this.hideTimer); this.el.classList.add('on'); },
+    // fades out once Clutch's hand has been idle a while
+    idle(ms = 2600) { clearTimeout(this.hideTimer); this.hideTimer = setTimeout(() => { if (!this.held && this.el) this.el.classList.remove('on'); }, ms); },
+    pulse() { this.el.classList.remove('pulse'); void this.el.offsetWidth; this.el.classList.add('pulse'); },
+    // Picks up the piece standing on sq: its picture rides under the hand, the piece itself fades on its square.
+    grab(board, sq) {
+      const p = this.point(board, sq);
+      this.pieceSize = p.size;
+      this.piece.style.width = this.piece.style.height = p.size + 'px';
+      const f = sq.charCodeAt(0) - 96, r = sq[1];
+      const real = board.querySelector(`:scope > .piece.square-${f}${r}`);
+      let image = real && getComputedStyle(real).backgroundImage;
+      if (!image || image === 'none') {
+        try {
+          const g = new BoardStudioRules.Chess(board.game.getFEN()), pc = g.get(sq);
+          image = pc ? pieceImageUrl('neo', pc.color + pc.type) : 'none';
+        } catch (e) { image = 'none'; }
+      }
+      this.piece.style.backgroundImage = image;
+      this.restore();
+      if (real) { this.dimmed = { el: real, opacity: real.style.opacity }; real.style.opacity = '.3'; }
+      this.el.classList.add('grab'); this.piece.classList.add('on');
+      this.place(this.x, this.y);
+      this.pulse();
+    },
+    restore() { if (this.dimmed) { this.dimmed.el.style.opacity = this.dimmed.opacity; this.dimmed = null; } },
+    // Lets go: the piece picture goes (the real move has been made, or the move was called off).
+    drop() {
+      if (!this.el) return;
+      this.restore();
+      this.el.classList.remove('grab', 'held'); this.piece.classList.remove('on', 'held');
+      this.held = null;
+      this.idle();
+    },
+    // The whole move, timed like the move itself: to the piece, a beat, then with it to its square.
+    drag(board, start, from, to, toPiece, beat, withPiece) {
+      this.clearTimers(); this.restore(); this.held = null;
+      const wasOn = !!(this.el && this.el.classList.contains('on'));
+      this.show();
+      if (this.x === null || !wasOn) this.place(start.x, start.y);
+      const a = this.point(board, from), b = this.point(board, to);
+      this.glide(a.x, a.y, toPiece);
+      this.later(() => this.grab(board, from), toPiece);
+      this.later(() => this.glide(b.x, b.y, withPiece), toPiece + beat);
+    },
+    // A premove held ready: carried to its square and held there (red) until it is played or given up.
+    hold(board, step) {
+      if (!settings.clutch.mouse || !step) return;
+      const key = step.from + step.to;
+      if (this.held === key) return;
+      this.unhold();
+      this.clearTimers();
+      const wasOn = !!(this.el && this.el.classList.contains('on'));
+      this.show();
+      if (this.x === null || !wasOn) { const r = board.getBoundingClientRect(); this.place(hand.x ?? r.left + r.width / 2, hand.y ?? r.top + r.height / 2); }
+      const a = this.point(board, step.from), b = this.point(board, step.to);
+      const times = mouseTimes(Math.hypot(a.x - this.x, a.y - this.y), Math.hypot(b.x - a.x, b.y - a.y), a.size);
+      const beat = Math.round(40 * handScale());
+      this.held = key;
+      this.glide(a.x, a.y, times.toPiece);
+      this.later(() => this.grab(board, step.from), times.toPiece);
+      this.later(() => this.glide(b.x, b.y, times.withPiece), times.toPiece + beat);
+      this.later(() => { if (this.held === key) { this.el.classList.add('held'); this.piece.classList.add('held'); this.pulse(); } }, times.toPiece + beat + times.withPiece);
+    },
+    holds(step) { return !!step && !!this.held && this.held === step.from + step.to; },
+    // The held premove is given up: the hand lets go and the piece shows on its square again.
+    unhold() { if (!this.held) return; this.clearTimers(); this.drop(); },
+    reset() { this.clearTimers(); this.drop(); if (this.el) this.el.classList.remove('on'); }
+  };
+
   // Makes a move after the time a hand would have taken for it: the pointer's trip from where it is to the piece, a beat,
   // and the trip with the piece to the square. Nothing is shown of the trip; the time is simply waited out and then the
   // move is made at once. Where the pointer was and where the piece goes both matter, so a capture on the far side of
@@ -4663,14 +4903,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const a = at(from), b = at(to);
     const start = hand.x === null ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : { x: hand.x, y: hand.y };
     const times = mouseTimes(Math.hypot(a.x - start.x, a.y - start.y), Math.hypot(b.x - a.x, b.y - a.y), size, fast, random);
-    const total = times.toPiece + Math.round((fast ? 15 : 30) + 25 * random()) + times.withPiece;
+    const beat = Math.round(((fast ? 15 : 30) + 25 * random()) * handScale());
+    const total = times.toPiece + beat + times.withPiece;
     const fen = blunderFEN(board);
+    if (settings.clutch.mouse) shownHand.drag(board, start, from, to, times.toPiece, beat, times.withPiece);
     setTimeout(() => {
       // only if the board is still as it was when the move was decided
-      if (fen && blunderFEN(board) !== fen) return;
+      if (fen && blunderFEN(board) !== fen) { shownHand.drop(); return; }
       // now and then the piece is let go a square off; if that is not a legal move the board puts it back and it is tried again
       const slipped = random() < slipChance(total);
       const aim = slipped ? slipSquare(to, random) : to;
+      shownHand.drop();
       dragPiece(board, from, aim, true);
       const landed = at(aim);
       hand.x = landed.x; hand.y = landed.y;
@@ -4680,9 +4923,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // A premove already stands when their move comes, so it is made at once; every other move is made by hand.
+  // With Show Mouse on, only a premove the shown hand is already holding over its square goes at once (it is let go);
+  // anything else the hand fetches and carries, at clutchDPI speed, so no piece is ever taken in no time.
   function clutchMove(board, step, own, instant = false, clock = null) {
     let total = 0;
+    const held = shownHand.holds(step);
+    if (!held) shownHand.unhold();
+    if (instant && settings.clutch.mouse && !held) instant = false;
     if (instant) {
+      shownHand.drop();
       dragPiece(board, step.from, step.to, true);
       const r = board.getBoundingClientRect(), size = r.width / 8, flipped = board.classList.contains('flipped');
       const f = step.to.charCodeAt(0) - 97, rank = +step.to[1] - 1;
@@ -5334,6 +5583,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!s.on || !board || !ctl || !board.game || typeof board.game.getFEN !== 'function') {
       if (ctl) clutchClear(ctl);
       clutchStopBook();
+      shownHand.unhold();
       clutch.plan = null; clutch.acting = false; setClutchMode(null);
       setClutch(s.on ? 'Clutch: waiting for a board' : 'Clutch: off');
       return;
@@ -5364,7 +5614,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
     } catch (e) { return; }
-    if (!own) { setClutchMode(null); clutch.burn = null; clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
+    if (!own) { setClutchMode(null); clutch.burn = null; clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); shownHand.unhold(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
     // The fast path: the opponent has just made a move the book was ready for and the answer is the premove
     // (or an opening-book or plain answer that needs no more thought). Nothing is read or worked out first:
     // the move goes out in the same breath as the board changing.
@@ -5391,7 +5641,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchClear(ctl); return; }
     if (!clutchEngages(clutch, base.time, clock)) {
       setClutchMode(null);
-      clutch.acting = false; clutch.plan = null; clutchStopBook();
+      clutch.acting = false; clutch.plan = null; clutchStopBook(); shownHand.unhold();
       setClutch(`Clutch: armed, ${clock.toFixed(1)} s left, starts at about ${base.time.toFixed(1)} s, Elo ${elo}${base.auto && opponentElo ? ' (opponent)' : ''}`);
       clutchClear(ctl);
       return;
@@ -5544,6 +5794,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       });
       showClutchGhosts(ctl, items);
       const native = premoveNative(board);
+      // Show Mouse: a premove held for the instant they move is shown as the hand holding the piece over its square
+      // (where chess.com has premoves, the hand is seen setting the real one instead)
+      if (settings.clutch.mouse && mayPlay && !native) { if (prem) shownHand.hold(board, prem.step); else shownHand.unhold(); }
       const depth = entry ? entry.depth : [...book.entries.values()].reduce((d, e) => Math.max(d, e.depth), 0);
       setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${depth}. Premove: ${prem ? `${prem.step.from}-${prem.step.to} (${prem.why})` : book.complete ? 'none, the replies need different answers' : 'working it out'}${native ? '' : '. No premoves in this game: answers are held and played the instant they move'}`);
       // Where chess.com has premoves, a certain one is set for real (a trade is not: it must not
@@ -5575,6 +5828,223 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     });
   }
   setInterval(clutchTick, 200);
+  listeners.add(() => { if (!settings.clutch.mouse || !settings.clutch.on) shownHand.reset(); });
+
+  // ---------- rate moves ----------
+
+  // The move that led to the position on the board gets a chess.com-style badge, the way Game Review shows it:
+  // its destination square carries the badge and both squares take its colour. Going back through the moves
+  // shows each move's rating. With "Rate Self" off only the opponent's moves are rated; your own once you
+  // made them only with it on (with no game of yours on the board, every move is rated).
+  //
+  // How a move is judged is chess.com's published scheme: the loss in expected points against the best move
+  // (Best = the engine's move, Excellent < 0.02, Good < 0.05, Inaccuracy < 0.10, Mistake < 0.20, Blunder >= 0.20,
+  // blunders also needing two pawns), Book for opening-book moves, Brilliant for a sound piece sacrifice that keeps
+  // the game at least level and was not needed because the side was already completely winning, Great for the only
+  // good move (the second best is clearly worse), Miss for a mistake that lets a winning chance go.
+  const rateStyle = document.createElement('style');
+  rateStyle.textContent = `
+    .bs-rate-tint { position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; opacity: .5;
+      animation: bs-rate-tint-in 260ms ease-out both; }
+    .bs-rate-tint.bs-leave { animation: bs-rate-fade 160ms ease-in forwards; }
+    .bs-rate-badge { position: absolute; width: 5.6%; height: 5.6%; min-width: 18px; min-height: 18px; pointer-events: none; z-index: 30;
+      transform: translate(-62%, -38%); filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .35));
+      animation: bs-rate-pop 460ms cubic-bezier(.3, 1.7, .5, 1) both; }
+    .bs-rate-badge svg { display: block; width: 100%; height: 100%; }
+    .bs-rate-badge.bs-leave { animation: bs-rate-out 170ms ease-in forwards; }
+    .bs-rate-badge[data-grade="brilliant"]::after, .bs-rate-badge[data-grade="great"]::after {
+      content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--c);
+      animation: bs-rate-ring 700ms 120ms ease-out both; }
+    .bs-rate-badge[data-grade="brilliant"] svg { animation: bs-rate-shine 1.1s 300ms ease-in-out both; }
+    .bs-rate-badge[data-grade="blunder"] svg, .bs-rate-badge[data-grade="miss"] svg { animation: bs-rate-shake 420ms 300ms ease-in-out both; }
+    @keyframes bs-rate-pop { 0% { opacity: 0; transform: translate(-62%, -38%) scale(.2) rotate(-35deg); }
+      55% { opacity: 1; } 100% { transform: translate(-62%, -38%) scale(1) rotate(0); } }
+    @keyframes bs-rate-out { to { opacity: 0; transform: translate(-62%, -38%) scale(.4); } }
+    @keyframes bs-rate-tint-in { from { opacity: 0; } }
+    @keyframes bs-rate-fade { to { opacity: 0; } }
+    @keyframes bs-rate-ring { from { opacity: .9; transform: scale(1); } to { opacity: 0; transform: scale(2.1); } }
+    @keyframes bs-rate-shine { 0%, 100% { filter: none; } 40% { filter: brightness(1.35) saturate(1.2); } }
+    @keyframes bs-rate-shake { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-14deg); } 50% { transform: rotate(11deg); } 75% { transform: rotate(-6deg); } }
+    @media (prefers-reduced-motion: reduce) { .bs-rate-badge, .bs-rate-badge svg, .bs-rate-tint, .bs-rate-badge::after { animation: none !important; } }
+  `;
+  document.head.appendChild(rateStyle);
+
+  // An engine of its own, so rating never waits on the crown or Clutch.
+  const rateEngine = Object.assign(Object.create(null), clutchEngine, { worker: null, starting: false, ready: false, job: null, pending: null });
+  const RATE_DEPTH = 16;
+
+  // Expected points from a score in centipawns, from the mover's side (the curve chess.com-style reviews use).
+  const expectedPoints = cp => 1 / (1 + Math.exp(-0.00368208 * cp));
+  // An engine line as a score arrowGrade understands (wdl made from the expected points).
+  function rateScore(line) {
+    const ep = line.mate !== undefined ? (line.mate > 0 ? 1 : 0) : expectedPoints(line.cp);
+    const w = Math.round(ep * 1000);
+    return { move: line.pv[0], ...(line.mate !== undefined ? { mate: line.mate } : { cp: line.cp }), wdl: [w, 0, 1000 - w], depth: line.depth };
+  }
+
+  // The grade of a move from what the engine says about the position before it.
+  // lines: the engine's top lines there (best first), move: the line of the move played (may be one of them),
+  // ctx: { sacrifice, legalCount, recapture } about the move.
+  function rateGrade(lines, move, { sacrifice = false, legalCount = 2, recapture = false } = {}) {
+    if (!lines.length || !move) return null;
+    const best = rateScore(lines[0]), score = move.pv[0] === lines[0].pv[0] ? best : rateScore(move);
+    const scores = lines.map(rateScore);
+    if (!scores.some(s => s.move === score.move)) scores.push(score);
+    const completed = { best, scores, depth: Math.min(best.depth, score.depth) };
+    let grade = arrowGrade(best, score, { sacrifice, completed });
+    if (!grade) return null;
+    const a = blunderExpected(best), b = blunderExpected(score);
+    if (grade === 'missed') grade = 'miss';
+    // A mistake or worse that lets a winning position go is a Miss.
+    if ((grade === 'mistake' || grade === 'blunder') && a >= .75 && b <= .6 && !(score.mate < 0)) grade = 'miss';
+    // The only good move: the best, with every other move clearly worse, in a game not already lost.
+    // Taking back a piece that was just taken is not counted (chess.com does not call recaptures Great).
+    if (grade === 'best' && legalCount > 1 && lines.length > 1 && !recapture && a >= .3) {
+      const second = blunderExpected(rateScore(lines[1]));
+      if (second !== null && a - second >= .15 && !(lines[1].mate > 0)) grade = 'great';
+    }
+    return grade;
+  }
+
+  const uciOf = node => node.from + node.to + (node.promotion ? String(node.promotion).toLowerCase()[0] : '');
+
+  // Rates one move: the position before it, the move (uci), the move before it (for recaptures).
+  async function rateMove(before, uci, prev = null) {
+    let game;
+    try { game = new BoardStudioRules.Chess(before); } catch (e) { return null; }
+    const legal = game.moves({ verbose: true });
+    const played = legal.find(m => m.from + m.to + (m.promotion || '') === uci) || legal.find(m => m.from + m.to === uci.slice(0, 4));
+    if (!played) return null;
+    uci = played.from + played.to + (played.promotion || '');
+    // a book move is real theory: a move played in at least 2% of the book's games from here
+    const theory = bookMoves(before), games = theory.reduce((n, m) => n + m.count, 0) || 1;
+    if (theory.some(m => m.uci === uci && m.count / games >= .02)) return 'book';
+    if (legal.length === 1) return 'best';
+    const top = await rateEngine.analyse(before, { depth: RATE_DEPTH, ms: 4000, multipv: Math.min(3, legal.length) });
+    if (!top || !top.lines || !top.lines.length) return null;
+    const lines = top.lines.filter(l => l && l.pv && l.pv.length);
+    let move = lines.find(l => l.pv[0] === uci);
+    if (!move) {
+      // the move is not among the top lines: score it on its own (with a second move beside it, the engine
+      // returns nothing for a single searchmove)
+      const other = lines[0].pv[0];
+      const own = await rateEngine.analyse(before, { depth: Math.max(10, top.depth), ms: 3000, multipv: 2, searchMoves: [uci, other] });
+      if (!own || !own.lines) return null;
+      move = own.lines.find(l => l && l.pv && l.pv[0] === uci);
+      if (!move) return null;
+    }
+    const near = blunderExpected(rateScore(move)) >= .38 && blunderExpected(rateScore(lines[0])) - blunderExpected(rateScore(move)) <= .104;
+    const sacrifice = near && isSoundSacrifice(before, uci);
+    const recapture = !!(prev && prev.to === played.to && played.captured && (prev.capturedStr || prev.captured));
+    return rateGrade(lines, move, { sacrifice, legalCount: legal.length, recapture });
+  }
+
+  const rater = {
+    cache: new Map(), queue: [], busy: false, shown: null, layer: null,
+    key: (before, uci) => before + '|' + uci,
+    // Runs the queued ratings one at a time, the move on the board first.
+    async pump() {
+      if (this.busy || !this.queue.length) return;
+      this.busy = true;
+      const job = this.queue.shift();
+      this.current = job;
+      try {
+        if (!this.cache.has(job.key)) {
+          const grade = await rateMove(job.before, job.uci, job.prev);
+          if (grade || !this.queue.some(j => j.key === job.key)) this.cache.set(job.key, grade || 'none');
+        }
+      } catch (e) { this.cache.set(job.key, 'none'); }
+      this.busy = false; this.current = null;
+      rateSync();
+      this.pump();
+    },
+    want(jobs) {
+      // the first job is the move on the board; the rest are the game's other moves, rated in the spare time
+      this.queue = jobs.filter(j => !this.cache.has(j.key));
+      // a move from the rest of the game gives way at once to the move on the board
+      const first = this.queue[0];
+      if (this.busy && first && first.top && this.current && this.current.key !== first.key) rateEngine.halt();
+      this.pump();
+    },
+    clear() { this.queue = []; this.show(null, null, null); }
+  };
+
+  // Which side of the board is yours, or null when you are not playing on it.
+  function ownColor(board) {
+    try { const p = board.game.getPlayingAs && board.game.getPlayingAs(); return p === 1 ? 'w' : p === 2 ? 'b' : null; } catch (e) { return null; }
+  }
+  const moverOf = node => (node.color === 1 || node.color === 'w' ? 'w' : node.color === 2 || node.color === 'b' ? 'b' : (node.beforeFen || '').split(' ')[1]);
+
+  // Draws (or takes away) the badge and the two tinted squares.
+  rater.show = function (board, node, grade) {
+    const id = board && node && grade && grade !== 'none' ? `${uciOf(node)}|${node.beforeFen}|${grade}` : null;
+    if (id === this.shown && (!id || this.els?.every(e => e.isConnected))) return;
+    (this.els || []).forEach(el => { el.classList.add('bs-leave'); setTimeout(() => el.remove(), 200); });
+    this.els = null; this.shown = id;
+    if (!id) return;
+    const g = RATE_GRADES[grade];
+    const flipped = board.classList.contains('flipped') || !!(board.__cc && board.__cc.flipped);
+    const place = (el, sq) => {
+      const f = sq.charCodeAt(0) - 97, r = +sq[1] - 1;
+      el.style.left = `${(flipped ? 7 - f : f) * 12.5}%`;
+      el.style.top = `${(flipped ? r : 7 - r) * 12.5}%`;
+    };
+    // the tints go under the pieces (before the first piece), the badge on top of everything
+    const firstPiece = board.querySelector(':scope > .piece');
+    const tints = [node.from, node.to].map(sq => {
+      const t = document.createElement('div');
+      t.className = 'bs-rate-tint'; t.style.background = g.color; place(t, sq);
+      board.insertBefore(t, firstPiece || null);
+      return t;
+    });
+    const badge = document.createElement('div');
+    badge.className = 'bs-rate-badge'; badge.dataset.grade = grade; badge.title = g.label;
+    badge.style.setProperty('--c', g.color);
+    badge.innerHTML = rateBadgeSvg(grade);
+    const f = node.to.charCodeAt(0) - 97, r = +node.to[1] - 1;
+    // the square's top-right corner, kept inside the board on the edge files and ranks
+    const col = (flipped ? 7 - f : f) + 1, row = flipped ? r : 7 - r;
+    badge.style.left = `${Math.min(col * 12.5, 98)}%`;
+    badge.style.top = `${Math.max(row * 12.5, 2.4)}%`;
+    board.appendChild(badge);
+    this.els = [...tints, badge];
+  };
+
+  function rateSync() {
+    const board = document.querySelector('wc-chess-board, chess-board');
+    if (!settings.rate.on || !board || !board.game || document.hidden) { rater.clear(); return; }
+    // the opening book first (a book move is rated Book, not by the engine); a few seconds at most
+    if (bookText === null) {
+      requestBook();
+      rater.bookWait = rater.bookWait || Date.now();
+      if (Date.now() - rater.bookWait < 5000) return;
+    }
+    let node = null, line = [];
+    try {
+      node = board.game.getSelectedNode && board.game.getSelectedNode();
+      line = (board.game.getRawLines && board.game.getRawLines()[0]) || [];
+    } catch (e) { node = null; }
+    const own = ownColor(board);
+    const rated = n => n && n.from && n.to && n.beforeFen && (settings.rate.self || !own || moverOf(n) !== own);
+    // the node chess.com shows can be one move behind its FEN for a moment: trust the FEN
+    let fen = null;
+    try { fen = board.game.getFEN(); } catch (e) { /* none */ }
+    if (node && fen && node.fen && node.fen.split(' ')[0] !== fen.split(' ')[0]) node = line.find(n => n.fen && n.fen.split(' ')[0] === fen.split(' ')[0]) || null;
+    const jobOf = (n, i) => ({ key: rater.key(n.beforeFen, uciOf(n)), before: n.beforeFen, uci: uciOf(n), prev: i > 0 ? line[i - 1] : null });
+    const jobs = [];
+    if (rated(node)) {
+      const i = line.indexOf(node);
+      const at = i >= 0 ? i : line.findIndex(n => n.fen === node.fen);
+      jobs.push({ ...jobOf(node, at), prev: at > 0 ? line[at - 1] : null, top: true });
+    }
+    // the rest of the game, newest first (the moves you are most likely to look at)
+    for (let i = line.length - 1; i >= 0; i--) if (rated(line[i])) jobs.push(jobOf(line[i], i));
+    rater.want(jobs);
+    const grade = rated(node) ? rater.cache.get(rater.key(node.beforeFen, uciOf(node))) : null;
+    rater.show(board, rated(node) ? node : null, grade || null);
+  }
+  listeners.add(rateSync);
+  setInterval(rateSync, 150);
 
   // ---------- boot ----------
 

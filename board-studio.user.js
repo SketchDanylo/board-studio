@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.49.0
+// @version      6.49.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -6207,9 +6207,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // Works out every move's rating and accuracy from the evaluations there are so far.
+  // The evaluation after move i, from White's side: as text (+0.35, -M3, 1-0) and as White's winning chances.
+  function reviewEval(m, i) {
+    const after = review.evals[i + 1], top = after.terminal ? null : after.lines[0];
+    if (!after.terminal && !top) return;
+    const sign = review.fens[i + 1].split(' ')[1] === 'w' ? 1 : -1;
+    m.evalText = after.terminal === 'mate' ? (m.mover === 'w' ? '1-0' : '0-1') : after.terminal ? '½-½'
+      : top.mate !== undefined ? `${top.mate * sign > 0 ? '' : '-'}M${Math.abs(top.mate)}` : `${top.cp * sign >= 0 ? '+' : ''}${(top.cp * sign / 100).toFixed(2)}`;
+    m.whiteWin = after.terminal === 'mate' ? (m.mover === 'w' ? 100 : 0) : after.terminal ? 50 : (sign === 1 ? lineWin(top) : 100 - lineWin(top));
+  }
+
   function reviewGrade() {
     review.moves.forEach((m, i) => {
       const before = review.evals[i], after = review.evals[i + 1];
+      reviewEval(m, i);
+      if (before.lines[0]) m.bestUci = before.lines[0].pv[0];
       if (m.book) { m.grade = 'book'; m.acc = 100; return; }
       if (!m.basics) { m.grade = null; return; }
       if (m.basics.legalCount === 1) { m.grade = 'best'; m.acc = 100; return; }
@@ -6220,13 +6232,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const near = blunderExpected(rateScore(line)) >= .38 && blunderExpected(rateScore(best)) - blunderExpected(rateScore(line)) <= .104;
       m.grade = rateGrade(before.lines, line, { sacrifice: near && m.basics.offers, legalCount: m.basics.legalCount, recapture: m.basics.recapture });
       m.acc = moveAccuracy(lineWin(best), lineWin(line));
-      m.bestUci = best.pv[0];
-      // the evaluation after the move, from White's side
-      const top = after.terminal ? null : after.lines[0];
-      const sign = review.fens[i + 1].split(' ')[1] === 'w' ? 1 : -1;
-      m.evalText = after.terminal === 'mate' ? (m.mover === 'w' ? '1-0' : '0-1') : after.terminal ? '½-½'
-        : top.mate !== undefined ? `${top.mate * sign > 0 ? '' : '-'}M${Math.abs(top.mate)}` : `${top.cp * sign >= 0 ? '+' : ''}${(top.cp * sign / 100).toFixed(2)}`;
-      m.whiteWin = after.terminal === 'mate' ? (m.mover === 'w' ? 100 : 0) : after.terminal ? 50 : (sign === 1 ? lineWin(top) : 100 - lineWin(top));
     });
   }
 
@@ -6543,11 +6548,16 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
   // Closes the game-over window the button sat in.
   function closeGameOver(button) {
-    const modal = button.closest('[class*="game-over-modal"], [class*="modal-component"], .cc-modal-component, [role="dialog"]');
+    const CLOSE = '[aria-label="Close"], [aria-label="close"], .cc-close-button-component, button[class*="close"], [data-cy="close-board-modal"]';
+    // the nearest box around the button that has a close button is the window (chess.com: .board-modal-component)
+    let modal = null;
+    for (let e = button.parentElement, i = 0; e && i < 7 && e !== document.body; e = e.parentElement, i++) {
+      if (e.querySelector(CLOSE)) { modal = e.closest('.board-modal-component, [role="dialog"]') || e; break; }
+    }
     if (!modal) return;
-    const close = modal.querySelector('[aria-label="Close"], [aria-label="close"], [class*="close"] button, button[class*="close"], [data-cy="close-board-modal"]');
-    if (close) close.click();
-    else modal.style.display = 'none';
+    modal.querySelector(CLOSE).click();
+    // still there a moment later (the close button did nothing): it is hidden instead
+    setTimeout(() => { if (modal.isConnected && modal.getClientRects().length) modal.style.display = 'none'; }, 400);
   }
   window.addEventListener('click', e => {
     if (!settings.review.on) return;

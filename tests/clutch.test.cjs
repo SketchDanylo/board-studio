@@ -233,24 +233,24 @@ test('the panel bar glows in the colour of the result Clutch rolled, and stops w
   } finally { f.close(); }
 });
 
-test('playing to lose on the clock: quick on the obvious, long on some quiet moves, and out of time at the end', () => {
+test('playing to lose on the clock: no long sits, every move a little too long, out of time at the end', () => {
   const f = setup();
   try {
-    const burn = f.api.clutchBurnMs;
+    const burn = f.api.clutchBurnMs, pace = f.api.clutchPaceMs, half = () => 0.5;
     const quiet = { uci: 'g1f3', check: false, capture: false, promotion: null };
     const fens = Array.from({ length: 40 }, (_, i) => `rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - ${i} ${10 + i}`);
-    const holds = fens.map(fen => burn('lose', 'time', quiet, fen, 30));
-    assert.ok(holds.some(ms => ms > 0) && holds.some(ms => ms === 0), 'only some quiet moves are held');
-    assert.ok(holds.filter(ms => ms > 0).every(ms => ms >= 30 * 1000 * 0.25 && ms <= 30 * 1000 * 0.6), 'a quarter to six tenths of what is left');
-    assert.deepEqual(holds, fens.map(fen => burn('lose', 'time', quiet, fen, 30)), 'the same position always gets the same answer');
-    const held = fens.find(fen => burn('lose', 'time', quiet, fen, 30) > 0);
-    assert.equal(burn('lose', 'time', { ...quiet, capture: true }, held, 30), 0, 'a capture is played at once');
-    assert.equal(burn('lose', 'time', { ...quiet, check: true }, held, 30), 0, 'and a check');
-    assert.equal(burn('lose', 'board', quiet, held, 30), 0, 'losing on the board never holds');
-    assert.equal(burn('win', 'time', quiet, held, 30), 0, 'nor does winning');
-    assert.equal(burn('lose', 'time', quiet, 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 3', 30), 0, 'the opening is played quickly');
-    const late = fens.find(fen => burn('lose', 'time', quiet, fen, 3) > 0);
-    assert.ok(burn('lose', 'time', quiet, late, 3) > 3000, 'nearly out of time: it stays put until the flag falls');
+    assert.ok(fens.every(fen => burn('lose', 'time', quiet, fen, 30) === 0), 'no move is sat on for a share of the clock');
+    // the drain: each move a little longer than at the normal pace, never a big share of the clock
+    const normal = pace(fens[5], quiet, 30, 800, {}, half), slow = pace(fens[5], quiet, 30, 800, { slow: true }, half);
+    assert.ok(slow > normal * 1.5 && slow < normal * 2, `a little too long: ${slow} vs ${normal} ms`);
+    assert.ok(slow <= 30 * 1000 * 0.18, 'never more than a small share of the clock');
+    // over a game the clock does drain (and runs out in the end)
+    let clock = 60, moves = 0;
+    while (clock >= 5 && moves < 80) { clock -= pace(fens[Math.min(39, moves)], quiet, clock, 800, { slow: true }, half) / 1000; moves++; }
+    assert.ok(moves < 80, `down to the last seconds after ${moves} moves`);
+    assert.ok(burn('lose', 'time', quiet, fens[30], 3) > 3000, 'nearly out of time: it stays put until the flag falls');
+    assert.equal(burn('lose', 'board', quiet, fens[30], 3), 0, 'losing on the board never holds');
+    assert.equal(burn('win', 'time', quiet, fens[30], 3), 0, 'nor does winning');
   } finally { f.close(); }
 });
 
@@ -1331,7 +1331,9 @@ test('win, draw or lose: a win and a draw take the simple mate in one, a lose ga
     const fen = '7k/8/5K2/8/8/8/8/6Q1 w - - 0 1';
     const ask = mode => f.api.humanAnalyse(fen, { ms: 4000, mode }, 1200, (x, y) => engine.analyse(x, y));
     assert.equal((await ask('win')).pv[0], 'g1g7', 'to win: the mate');
-    assert.equal((await ask('draw')).pv[0], 'g1g7', 'to draw: a mate in one is simple, it is delivered');
+    // to draw, with a stalemate on the board (Qg6), the draw is taken (the user's later rule: force the draw, as a slip)
+    const drawn = await ask('draw'); const gd = new Chess(fen); gd.move({ from: drawn.pv[0].slice(0, 2), to: drawn.pv[0].slice(2, 4) });
+    assert.ok(gd.isStalemate(), 'to draw: the stalemate, not the mate');
     const lost = await ask('lose');
     const g = new Chess(fen); g.move({ from: lost.pv[0].slice(0, 2), to: lost.pv[0].slice(2, 4) });
     assert.ok(!g.isCheckmate() && !g.isDraw() && !g.isStalemate(), 'to lose: neither the mate nor a draw');

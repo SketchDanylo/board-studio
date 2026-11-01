@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.49.1
+// @version      6.49.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -6431,8 +6431,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const coach = coachLine(m, review.cur - 1);
     const scroll = review.root.querySelector('.scroll'), keep = scroll ? scroll.scrollTop : 0;
     const order = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'miss', 'blunder'];
-    const fmt = a => (a === null ? '–' : a.toFixed(1));
-    const ph = list => { const a = sideAccuracy(list); const g = phaseGrade(a); return g ? rateBadgeSvg(g) : '<span class="none">–</span>'; };
+    // the summary waits for the first sweep: half a game's numbers would look final and be wrong
+    const ready = review.firstDone;
+    const fmt = a => (!ready ? '…' : a === null ? '–' : a.toFixed(1));
+    const elo = a => (!ready ? '…' : a === null ? '–' : accuracyElo(a));
+    const ph = list => { if (!ready) return '<span class="none">…</span>'; const a = sideAccuracy(list); const g = phaseGrade(a); return g ? rateBadgeSvg(g) : '<span class="none">–</span>'; };
     const rows = [];
     for (let i = 0; i < review.moves.length; i += 2) {
       const cell = j => {
@@ -6452,7 +6455,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       </table>
       <table class="cls">${order.map(k => `<tr data-grade="${k}"><td class="c1" style="color:${RATE_GRADES[k].color}">${st.w[k] || 0}</td><td class="c2"><span class="lbl">${rateBadgeSvg(k)}${RATE_GRADES[k].label}</span></td><td class="c3" style="color:${RATE_GRADES[k].color}">${st.b[k] || 0}</td></tr>`).join('')}
         <tr class="sep"><td colspan="3"></td></tr>
-        <tr><td class="c1"><span class="box w" style="font-size:15px">${accW === null ? '–' : accuracyElo(accW)}</span></td><td class="c2">Game Rating</td><td class="c3"><span class="box b" style="font-size:15px">${accB === null ? '–' : accuracyElo(accB)}</span></td></tr>
+        <tr><td class="c1"><span class="box w" style="font-size:15px">${elo(accW)}</span></td><td class="c2">Game Rating</td><td class="c3"><span class="box b" style="font-size:15px">${elo(accB)}</span></td></tr>
         <tr class="ph"><td class="c1">${ph(st.phase.w[0])}</td><td class="c2">Opening</td><td class="c3">${ph(st.phase.b[0])}</td></tr>
         <tr class="ph"><td class="c1">${ph(st.phase.w[1])}</td><td class="c2">Middlegame</td><td class="c3">${ph(st.phase.b[1])}</td></tr>
         <tr class="ph"><td class="c1">${ph(st.phase.w[2])}</td><td class="c2">Endgame</td><td class="c3">${ph(st.phase.b[2])}</td></tr>

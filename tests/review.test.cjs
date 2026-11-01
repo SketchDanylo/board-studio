@@ -179,3 +179,41 @@ test('best-move arrows: drawn for a move that was not the engine\'s, none for th
     f.api.reviewClose();
   } finally { f.close(); }
 });
+
+test('a reviewed game is saved: opening it again shows it at once and only goes deeper; the last four games are kept', async () => {
+  const f = setup();
+  try {
+    f.api.setSetting('review', 'on', true);
+    const asked = [];
+    // a quick fake engine: every position gets two lines at the depth asked
+    f.api.reviewEngines.forEach(e => {
+      e.analyse = async (fen, o) => { asked.push(o.depth); await new Promise(r => setTimeout(r, 1)); return { depth: o.depth, lines: [{ pv: ['a2a3'], cp: 10, depth: o.depth }, { pv: ['h2h3'], cp: 0, depth: o.depth }] }; };
+    });
+    const open = sans => {
+      const { board } = gameBoard(f, sans);
+      board.getBoundingClientRect = () => ({ left: 0, top: 0, right: 400, bottom: 400, width: 400, height: 400 });
+      f.api.reviewOpen(board);
+      return board;
+    };
+    const r = f.api.review;
+    open(['e4', 'e5', 'Nf3', 'Nc6']);
+    for (let i = 0; i < 200 && !(r.firstDone && r.pass >= 20); i++) await new Promise(res => setTimeout(res, 5));
+    f.api.reviewClose();
+    assert.equal(f.api.reviewStored().length, 1, 'saved when the review closed');
+    // open it again: the first sweep is not done again
+    asked.length = 0;
+    open(['e4', 'e5', 'Nf3', 'Nc6']);
+    assert.equal(r.restored, true);
+    assert.equal(r.firstDone, true, 'no new sweep');
+    assert.ok(r.pass >= 18);
+    assert.match(f.w.document.getElementById('bs-fake-review').shadowRoot.textContent, /Saved review/);
+    for (let i = 0; i < 50 && !asked.length; i++) await new Promise(res => setTimeout(res, 5));
+    assert.ok(asked.length && asked.every(d => d > 18), `only deeper looks: ${asked}`);
+    f.api.reviewClose();
+    // four more games: the first one is the oldest and goes
+    for (const g of [['d4'], ['c4'], ['Nf3'], ['g3']]) { open(g); for (let i = 0; i < 100 && !r.firstDone; i++) await new Promise(res => setTimeout(res, 5)); f.api.reviewClose(); }
+    const kept = f.api.reviewStored();
+    assert.equal(kept.length, 4);
+    assert.ok(kept.every(g => g.n === 1), 'the 4-move game was dropped');
+  } finally { f.close(); }
+});

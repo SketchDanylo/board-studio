@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.50.1
+// @version      6.51.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -6317,6 +6317,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       reviewGrade();
       reviewDraw();
+      reviewSaveSoon();
     }
   }
 
@@ -6505,7 +6506,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }
     review.root.querySelector('.body').innerHTML = `
       <div class="coach"><div class="face">♞</div><div class="bubble"><div class="t">${coach.title}${coach.ev ? `<span class="ev${coach.evWhite ? ' w' : ''}">${coach.ev}</span>` : ''}</div>${coach.sub ? `<div class="sub">${coach.sub}</div>` : ''}</div></div>
-      ${review.firstDone ? `<div class="note">Depth ${review.pass}${review.pass >= REVIEW_MAX ? ' (deepest)' : ', still going deeper'}</div>` : `<div class="note">Analyzing the game… ${Math.round(done / total * 100)}%</div><div class="prog"><i style="width:${done / total * 100}%"></i></div>`}
+      ${review.firstDone ? `<div class="note">${review.restored ? 'Saved review · ' : ''}Depth ${review.pass}${review.pass >= REVIEW_MAX ? ' (deepest)' : ', still going deeper'}</div>` : `<div class="note">Analyzing the game… ${Math.round(done / total * 100)}%</div><div class="prog"><i style="width:${done / total * 100}%"></i></div>`}
       ${reviewGraph()}
       <table>
         <tr class="players"><td class="c1">${names.w}</td><td class="c2"></td><td class="c3">${names.b}</td></tr>
@@ -6554,12 +6555,63 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     }).join('');
   }
 
+  // ----- saved reviews -----
+
+  // The analysis of the last few reviewed games is kept in this browser (localStorage), so opening the review of one of
+  // them again shows it at once and carries on deeper from where it stopped, instead of sweeping the game again.
+  // A game is known by its moves (and start position), so it is found again from the game page or the analysis board.
+  const REVIEW_STORE = 'board-studio-reviews-v1', REVIEW_KEEP = 4;
+  function reviewKey() {
+    const text = review.fens[0] + '|' + review.moves.map(m => m.uci).join(' ');
+    let h1 = 0x811c9dc5, h2 = 0;
+    for (let i = 0; i < text.length; i++) { h1 = Math.imul(h1 ^ text.charCodeAt(i), 16777619); h2 = (h2 * 31 + text.charCodeAt(i)) | 0; }
+    return (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36) + '-' + review.moves.length;
+  }
+  function reviewStored() {
+    try { const list = JSON.parse(localStorage.getItem(REVIEW_STORE)); return Array.isArray(list) ? list : []; } catch (e) { return []; }
+  }
+  // Puts back a saved analysis of this game, if there is one. True when it was found.
+  function reviewRestore() {
+    const hit = reviewStored().find(g => g.key === review.key);
+    if (!hit || !Array.isArray(hit.e) || hit.e.length !== review.evals.length) return false;
+    hit.e.forEach((e, i) => {
+      if (!e || review.evals[i].terminal) return;
+      review.evals[i] = { depth: e.d, reached: e.r, lines: e.l.map(l => ({ pv: l.p, depth: l.d, ...(l.m !== undefined ? { mate: l.m } : { cp: l.c }) })) };
+    });
+    const depths = review.evals.filter(e => !e.terminal).map(e => e.depth);
+    const least = depths.length ? Math.min(...depths) : REVIEW_MAX;
+    if (least >= REVIEW_FIRST) { review.firstDone = true; review.pass = Math.min(REVIEW_MAX, least - (least % 2)); }
+    review.restored = true;
+    return true;
+  }
+  // Writes this game's analysis down (newest first, at most four games; the oldest goes when the storage is full).
+  function reviewSave() {
+    clearTimeout(review.saveTimer); review.saveTimer = 0;
+    if (!review.key || !review.evals.some(e => e.lines && e.lines.length)) return;
+    const entry = {
+      key: review.key, at: Date.now(), n: review.moves.length,
+      e: review.evals.map(e => (e.terminal || !e.lines.length ? null : {
+        d: e.depth, r: e.reached || 0,
+        l: e.lines.slice(0, 2).map(l => ({ p: l.pv.slice(0, 4), d: l.depth, ...(l.mate !== undefined ? { m: l.mate } : { c: l.cp }) }))
+      }))
+    };
+    let list = [entry, ...reviewStored().filter(g => g.key !== review.key)].slice(0, REVIEW_KEEP);
+    while (list.length) {
+      try { localStorage.setItem(REVIEW_STORE, JSON.stringify(list)); return; } catch (e) { list = list.slice(0, -1); }
+    }
+  }
+  // saved a few seconds after the analysis moves on, and when the review closes or the page goes
+  function reviewSaveSoon() { if (!review.saveTimer) review.saveTimer = setTimeout(reviewSave, 3000); }
+  window.addEventListener('pagehide', () => { if (review.open) reviewSave(); });
+
   function reviewOpen(board) {
     if (!board || !board.game) return false;
     reviewClose();
     review.bookDone = false;
     if (!reviewLoad(board)) return false;
     review.open = true; review.token++; review.pass = REVIEW_FIRST; review.bookDone = false; review.firstDone = false; review.busy.clear(); review.showBest = false;
+    review.restored = false; review.key = reviewKey();
+    reviewRestore();
     review.cur = reviewPly();
     requestBook();
     const host = document.createElement('div'); host.id = 'bs-fake-review';
@@ -6605,6 +6657,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   function reviewClose() {
     if (!review.open) return;
+    reviewSave();
     review.open = false; review.token++;
     reviewEngines.forEach(e => { try { e.halt(); } catch (err) { /* not started */ } });
     review.host && review.host.remove(); review.host = null; review.root = null;

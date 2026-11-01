@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.58.0
+// @version      6.59.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -3049,7 +3049,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       for (const capture of captures) {
         if (checked.has(capture.to)) continue;
         checked.add(capture.to);
-        const offered = exchangeGain(game, capture.to, 5, SAC_VALUE) - (SAC_VALUE[move.captured] || 0);
+        // What the opponent can win there. A capture made by the move only cancels it when it took something worth at least as
+        // much as the piece now left en prise (a fair trade); taking a bishop and leaving the queen to a rook is a sacrifice, as
+        // chess.com counts it (26...Bxc3 leaving Qd8 to Rxd8+ is Brilliant there).
+        const left = game.get(capture.to);
+        const fair = move.captured && left && SAC_VALUE[move.captured] >= SAC_VALUE[left.type];
+        const offered = exchangeGain(game, capture.to, 5, SAC_VALUE) - (fair ? SAC_VALUE[move.captured] : 0);
         const alreadyOffered = capture.to === move.to ? 0 : exchangeGain(before, capture.to, 5, SAC_VALUE);
         // Newly offered, or a piece that was already en prise and is deliberately left there
         // (Fischer's 17...Be6 leaves the queen hanging). Deliberately: some other move would have saved it. A piece

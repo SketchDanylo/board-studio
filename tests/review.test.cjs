@@ -255,3 +255,11 @@ test('after the sweep every move gets the same time, round after round with twic
     await new Promise(res => setTimeout(res, 50));
   } finally { f.close(); }
 });
+
+test('taking a lesser piece while leaving a bigger one en prise is a sacrifice (26...Bxc3 leaving Qd8 to Rxd8+), a fair trade is not', () => {
+  const f = setup();
+  try {
+    assert.equal(f.api.isSoundSacrifice('r2q1k2/1pp4p/p4pp1/8/8/PPB3P1/K1PbB2P/3R3R b - - 0 26', 'd2c3'), true);
+    assert.equal(f.api.isSoundSacrifice('r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4', 'b5c6'), false, 'Bxc6 bxc6 is a trade');
+  } finally { f.close(); }
+});

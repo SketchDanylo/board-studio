@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.53.0
+// @version      6.54.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4448,8 +4448,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // a draw: up to four, so a low rating neither drifts nor blunders it away). Losing, it is the other way: when the eval is above where a loss would come
     // from, the play drops below the rating, so the slips come and the position slides.
     const trueElo = elo;
-    if ((mode === 'win' || mode === 'draw') && evalNow !== null) {
-      const deficit = Math.max(0, (mode === 'win' ? 900 : 400) - evalNow);
+    if (mode === 'win' && evalNow !== null) {
+      // Playing to win, like a player who is going to win, not an engine: level or a little ahead, a strong lift (good moves,
+      // not perfect ones); clearly ahead, a lift that fades as the lead grows; well ahead, the rating itself, so an
+      // inaccuracy of theirs is not always punished at once and the win comes the way it would at that rating.
+      const lift = evalNow < 150 ? 700 + (pressure || played ? 200 : 0) : evalNow < 500 ? (500 - evalNow) * 1.2 : 0;
+      if (lift > 0) elo = Math.min(2400, elo + lift);
+    } else if (mode === 'draw' && evalNow !== null) {
+      const deficit = Math.max(0, 400 - evalNow);
       if (deficit > 0) elo = Math.min(2600, elo + Math.min(1800, deficit * 4 + (pressure || played ? 200 : 0)));
     } else if (mode === 'lose' && evalNow !== null && evalNow > 100) {
       elo = Math.max(300, elo - Math.min(700, (evalNow - 100) * 1.2));
@@ -4457,8 +4463,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // (the same goes for how likely the engine's own ideas are to be seen)
     if (elo !== trueElo) skill = Math.max(0, Math.min(1, (elo - 400) / 1800));
     const p = humanProfile(elo, fen);
-    // A piece under attack is always noticed when the aim is to win or draw: the outcome does not wait on a rating.
-    if (mode !== 'lose') p.notice = 1;
+    // A piece under attack is always noticed when the aim is to win or draw and the game is not yet won: the outcome does
+    // not wait on a rating. Well ahead in a won game, what is noticed is the rating's business again.
+    if (mode !== 'lose' && !(mode === 'win' && evalNow !== null && evalNow >= 150)) p.notice = 1;
     const legal = new BoardStudioRules.Chess(fen).moves({ verbose: true });
     if (!legal.length) return null;
     // A mate within reach is simply played.
@@ -4488,7 +4495,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Until the aim is secured (a win at six pawns up, a draw at one) nothing is left to the rating: every move is looked
     // at, as deep as the time allows, and the best is played. (Measured: with less, a low rating drifts out of a won game and a
     // draw slips to a loss against a stronger opponent.)
-    if ((mode === 'win' || mode === 'draw') && evalNow !== null && evalNow < (mode === 'win' ? 600 : 100) && left() > 200) {
+    // (to win: only while not ahead at all; ahead, the rating plays, lifted, above)
+    if ((mode === 'win' || mode === 'draw') && evalNow !== null && evalNow < (mode === 'win' ? 0 : 100) && left() > 200) {
       const full = await analyse(fen, { depth: 14, ms: Math.max(150, Math.min(1000, left() * 0.7)), multipv: 3, fresh: true });
       if (full && full.pv && full.pv.length) {
         let lines = full.lines && full.lines.length ? full.lines : [full], best = full;
@@ -5372,6 +5380,37 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return Math.round(clock * 1000 * (0.25 + 0.35 * unitHash(fen + 'hold')));
   }
 
+  // How long a move of a player of this rating takes, all told (looking, thinking, the hand), so the clock is used the
+  // way a person uses it: the time left shared over the moves still to come, less for a book move, a recapture or a
+  // forced move, more for a hard one; a little quicker at a low rating, a little slower at a high one; hurried when the
+  // clock is low. Only the waiting changes: what is played is decided exactly as before. A premove is a premove (made at
+  // once) only with the clock under 15 s; with more on it, an obvious move still takes a moment.
+  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false } = {}, random = Math.random) {
+    if (!step || clock === null || clock === undefined) return 0;
+    if (premove && clock < 15) return 0;
+    const full = +String(fen).split(' ')[5] || 1;
+    const left = Math.max(20, 45 - full);
+    let forced = false;
+    try { forced = new BoardStudioRules.Chess(fen).moves().length === 1; } catch (e) { /* none */ }
+    let kind = forced ? 0.15 : book ? 0.3 : (recapture || premove) ? 0.4 : step.check ? 0.8 : 1;
+    kind *= 1 + 0.35 * Math.max(0, Math.min(3, crit || 0));
+    const rating = 0.8 + 0.35 * Math.max(0, Math.min(1, (elo - 600) / 1700));
+    let ms = clock * 1000 / left * kind * rating * (0.55 + 0.9 * random());
+    if (clock < 5) ms *= 0.3;
+    return Math.round(Math.min(ms, clock * 1000 * 0.12, 15000));
+  }
+
+  function clutchPaceLeft(fen, step, clock, elo, opts = {}) {
+    if (!step || clock === null || clock === undefined) return 0;
+    const key = fen + '|' + step.from + step.to;
+    if (!clutch.pace || clutch.pace.key !== key) {
+      const recapture = !!(step.capture && clutch.lastMove && clutch.lastMove.to === step.to);
+      clutch.pace = { key, ms: clutchPaceMs(fen, step, clock, elo, { ...opts, recapture }) };
+    }
+    const spent = clutch.turnFen === fen && clutch.turnAt ? Date.now() - clutch.turnAt : 0;
+    return Math.max(0, clutch.pace.ms - spent);
+  }
+
   function clutchMoveMs(clock, fen = '', random = Math.random) {
     const full = +String(fen).split(' ')[5] || 15;
     const left = Math.max(25, Math.min(45, 60 - full));
@@ -5782,6 +5821,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
+      if (own && fen.split(' ')[1] === own && clutch.turnFen !== fen) { clutch.turnFen = fen; clutch.turnAt = Date.now(); }
     } catch (e) { return; }
     if (!own) { setClutchMode(null); clutch.burn = null; clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); shownHand.unhold(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
     // The fast path: the opponent has just made a move the book was ready for and the answer is the premove
@@ -5794,7 +5834,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // really came (and the prepared answer would not), it is not played: the aim comes before the show.
       if (fixed && s.mode !== 'lose' && materialAtRisk(fen, fixed.uci) >= 300 && !(e && e.step && materialAtRisk(fen, e.step.uci) >= 300)) fixed = null;
       const chosen = fixed || (e && e.step && (e.book || !e.crit) ? e.step : null);
-      if (chosen && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
+      const paced = chosen && clutchPaceLeft(fen, chosen, readClock('own'), clutchEloFor(base, readOpponentElo()), { premove: !!fixed, book: !!(e && e.book) });
+      if (chosen && !paced && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
         if (!fixed && e.plan) clutch.plan = e.plan;
         clutchMove(board, chosen, own, !!fixed, readClock('own'));
@@ -5832,11 +5873,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const mayPlay = clutchMayPlay();
     const act = (step, premove, note, instant) => {
       if (!mayPlay) { setClutch(`Clutch: ${note} (drawn only, it moves pieces in games against the computer)`); return; }
-      const hold = clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock);
+      const hold = Math.max(clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock), premove ? 0 : clutchPaceLeft(fen, step, clock, s.elo, { premove: !!instant, book: /opening book|Witty/.test(note) }));
       if (hold > 0) {
-        if (!clutch.burn || clutch.burn.key !== key) clutch.burn = { key, until: Date.now() + hold };
+        // the move decided now is the one played when the wait is over (not decided again)
+        if (!clutch.burn || clutch.burn.key !== key) clutch.burn = { key, until: Date.now() + hold, step, premove, note, instant };
         if (Date.now() < clutch.burn.until) {
-          setClutch(`Clutch: ${clutch.mode === 'draw' ? 'giving the opponent room on the clock' : 'taking its time'} (${((clutch.burn.until - Date.now()) / 1000).toFixed(0)} s)`);
+          setClutch(`Clutch: ${clutch.mode === 'draw' ? 'giving the opponent room on the clock' : 'thinking it over'} (${((clutch.burn.until - Date.now()) / 1000).toFixed(1)} s)`);
           clearTimeout(clutch.burn.timer);
           clutch.burn.timer = setTimeout(clutchTick, clutch.burn.until - Date.now() + 40);
           return;
@@ -5865,6 +5907,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
     // 2. Our move. If the opponent played something the book was ready for, answer at once.
     if (turn === own) {
+      // a move already decided and being waited out: played as decided once the wait is over
+      if (clutch.burn && clutch.burn.key === key && clutch.burn.step) {
+        if (Date.now() < clutch.burn.until) return;
+        const held = clutch.burn;
+        act(held.step, held.premove, held.note, held.instant);
+        return;
+      }
       const book = clutch.book;
       const entry = book && book.entries.get(key);
       clutchStopBook();

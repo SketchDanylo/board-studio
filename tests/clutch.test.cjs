@@ -924,7 +924,7 @@ test('there are two engines: pondering has its own queue and never cancels a dec
   } finally { f.close(); }
 });
 
-test('until the aim is secured the engine plays (a win at +6, a draw at +1); after that the rating, and a loss never', async () => {
+test('to win the engine plays only while not ahead (a draw: until +1); ahead, the rating; a loss never', async () => {
   const f = setup();
   try {
     const fen = 'rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2';
@@ -937,8 +937,9 @@ test('until the aim is secured the engine plays (a win at +6, a draw at +1); aft
       return { depth: 6, cp: evalNow, pv: lines[0].pv, lines };
     };
     const play = (mode, ev, elo = 500) => f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: ev, clock: 60 }, elo, eng(ev));
-    await play('win', 100); assert.equal(full, 1, 'a win at +1 is not secured: the engine plays');
-    full = 0; await play('win', 700); assert.equal(full, 0, 'a secured win (+7) is played by the rating');
+    await play('win', -100); assert.equal(full, 1, 'behind, to win: the engine plays');
+    full = 0; await play('win', 100); assert.equal(full, 0, 'a little ahead: the rating (lifted), not the engine, so an inaccuracy is not always punished');
+    full = 0; await play('win', 700); assert.equal(full, 0, 'well ahead: the rating');
     full = 0; await play('draw', 10); assert.equal(full, 1, 'a draw at level is not secured');
     full = 0; await play('draw', 300); assert.equal(full, 0, 'a draw with a clear edge is the rating, giving it back');
     full = 0; await play('lose', -700); assert.equal(full, 0, 'a loss is never played by the full engine');
@@ -982,8 +983,8 @@ test('the play follows the outcome: on course it is the rating, off course it bu
       await f.api.humanAnalyse(fen, { lastMove: null, ms: 300, mode, evalNow: ev, clock: 60 }, 800, wrapped);
       return max;
     };
-    const onCourse = await depthAt('win', 1000), behind = await depthAt('win', 650), draw = await depthAt('draw', 120), drawOk = await depthAt('draw', 800);
-    assert.ok(behind > onCourse, 'a secured win not yet decisive is looked at deeper (' + behind + ' > ' + onCourse + ')');
+    const onCourse = await depthAt('win', 1000), behind = await depthAt('win', 100), draw = await depthAt('draw', 120), drawOk = await depthAt('draw', 800);
+    assert.ok(behind > onCourse, 'a win not yet clear is looked at deeper (' + behind + ' > ' + onCourse + ')');
     assert.ok(draw > drawOk, 'so is a draw edge being given back (' + draw + ' > ' + drawOk + ')');
     const loseWell = await depthAt('lose', -300), loseBad = await depthAt('lose', 500);
     assert.ok(loseBad <= loseWell, 'a loss that is not coming is played at a lower level (' + loseBad + ' <= ' + loseWell + ')');

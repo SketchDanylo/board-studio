@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.50.0
+// @version      6.50.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -6215,15 +6215,26 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       } catch (e) { /* the engine will tell */ }
       return { depth: 0, lines: [] };
     });
-    let inBook = true;
     review.moves = line.map((n, i) => {
       const uci = uciOf(n), before = review.fens[i];
-      const basics = rateBasics(before, uci, i > 0 ? line[i - 1] : null);
-      // chess.com's Book ends at the first move out of the book
-      if (!basics || basics.fixed !== 'book') inBook = false;
-      return { node: n, uci, san: n.san, mover: moverOf(n), basics, book: inBook && basics && basics.fixed === 'book', grade: null, acc: null };
+      return { node: n, uci, san: n.san, mover: moverOf(n), basics: rateBasics(before, uci, i > 0 ? line[i - 1] : null), book: false, grade: null, acc: null };
     });
+    reviewBook();
     return true;
+  }
+
+  // Which moves are Book: theory from the start until the first move out of the book (chess.com's way). Worked out
+  // again until the opening book has arrived, since it is downloaded on first use.
+  function reviewBook() {
+    if (review.bookDone) return;
+    if (bookText === null) { requestBook(); }
+    let inBook = true;
+    review.moves.forEach((m, i) => {
+      if (bookText !== null && m.basics && m.basics.fixed !== 'book') m.basics = rateBasics(review.fens[i], m.uci, i > 0 ? review.nodes[i - 1] : null);
+      if (!m.basics || m.basics.fixed !== 'book') inBook = false;
+      m.book = inBook && !!m.basics && m.basics.fixed === 'book';
+    });
+    if (bookText !== null) review.bookDone = true;
   }
 
   // Works out every move's rating and accuracy from the evaluations there are so far.
@@ -6238,6 +6249,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   function reviewGrade() {
+    reviewBook();
     review.moves.forEach((m, i) => {
       const before = review.evals[i], after = review.evals[i + 1];
       reviewEval(m, i);
@@ -6545,8 +6557,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function reviewOpen(board) {
     if (!board || !board.game) return false;
     reviewClose();
+    review.bookDone = false;
     if (!reviewLoad(board)) return false;
-    review.open = true; review.token++; review.pass = REVIEW_FIRST; review.firstDone = false; review.busy.clear(); review.showBest = false;
+    review.open = true; review.token++; review.pass = REVIEW_FIRST; review.bookDone = false; review.firstDone = false; review.busy.clear(); review.showBest = false;
     review.cur = reviewPly();
     requestBook();
     const host = document.createElement('div'); host.id = 'bs-fake-review';

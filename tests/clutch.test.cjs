@@ -1490,3 +1490,25 @@ test('at 3501 a move thinks for a share of the clock that shrinks as it drains, 
     assert.ok(clock > 0, 'seventy moves from ten seconds left: ' + clock.toFixed(2) + ' s remain');
   } finally { f.close(); }
 });
+
+test('pawn endings are played on premoves: the move that keeps the outcome against every reply, none when the answer depends on theirs', { timeout: 180000 }, async () => {
+  const f = setup(); const { engine, kill } = realEngine(f);
+  try {
+    const eg = (fen, mode) => f.api.endgamePremove(fen, mode, (x, o) => engine.analyse(x, o));
+    assert.equal(f.api.isPawnEnding('8/k7/8/8/8/8/6P1/6K1 b - - 0 50'), true);
+    assert.equal(f.api.isPawnEnding('8/k7/8/8/8/8/6P1/5RK1 b - - 0 50'), false);
+    // winning: a move that wins whatever the lone king does (g4 at once would let ...Kb6 catch the pawn)
+    const win = await eg('8/k7/8/8/8/8/6P1/6K1 b - - 0 50', 'win');
+    assert.ok(win && win.endgame && win.step.uci !== 'g2g4', JSON.stringify(win && win.step));
+    // losing: the race pushed on premoves, the natural mistake
+    assert.equal((await eg('8/8/1k6/8/8/6p1/1P6/6K1 b - - 0 50', 'lose')).step.uci, 'b2b4');
+    // drawing the same race: a move that holds against every reply
+    assert.ok(await eg('8/8/1k6/8/8/6p1/1P6/6K1 b - - 0 50', 'draw'));
+    // the opposition: the right move depends on where their king goes, so nothing is premoved
+    assert.equal(await eg('8/8/8/4k3/8/4K3/4P3/8 b - - 0 50', 'win'), null);
+    // not a pawn ending: not this rule
+    assert.equal(await eg('8/k7/8/8/8/8/6P1/5RK1 b - - 0 50', 'win'), null);
+    // and such a premove goes the moment they move, whatever the clock
+    assert.equal(f.api.clutchPaceMs('8/k7/8/8/8/8/6P1/5K2 w - - 0 51', { from: 'f1', to: 'g2' }, 120, 1500, { premove: true, endgame: true }), 0);
+  } finally { kill(); f.close(); }
+});

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.66.0
+// @version      6.67.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5604,8 +5604,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // forced move, more for a hard one; a little quicker at a low rating, a little slower at a high one; hurried when the
   // clock is low. Only the waiting changes: what is played is decided exactly as before. A premove is a premove (made at
   // once) only with the clock under 15 s; with more on it, an obvious move still takes a moment.
-  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false, settled = false } = {}, random = Math.random) {
+  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false, settled = false, endgame = false } = {}, random = Math.random) {
     if (!step || clock === null || clock === undefined) return 0;
+    // the endgame plan is premoved and goes the instant they move (a pawn race is played on premoves)
+    if (premove && endgame) return 0;
     // a premove goes at once with little time left; a fast blitz player (Witty Alieeeen) premoves freely up to half a minute
     if (premove && clock < (witty ? 30 : 15)) return 0;
     // taking back in an exchange is done at once, premoved or not (nobody stops to think about a recapture)
@@ -6184,6 +6186,64 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return null;
   }
 
+  // A pawn ending (kings and pawns only): the kind of position a person plays on premoves, a pawn race pushed square by
+  // square, a king walked in.
+  function isPawnEnding(fen) {
+    const board = String(fen).split(' ')[0];
+    return /p/i.test(board) && !/[nbrq]/i.test(board);
+  }
+  // The endgame premove, decided on their time: our move that keeps the outcome Clutch plays for against EVERY legal reply
+  // they have (pawn endings have few), checked one reply at a time. Played the instant they move. Move after move this is
+  // the premoved plan: to win, the push or king step that wins whatever they do; to draw, the move that holds against all
+  // of them; to lose, the natural push (the race a player premoves and gets wrong) as long as it does not turn the game
+  // into a win. Candidates: the engine's answers to their best reply, then (losing) the most advanced pawn's push first.
+  // Null when no move qualifies (then the ordinary premove rules apply).
+  async function endgamePremove(fen, mode, analyse, stop = () => false) {
+    if (!isPawnEnding(fen)) return null;
+    const game = new BoardStudioRules.Chess(fen);
+    const replies = game.moves({ verbose: true });
+    if (!replies.length || replies.length > 12) return null;
+    const val = l => l.mate !== undefined ? Math.sign(l.mate) * (10000 - Math.abs(l.mate)) : l.cp;
+    const ucis = g => g.moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
+    // our moves after each of their replies, and the positions
+    const after = replies.map(r => { const g = new BoardStudioRules.Chess(fen); g.move(r); return { reply: r.from + r.to + (r.promotion || ''), fen: g.fen(), legal: ucis(g) }; });
+    if (after.some(a => !a.legal.length)) return null;            // a reply that ends the game: nothing to premove
+    // their best reply, and our best answers to it
+    const top = await analyse(fen, { depth: 14, ms: 250, multipv: 1, fresh: true });
+    if (stop() || !top || !top.pv || !top.pv[0]) return null;
+    const lead = after.find(a => a.reply === top.pv[0]) || after[0];
+    const ours = await analyse(lead.fen, { depth: 14, ms: 250, multipv: 3, fresh: true });
+    if (stop() || !ours) return null;
+    let cands = (ours.lines && ours.lines.length ? ours.lines : [ours]).filter(l => l && l.pv && l.pv[0]).map(l => l.pv[0]);
+    if (mode === 'lose' || mode === 'win') {
+      // the push of the most advanced pawn first (a race is pushed on premoves; losing, the push is the natural mistake)
+      const us = new BoardStudioRules.Chess(lead.fen).turn();
+      const pushes = new BoardStudioRules.Chess(lead.fen).moves({ verbose: true }).filter(m => m.piece === 'p' && !m.captured)
+        .sort((a, b) => (us === 'w' ? +b.to[1] - +a.to[1] : +a.to[1] - +b.to[1])).map(m => m.from + m.to + (m.promotion || ''));
+      cands = [...pushes.slice(0, 1), ...cands];
+    }
+    cands = [...new Set(cands)].filter(u => after.every(a => a.legal.includes(u))).slice(0, 3);
+    for (const cand of cands) {
+      let ok = true;
+      for (const a of after) {
+        // every move there in one search (pawn endings have few), so the best and the candidate are scored alike
+        const res = await analyse(a.fen, { depth: 12, ms: 180, multipv: Math.min(a.legal.length, 10), fresh: true });
+        if (stop()) return null;
+        const lines = res ? (res.lines && res.lines.length ? res.lines : [res]).filter(l => l && l.pv && l.pv[0]) : [];
+        const line = lines.find(l => l.pv[0] === cand);
+        if (!line || !lines.length) { ok = false; break; }
+        const got = val(line), b = Math.max(...lines.map(val));
+        const fine = mode === 'win' ? (b >= 300 ? got >= 300 && (b < 9000 || got >= 9000 || got >= b - 400) : got >= b - 50)
+          : mode === 'draw' ? got >= Math.min(b, -40) && got <= Math.max(b, 300)
+          : mode === 'lose' ? got <= Math.max(b, 60)
+          : got >= b - 40;
+        if (!fine) { ok = false; break; }
+      }
+      if (ok) return { step: stepFor(lead.fen, cand), fen: lead.fen, line: [cand], conditional: false, endgame: true, why: 'the endgame plan, against every reply' };
+    }
+    return null;
+  }
+
   // One move that is the answer to every reply in the book: that one is safe to premove for real.
   function robustMove(entries) {
     const list = [...entries.values()];
@@ -6333,8 +6393,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // really came (and the prepared answer would not), it is not played: the aim comes before the show.
       if (fixed && s.mode !== 'lose' && materialAtRisk(fen, fixed.uci) >= 300 && !(e && e.step && materialAtRisk(fen, e.step.uci) >= 300)) fixed = null;
       const chosen = fixed || (e && e.step && (e.book || !e.crit) ? e.step : null);
-      const paced = chosen && clutchPaceLeft(fen, chosen, clutchClock('own'), clutchEloFor(base, readOpponentElo()), { premove: !!fixed, book: !!(e && e.book), witty: !!base.witty, slow: clutch.mode === 'lose' && clutch.way === 'time' });
-      if (chosen && !paced && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, clutchClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
+      const paced = chosen && clutchPaceLeft(fen, chosen, clutchClock('own'), clutchEloFor(base, readOpponentElo()), { premove: !!fixed, endgame: !!(fixed && prem && prem.endgame), book: !!(e && e.book), witty: !!base.witty, slow: clutch.mode === 'lose' && clutch.way === 'time' });
+      if (chosen && !paced && (!!(fixed && prem && prem.endgame && !clutchRace(clutch.mode, clutchClock('own') || 99, readClock('opp'))) || !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, clutchClock('own') || 99, readClock('opp'))) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
         if (!fixed && e.plan) clutch.plan = e.plan;
         clutchMove(board, chosen, own, !!fixed, clutchClock('own'));
@@ -6499,8 +6559,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (!book.complete && book.total && book.entries.size >= Math.min(3, book.total)) book.complete = true;
       const certain = clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw');
       // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
-      const sticky = book.premove && (book.premove.wiggle || book.premove.gamble || book.premove.likely);
-      const now = sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (certain || book.wiggle || null);
+      const sticky = book.premove && (book.premove.wiggle || book.premove.gamble || book.premove.likely || book.premove.endgame);
+      const now = sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (book.endgame || certain || book.wiggle || null);
       if (book.premove && (!now || now.step.uci !== book.premove.step.uci)) {
         if (book.premoveSet) cancelPremove(board);
         book.premove = null; book.premoveSet = false; book.spent = true;
@@ -6538,6 +6598,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       try { now = board.game.getFEN(); } catch (e) { return false; }
       return !!now && sameFen(now, fen);
     };
+    // a pawn ending: the premoved plan, checked against every reply they have (on its own engine, beside the book)
+    if (isPawnEnding(fen) && !s.throw) {
+      endgamePremove(fen, s.mode || 'win', (x, y) => mateEngine.analyse(x, y), () => !stillTheirMove() || clutch.book !== book)
+        .then(p => { if (p && p.step && clutch.book === book && stillTheirMove()) { book.endgame = p; refresh(); } }).catch(() => {});
+    }
     bookBuild({
       fen, s, clock, stop: () => !stillTheirMove() || Date.now() - started > 45000,
       analyse: (f, o) => ponderEngine.analyse(f, o),

@@ -62,3 +62,31 @@ test('a slip of the hand fits the outcome: never one that gives material away wh
     assert.equal(await play('lose'), 'd5', 'losing: the slip is let happen');
   } finally { f.api.clutch.mode = null; f.close(); }
 });
+
+test('Time at 0 is "No Limit": shown in red, Clutch plays the whole game, and a game without a clock is paced as five minutes, never over 17 s a move', () => {
+  const f = setup();
+  try {
+    const sh = [...f.w.document.body.children].find(x => x.shadowRoot && x.shadowRoot.querySelector('.rng')).shadowRoot;
+    const slider = sh.querySelector('.rng input[data-key="time"]');
+    assert.equal(slider.min, '0');
+    f.api.setSetting('clutch', 'time', 0);
+    const label = sh.querySelector('.rng b[data-out="time"]');
+    assert.equal(label.textContent, 'No Limit');
+    assert.ok(label.classList.contains('nolimit'));
+    f.api.setSetting('clutch', 'time', 10);
+    assert.equal(label.textContent, '10.0 s');
+    assert.ok(!label.classList.contains('nolimit'));
+    // engaged whatever the clock
+    assert.equal(f.api.clutchEngages({}, 0, 900), true, 'No Limit: on from the first move, 15 minutes or not');
+    assert.equal(f.api.clutchEngages({}, 10, 900), false, 'with a Time set, not until the clock is down to it');
+    // no clock on the page
+    assert.equal(f.api.clutchClock('own'), null, 'a Time set and no clock: Clutch waits for a clock');
+    f.api.setSetting('clutch', 'time', 0);
+    assert.equal(f.api.clutchClock('own'), 300, 'No Limit and no clock: five minutes that never run down');
+    assert.equal(f.api.clutchUntimed(), true);
+    const fen = 'r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 20';
+    const hard = f.api.clutchPaceMs(fen, { from: 'e1', to: 'g1' }, 300, 2000, { crit: 3, brilliant: true }, () => 1);
+    assert.ok(hard <= 17000, `the longest think: ${hard} ms`);
+    assert.ok(f.api.clutchPaceMs(fen, { from: 'e1', to: 'g1' }, 300, 1500, { book: true }, () => 0.5) < 3000, 'an obvious move stays quick');
+  } finally { f.close(); }
+});

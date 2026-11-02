@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.59.0
+// @version      6.61.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -1964,6 +1964,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .rng { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 4px 0; font-size: 12px; }
     .rng input { grid-column: 1 / -1; width: 100%; accent-color: #f7c045; margin: 0; }
     .rng b { font-weight: 600; color: #f7c045; }
+    .rng b.nolimit { color: #ff3b4e; font-weight: 900; font-style: italic; letter-spacing: .06em; text-transform: uppercase; font-size: 11px;
+      background: linear-gradient(90deg, #ff2d55, #ff7a45, #ff2d55); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 5px rgba(255, 45, 85, .55)); animation: bs-nolimit 2.4s linear infinite; }
+    @keyframes bs-nolimit { to { background-position: -200% 0; } }
+    @media (prefers-reduced-motion: reduce) { .rng b.nolimit { animation: none; } }
     .odds { padding: 8px 0 4px; }
     .odds-bar { position: relative; display: flex; height: 22px; margin: 0 8px; border-radius: 11px; touch-action: none; --a: 60%; --b: 100%; }
     .odds-bar .seg { box-sizing: border-box; display: flex; align-items: baseline; justify-content: center; gap: 4px; overflow: hidden; white-space: nowrap; min-width: 0; font-style: normal; font-variant-numeric: tabular-nums; color: rgba(0,0,0,.72); padding: 0 3px; }
@@ -2277,7 +2282,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       </div>
       <div class="item" data-group="clutch">${row('clutch', 'Clutch', 10)}
         <div class="body flow" style="--i:11">
-          <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0.1" max="60" step="0.1"></label>
+          <label class="rng"><span>Time</span><b data-out="time"></b><input type="range" data-key="time" min="0" max="60" step="0.1"></label>
           <div class="elo-row"><span>Elo</span><input type="number" class="elo-input" data-key="elo" min="0" max="3501" step="1" aria-label="Clutch Elo">
             <div class="sub" data-key="auto" title="Play at the opponent's rating when it can be read, otherwise at the Elo set here (0 and 3501 always apply)"><span>Auto</span><button class="sw" role="switch" type="button" aria-label="Auto Elo"></button></div></div>
           <input type="range" class="elo-range" min="0" max="3501" step="1" aria-label="Clutch Elo slider" title="0: loses on purpose, as fast as it can. 3501: full engine strength, played to win. In between: that rating, with the outcome from the bar below.">
@@ -2322,7 +2327,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     shadow.querySelectorAll('.rng input').forEach(input => {
       const key = input.dataset.key;
       if (document.activeElement !== input && shadow.activeElement !== input) input.value = String(c[key]);
-      shadow.querySelector(`.rng b[data-out="${key}"]`).textContent = c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
+      const out = shadow.querySelector(`.rng b[data-out="${key}"]`);
+      // 0 is "No Limit": Clutch plays the whole game, whatever the clock says
+      out.textContent = key === 'time' && c[key] <= 0 ? 'No Limit' : c[key] >= 60 ? '1 min' : `${c[key].toFixed(1)} s`;
+      out.classList.toggle('nolimit', key === 'time' && c[key] <= 0);
     });
     const oddsBox = shadow.querySelector('.odds');
     if (oddsBox) { if (clutchState.mode) oddsBox.dataset.mode = clutchState.mode; else delete oddsBox.dataset.mode; }
@@ -4111,6 +4119,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return pool.length ? { line: pool[at], full: pool[at].pv[0] === planned } : null;
   }
 
+  // How long a forced mate Witty Alieeeen sees: a mate in three or so; a longer one only very rarely (about one position in
+  // twenty-five). Beyond that he plays on with normal moves (or a sacrifice), as a person who does not see the whole mate.
+  const wittyMateCap = fen => (unitHash(fen + 'wmate') < 0.04 ? 10 : 3);
+
   // How deep a player of this rating looks when a sacrifice catches the eye: about 10 at 800, 13 at 1500, 16 at 2200. A
   // sacrifice that only shows deeper than that is not found, however long the think.
   const wittyDepth = elo => Math.max(8, Math.min(16, Math.round(6 + (elo === undefined ? 1500 : elo) / 220)));
@@ -4492,7 +4504,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return r < win ? 'win' : r < win + draw ? 'draw' : 'lose';
   }
 
-  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0, evalNow = null, expected = null, clock = 99, onIdea = null, debug = null, ideaLines = null, mateAnalyse = null } = {}, elo, analyse) {
+  async function humanAnalyse(fen, { lastMove = null, ms = 300, seen = () => 0, mode = 'win', budget = 1e9, pressure = 0, evalNow = null, expected = null, clock = 99, onIdea = null, debug = null, ideaLines = null, mateAnalyse = null, witty = false } = {}, elo, analyse) {
     // The whole decision is held to a budget: a move that costs the game on time is worth nothing.
     const deadline = Date.now() + budget, left = () => deadline - Date.now();
     // In an ending the play should match or beat what the opponent shows: better when playing to win,
@@ -4548,7 +4560,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // player who knows it carries out from any distance: the reach grows to ten moves, fourteen when a rook or queen faces a bare king.
     // (a weaker player gets there more slowly: the reach grows with the rating)
     const technique = Math.round(Math.min(countPieces(fen) <= 4 ? 14 : 10, Math.max(5, 4 + elo / 150)));
-    const reach = countPieces(fen) <= 6 ? Math.max(p.mateReach, technique) : p.mateReach;
+    let reach = countPieces(fen) <= 6 ? Math.max(p.mateReach, technique) : p.mateReach;
+    if (witty) reach = Math.min(reach, wittyMateCap(fen));
     // (playing for the draw, a simple mate is still delivered (see isSimpleMate); a complex one is left. Playing to lose, no mate is taken.)
     const plainFor = m => mode === 'win' || mode === 'free' ? reach : mode === 'draw' && isSimpleMate(fen, m) ? reach : 0;
     const mateOpts = { mate: reach, depth: 2 * reach + 2, ms: Math.max(40, Math.min(reach > 4 ? 1500 : 220, left() * 0.3)), multipv: 1, fresh: true };
@@ -4720,8 +4733,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const v0 = value(r.line), risk = risks.get(r) - minRisk, gives = mode !== 'lose' && risks.get(r) >= 200 && risk >= 150 && v0 < secondV + 100 && (mode === 'draw' ? true : v0 < 300);
       // losing on purpose, a piece left hanging outright is the painful kind of loss to watch: while the game is not yet clearly
       // lost it is (nearly) never chosen; the way down is the smaller errors that pile up
-      const gift = mode === 'lose' && topValue > -300 && risks.get(r) >= 300 && risk >= 200;
-      r.score = v0 + humanTaste(r.c, p, fen, { winning }) - (gives ? 1500 : 0) - (gift ? 900 : 0) - (v0 < floorV ? 4000 : 0) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (squeeze || mode === 'draw' ? 0.3 : winning && countPieces(fen) <= 6 ? 0.1 : 1))
+      // ...except the losing sacrifice that looks right from one angle: an aggressive move (a check, a capture, a piece landing at
+      // the king) that gives material and that the player's own look (this rating's depth) still rates near the mark, but that
+      // does not hold up all the way through. That is how a real player loses material, and it is the favoured way down.
+      const lure = mode === 'lose' && risks.get(r) >= 200 && (r.c.check || r.c.capture || wittyFlair(fen, r.c.uci, false) >= 1) && unitHash(fen + 'lure') < 0.6;
+      const gift = !lure && mode === 'lose' && topValue > -300 && risks.get(r) >= 300 && risk >= 200;
+      r.lure = lure;
+      r.score = v0 + humanTaste(r.c, p, fen, { winning }) - (gives ? 1500 : 0) - (gift ? 900 : 0) + (lure ? 220 : 0) - (v0 < floorV ? 4000 : 0) + (r.c.forcing ? 0 : (unitHash(fen + 'z' + r.c.uci) - 0.5) * 2 * p.fuzz * (squeeze || mode === 'draw' ? 0.3 : winning && countPieces(fen) <= 6 ? 0.1 : 1))
         - (again && mode === 'win' ? (winning ? 300 : 150) * again : again && mode === 'lose' ? 250 * again : 0)
         + (mode === 'draw' ? drawTaste(r, value(r.line), after, again, elo, target) : 0)
         + (mode === 'lose' && target !== null ? loseTaste(value(r.line), target, after) : 0)
@@ -4771,7 +4789,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (freeTake && (mode === 'win' || mode === 'free' || (mode === 'draw' && target === null))) best = freeTake;
     else if (!squeeze && !(mode === 'draw' && topValue < 20) && rated.length > 1 && unitHash(fen + 'slip' + elo) < slipChance) {
       const okAim = r => { const v = value(r.line); return mode === 'draw' ? v >= floorV : mode === 'win' ? (topValue < 150 || v >= 100) : true; };
-      const fair = rated.filter(r => r.score > -1000 && value(r.line) >= top - slipCap && !(r.c.capture && r.c.net < 0) && okAim(r) && !(mode !== 'lose' ? risks.get(r) >= 200 : topValue > -300 && risks.get(r) >= 300));
+      const fair = rated.filter(r => r.score > -1000 && value(r.line) >= top - slipCap && !(r.c.capture && r.c.net < 0) && okAim(r) && !(mode !== 'lose' ? risks.get(r) >= 200 : topValue > -300 && risks.get(r) >= 300 && !r.lure));
       if (fair.length) best = fair.slice().sort((a, b) => (b.c.salience - a.c.salience) + (mode === 'lose' ? (value(a.line) - value(b.line)) / 150 : 0))[0];
     }
     // Whatever was finally chosen (a slip included) has been looked at from the other side; a move that was never checked is now.
@@ -5177,6 +5195,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // Clutch starts at the Time setting give or take 0.4 s, a new throw each time it disarms, so it never
   // kicks in at exactly the same moment. Once started it stays on until the clock is clearly above it.
   function clutchEngages(state, time, clock, random = Math.random) {
+    if (time <= 0) { state.engaged = true; return true; }   // No Limit: the whole game
     if (clock > time + 0.4) { state.jitter = null; state.engaged = false; return false; }
     if (state.jitter === null || state.jitter === undefined) state.jitter = Math.round((random() * 0.8 - 0.4) * 100) / 100;
     if (!state.engaged && clock <= Math.max(0.1, time + state.jitter)) state.engaged = true;
@@ -5471,16 +5490,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // forced move, more for a hard one; a little quicker at a low rating, a little slower at a high one; hurried when the
   // clock is low. Only the waiting changes: what is played is decided exactly as before. A premove is a premove (made at
   // once) only with the clock under 15 s; with more on it, an obvious move still takes a moment.
-  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false } = {}, random = Math.random) {
+  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false } = {}, random = Math.random) {
     if (!step || clock === null || clock === undefined) return 0;
-    if (premove && clock < 15) return 0;
+    // a premove goes at once with little time left; a fast blitz player (Witty Alieeeen) premoves freely up to half a minute
+    if (premove && clock < (witty ? 30 : 15)) return 0;
     // taking back in an exchange is done at once, premoved or not (nobody stops to think about a recapture)
     if (recapture) return 0;
     const full = +String(fen).split(' ')[5] || 1;
     const left = Math.max(20, 45 - full);
     let forced = false;
     try { forced = new BoardStudioRules.Chess(fen).moves().length === 1; } catch (e) { /* none */ }
-    let kind = forced ? 0.15 : book ? 0.3 : quick ? 0.25 : premove ? 0.4 : step.check ? 0.8 : 1;
+    let kind = forced ? 0.15 : book ? 0.15 : quick ? 0.25 : premove ? 0.4 : step.check ? 0.8 : 1;
     kind *= 1 + 0.35 * Math.max(0, Math.min(3, crit || 0));
     const rating = 0.8 + 0.35 * Math.max(0, Math.min(1, (elo - 600) / 1700));
     // a sacrifice found is weighed for a long while, and the moves that cash it in are not rushed either (if the clock allows)
@@ -5489,10 +5509,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     else if (roomy && follow) kind = Math.max(kind, 1) * 1.8;
     // losing on time: every move takes a little too long, so the clock drains like that of a player who overthinks
     if (slow) kind = Math.max(kind, 0.5) * 1.7;
+    // Witty Alieeeen plays his ordinary moves quickly (the long thinks are for the sacrifices)
+    if (witty && !brilliant && !follow) kind *= 0.75;
     let ms = clock * 1000 / left * kind * rating * (0.55 + 0.9 * random());
     if (clock < 5) ms *= 0.3;
     const cap = roomy && (brilliant || follow) && clock >= 20 ? 0.2 : slow ? 0.18 : 0.12;
-    return Math.round(Math.min(ms, clock * 1000 * cap, (brilliant || follow) && roomy ? 25000 : 15000));
+    return Math.round(Math.min(ms, clock * 1000 * cap, clutchUntimed() ? 17000 : (brilliant || follow) && roomy ? 25000 : 17000));
   }
 
   function clutchPaceLeft(fen, step, clock, elo, opts = {}) {
@@ -5505,6 +5527,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const spent = clutch.turnFen === fen && clutch.turnAt ? Date.now() - clutch.turnAt : 0;
     return Math.max(0, clutch.pace.ms - spent);
   }
+
+  // The clock Clutch plays by: the real one, or with No Limit in a game that has none, five minutes that never run down.
+  const NO_LIMIT_CLOCK = 300;
+  function clutchClock(side = 'own') {
+    const real = readClock(side);
+    if (real !== null || side !== 'own' || !(settings.clutch.time <= 0)) return real;
+    return NO_LIMIT_CLOCK;
+  }
+  const clutchUntimed = () => readClock('own') === null && settings.clutch.time <= 0;
 
   function clutchMoveMs(clock, fen = '', random = Math.random) {
     const full = +String(fen).split(' ')[5] || 15;
@@ -5561,7 +5592,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // after a sacrifice of Witty Alieeeen's, his own line: the next moves are played well above the rating, so what the
       // sacrifice won is not given back
       const eloNow = s.witty && clutch.witAfter > 0 ? Math.min(2600, s.elo + 500) : s.elo;
-      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, evalNow, expected, clock, seen: s.seen, mode: s.mode, onIdea, ideaLines, mateAnalyse: (f, o) => mateEngine.analyse(f, o) }, eloNow, (f, o) => clutchEngine.analyse(f, o));
+      const result = await humanAnalyse(fen, { lastMove: clutch.lastMove, ms: Math.max(100, Math.min(1500, budgetMs * 0.6)), budget: budgetMs, evalNow, expected, clock, seen: s.seen, mode: s.mode, onIdea, ideaLines, witty: !!s.witty, mateAnalyse: (f, o) => mateEngine.analyse(f, o) }, eloNow, (f, o) => clutchEngine.analyse(f, o));
       if (result) clutch.lastValue = result.mate !== undefined ? Math.sign(result.mate) * 5000 : result.cp;
       // A loss is decided: when the position has been lost for a long time and the game still goes on (the other side does not
       // finish it), the loss is brought about on the clock instead.
@@ -5629,6 +5660,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
 
   // From a result to what to do: a mate becomes a plan, anything else one move.
   function clutchDecide(fen, result, s) {
+    // Witty Alieeeen does not see a long forced mate (only very rarely): the moves are chosen as in a won game, not as a mate
+    if (s.witty && result.mate > wittyMateCap(fen) && !s.max) {
+      const lines = (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv.length && !(l.mate > 0 && l.mate <= wittyMateCap(fen)));
+      result = { ...result, mate: undefined, cp: 900, lines: lines.map(l => (l.mate > 0 ? { ...l, mate: undefined, cp: 900 - l.mate } : l)) };
+    }
     if (result.mate > 0 && (s.mode !== 'draw' || isSimpleMate(fen, result)) && result.pv && (result.human || !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2)))) {
       // Witty Alieeeen: a mate that starts with a sacrifice (at most three moves longer) before the quickest one
       if (s.witty && s.mode !== 'draw' && !isSoundSacrifice(fen, result.pv[0])) {
@@ -5975,11 +6011,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // really came (and the prepared answer would not), it is not played: the aim comes before the show.
       if (fixed && s.mode !== 'lose' && materialAtRisk(fen, fixed.uci) >= 300 && !(e && e.step && materialAtRisk(fen, e.step.uci) >= 300)) fixed = null;
       const chosen = fixed || (e && e.step && (e.book || !e.crit) ? e.step : null);
-      const paced = chosen && clutchPaceLeft(fen, chosen, readClock('own'), clutchEloFor(base, readOpponentElo()), { premove: !!fixed, book: !!(e && e.book), slow: clutch.mode === 'lose' && clutch.way === 'time' });
-      if (chosen && !paced && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, readClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
+      const paced = chosen && clutchPaceLeft(fen, chosen, clutchClock('own'), clutchEloFor(base, readOpponentElo()), { premove: !!fixed, book: !!(e && e.book), witty: !!base.witty, slow: clutch.mode === 'lose' && clutch.way === 'time' });
+      if (chosen && !paced && !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, clutchClock('own') || 99, readClock('opp')) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
         if (!fixed && e.plan) clutch.plan = e.plan;
-        clutchMove(board, chosen, own, !!fixed, readClock('own'));
+        clutchMove(board, chosen, own, !!fixed, clutchClock('own'));
         clutchStopBook(); showClutchGhosts(ctl, []);
         setClutch(fixed ? `Clutch: premove ${chosen.from}-${chosen.to} played` : `Clutch: playing ${chosen.from}-${chosen.to}, prepared answer to ${e.reply}`);
         return;
@@ -5988,8 +6024,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Auto plays at the opponent's rating when it can be read; otherwise, and with Auto off, the field's.
     const opponentElo = readOpponentElo();
     const elo = clutchEloFor(base, opponentElo);
-    const clock = readClock('own');
-    if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page'); clutchClear(ctl); return; }
+    const clock = clutchClock('own');
+    if (clock === null) { clutch.acting = false; setClutch('Clutch: no clock found on this page (set Time to No Limit to play anyway)'); clutchClear(ctl); return; }
     if (!clutchEngages(clutch, base.time, clock)) {
       setClutchMode(null);
       clutch.acting = false; clutch.plan = null; clutchStopBook(); shownHand.unhold();
@@ -6014,7 +6050,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const mayPlay = clutchMayPlay();
     const act = (step, premove, note, instant, extra = {}) => {
       if (!mayPlay) { setClutch(`Clutch: ${note} (drawn only, it moves pieces in games against the computer)`); return; }
-      const hold = Math.max(clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock), premove ? 0 : clutchPaceLeft(fen, step, clock, s.elo, { premove: !!instant, book: /opening book|\(Witty\)/.test(note), brilliant: !!extra.brilliant, follow: !!extra.follow, quick: !!extra.quick, slow: clutch.mode === 'lose' && clutch.way === 'time' }));
+      const hold = Math.max(clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock), premove ? 0 : clutchPaceLeft(fen, step, clock, s.elo, { premove: !!instant, book: /opening book|\(Witty\)/.test(note), brilliant: !!extra.brilliant, follow: !!extra.follow, quick: !!extra.quick, witty: !!s.witty, slow: clutch.mode === 'lose' && clutch.way === 'time' }));
       if (hold > 0) {
         // the move decided now is the one played when the wait is over (not decided again)
         if (!clutch.burn || clutch.burn.key !== key) clutch.burn = { key, until: Date.now() + hold, step, premove, note, instant, extra };
@@ -6178,7 +6214,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     bookBuild({
       fen, s, clock, stop: () => !stillTheirMove() || Date.now() - started > 45000,
       analyse: (f, o) => ponderEngine.analyse(f, o),
-      answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode, expected: clutch.lastValue === undefined ? null : clutch.lastValue, clock }, s.elo, (x, y) => ponderEngine.analyse(x, y)) : undefined,
+      answer: s.human ? (f, o) => humanAnalyse(f, { ...o, seen: s.seen, mode: s.mode, witty: !!s.witty, expected: clutch.lastValue === undefined ? null : clutch.lastValue, clock }, s.elo, (x, y) => ponderEngine.analyse(x, y)) : undefined,
       onEntry: (k, entry) => { book.entries.set(k, entry); book.topReply = entry.topReply; refresh(entry); },
       onOptions: (n, list) => { book.total = n; book.options = list; refresh(); },
       onIdeas: list => { if (!book.entries.size && stillTheirMove()) { book.options = list; book.topReply = book.topReply || (list[0] && list[0].uci); refresh(); } },

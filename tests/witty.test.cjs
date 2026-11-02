@@ -153,3 +153,36 @@ test('a sacrifice is found the way the rating finds things: looked at as deep as
     assert.equal(f.api.clutchDecide(fen, strong, { witty: true, mode: 'win', elo: 1700 }).step.uci, 'e6g8', 'a 1700 player sees it, and the safety check agrees');
   } finally { f.close(); }
 });
+
+test('Witty sees a mate in three or so; a long one only very rarely, and then plays on with normal winning moves', async () => {
+  const f = setup();
+  try {
+    const caps = Array.from({ length: 400 }, (_, i) => f.api.wittyMateCap(`8/8/8/8/8/8/8/K6k w - - 0 ${i + 1}`));
+    const rare = caps.filter(c => c > 3).length / caps.length;
+    assert.ok(caps.every(c => c === 3 || c === 10));
+    assert.ok(rare > 0.005 && rare < 0.1, `a long mate seen in ${Math.round(rare * 100)}% of positions`);
+    // a mate in 8 on the board: without the style it is played as a plan, with it the game is just won on
+    const fen = '7k/8/5K2/8/8/8/8/6Q1 w - - 0 7';
+    const capFen = [...Array(200).keys()].map(i => fen.replace(/ 7$/, ' ' + (i + 7))).find(x => f.api.wittyMateCap(x) === 3);
+    const result = { depth: 20, mate: 8, pv: ['g1g2', 'h8h7'], lines: [{ mate: 8, pv: ['g1g2', 'h8h7'], depth: 20 }, { cp: 950, pv: ['g1a7'], depth: 20 }] };
+    assert.ok(f.api.clutchDecide(capFen, result, { mode: 'win' }).plan, 'plain: the mate plan');
+    const w = f.api.clutchDecide(capFen, result, { mode: 'win', witty: true });
+    assert.ok(!w.plan, 'Witty: no mate plan for a mate he would not see');
+    // the human search is asked for short mates only
+    const asked = [];
+    await f.api.humanAnalyse(capFen, { mode: 'win', evalNow: 900, clock: 60, witty: true }, 1500, async (x, o) => { if (o.mate) asked.push(o.mate); return { depth: 8, cp: 900, pv: ['g1g2'], lines: [{ depth: 8, cp: 900, pv: ['g1g2'] }] }; });
+    assert.ok(asked.length && asked.every(m => m <= 3), `mate searches: ${asked}`);
+  } finally { f.close(); }
+});
+
+test('Witty plays ordinary moves quicker and premoves freely up to half a minute', () => {
+  const f = setup();
+  try {
+    const half = () => 0.5, st = { from: 'e2', to: 'e4' }, fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 12';
+    const plain = f.api.clutchPaceMs(fen, st, 60, 1500, {}, half), witty = f.api.clutchPaceMs(fen, st, 60, 1500, { witty: true }, half);
+    assert.ok(witty < plain * 0.8, `quicker: ${witty} vs ${plain}`);
+    assert.equal(f.api.clutchPaceMs(fen, st, 25, 1500, { premove: true, witty: true }, half), 0, 'a premove at 25 s goes at once');
+    assert.ok(f.api.clutchPaceMs(fen, st, 25, 1500, { premove: true }, half) > 0, 'without the style it takes a moment');
+    assert.ok(f.api.clutchPaceMs(fen, st, 60, 1500, { witty: true, brilliant: true }, half) > plain * 2, 'a sacrifice still gets its long think');
+  } finally { f.close(); }
+});

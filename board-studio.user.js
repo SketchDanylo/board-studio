@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.69.0
+// @version      6.69.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -6725,9 +6725,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const all = [...document.querySelectorAll('button, a[role="button"]')].filter(visible);
     const label = el => (el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g, ' ').trim();
     const same = all.filter(el => /^New \d+(\.\d+)? ?(min|sec|s|m)\b/i.test(label(el)) || /^New \d+ ?\| ?\d+/i.test(label(el)));
-    const other = all.filter(el => /^(New Game|Rematch|Play Again|New Bot Game|Play)$/i.test(label(el)));
-    // of several "Play" buttons the setup's start button is the last (the first is the site menu)
-    return { same, other: other.reverse() };
+    // the one that starts a game first (the setup's Play, the last of them: the first is the site menu), then the ones that lead to it
+    const rank = t => ['play', 'rematch', 'play again', 'new bot game', 'new game'].indexOf(t.toLowerCase());
+    const other = all.filter(el => rank(label(el)) >= 0).reverse().sort((a, b) => rank(label(a)) - rank(label(b)));
+    return { same, other };
   }
   // Is there a game on? (ours, not over)
   function loopGameOn(board) {
@@ -6744,7 +6745,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   function loopTick(random = Math.random) {
     if (!settings.clutch.loop || !LOOP_PAGE.test(location.pathname) || review.open) { loop.at = 0; loop.stage = 0; return; }
     const board = document.querySelector('wc-chess-board, chess-board');
-    if (loopGameOn(board)) { if (loop.stage) setClutch('Loop Games: a new game is on'); loop.at = 0; loop.stage = 0; return; }
+    if (loopGameOn(board)) { if (loop.stage) setClutch('Loop Games: a new game is on'); loop.at = 0; loop.stage = 0; loop.bClicks = 0; return; }
     const now = Date.now();
     if (!loop.at) {
       loop.at = now + Math.round(random() * 20000); loop.stage = 0;
@@ -6760,14 +6761,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (same.length) { click(same[0]); setClutch(`Loop Games: ${same[0].getAttribute('aria-label') || same[0].textContent.trim()}`); return; }
     }
     if (loop.stage === 1) {
-      // plan B: close the game-over window and use another new-game button
-      loop.stage = 2; loop.checkAt = now + 8000;
-      const modal = document.querySelector('.game-over-modal-shell-container');
-      const close = modal && modal.closest('.board-modal-component')?.querySelector('.cc-close-button-component, [aria-label="Close"]');
-      if (close) click(close);
-      const again = loopButtons();
-      const pick = again.same[0] || again.other[0];
-      if (pick) { click(pick); setClutch(`Loop Games: backup, ${pick.getAttribute('aria-label') || pick.textContent.trim()}`); return; }
+      // plan B: close the game-over window and go through the other new-game buttons (New Game, then the setup's Play),
+      // a click every 2.5 s, up to four
+      loop.bClicks = (loop.bClicks || 0) + 1;
+      if (loop.bClicks > 4) { loop.stage = 2; loop.bClicks = 0; }
+      else {
+        loop.checkAt = now + 2500;
+        const modal = document.querySelector('.game-over-modal-shell-container');
+        const close = modal && modal.closest('.board-modal-component')?.querySelector('.cc-close-button-component, [aria-label="Close"]');
+        if (close) click(close);
+        const again = loopButtons();
+        const pick = again.same[0] || again.other[0];
+        if (pick) click(pick);
+        setClutch(`Loop Games: backup, ${pick ? (pick.getAttribute('aria-label') || pick.textContent.trim()) : 'looking for a button'}`);
+        return;
+      }
     }
     if (loop.stage === 2) {
       // plan C: a fresh bot page (after it loads, the setup's Play starts the game: plan B there)
@@ -6778,7 +6786,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       return;
     }
     // nothing worked this round: wait and start over
-    loop.at = now + 5000; loop.stage = 0; loop.checkAt = 0;
+    loop.at = now + 5000; loop.stage = 0; loop.checkAt = 0; loop.bClicks = 0;
   }
   // after plan C the fresh page starts its game soon, not after another long wait
   try { if (sessionStorage.getItem('bs-loop-fresh')) { sessionStorage.removeItem('bs-loop-fresh'); loop.at = Date.now() + 2500; loop.stage = 1; } } catch (e) { /* none */ }

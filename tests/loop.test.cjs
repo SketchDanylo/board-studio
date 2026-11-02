@@ -37,6 +37,13 @@ test('Loop Games: after a bot game, chess.com\'s "New 1 min" is pressed after a 
     f.api.loop.checkAt = 0;
     f.api.loopTick();
     assert.deepEqual(clicks, ['new 1 min', 'rematch'], 'plan B');
+    // on the setup page: New Game opens it, then its Play starts the game (Play is preferred once it is there)
+    rematch.remove();
+    const ng = doc.createElement('button'); ng.textContent = 'New Game'; doc.body.appendChild(ng);
+    ng.addEventListener('click', () => { clicks.push('new game'); const play = doc.createElement('button'); play.textContent = 'Play'; play.addEventListener('click', () => clicks.push('play')); doc.body.appendChild(play); });
+    f.api.loop.checkAt = 0; f.api.loopTick();
+    f.api.loop.checkAt = 0; f.api.loopTick();
+    assert.deepEqual(clicks.slice(2), ['new game', 'play']);
     // a new game on: the loop rests
     modal.remove(); board.game.getFEN = () => 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     f.api.loopTick();

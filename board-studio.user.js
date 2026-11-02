@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.68.0
+// @version      6.69.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -91,7 +91,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Clutch: from `time` seconds on your clock down, the engine takes over, playing at `elo`
     // (with `auto` the opponent's rating). Everything else (what counts as winning, how deep to look,
     // how much clock a deep search may cost) it works out itself.
-    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40, mouse: false, witty: false, gobble: false },
+    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40, mouse: false, witty: false, gobble: false, loop: false },
     global: { on: true }
   };
 
@@ -2290,6 +2290,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <div class="sub" data-key="mouse" title="Shows Clutch's hand as a second mouse pointer: how it goes to a piece, picks it up, carries it and lets go, and the premove it holds ready. Its speed is clutchDPI at the top of the script."><span>Show Mouse</span><button class="sw" role="switch" type="button" aria-label="Show Mouse"></button></div>
           <div class="sub" data-key="witty" title="Plays like Witty_Alien: his gambits (Alien, Martian, Elephant, Englund) where the rating leaves room for them, and the sacrifice or the move that tears the king open rather than the plain best move, a mate with a sacrifice rather than the quickest. Never at the cost of the outcome Clutch plays for."><span>Witty Alieeeen</span><button class="sw" role="switch" type="button" aria-label="Witty Alieeeen"></button></div>
           <div class="sub" data-key="gobble" title="Greedy and quick: takes the material it likes (pieces before pawns) whenever the outcome Clutch plays for allows it, premoves a lot and plays fast, fastest in the endgame. With Witty Alieeeen on as well, Witty leads until the endgame; in the endgame Gobble takes over."><span>Gobble</span><button class="sw" role="switch" type="button" aria-label="Gobble"></button></div>
+          <div class="sub" data-key="loop" title="Games against the computer only: when a game ends, a new one is started after a random 0 to 20 seconds (chess.com's own New game button; if that is not there, the other new-game buttons, then a fresh setup page)."><span>Loop Games</span><button class="sw" role="switch" type="button" aria-label="Loop Games"></button></div>
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
           </div>
@@ -6710,6 +6711,78 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     });
   }
   setInterval(clutchTick, 200);
+
+  // ---------- Loop Games ----------
+
+  // Games against the computer only (the bot page and a finished bot game's page): when a game has ended, a new one is
+  // started after a random wait of 0 to 20 seconds. Plan A is chess.com's own button for the same time control ("New 1 min"),
+  // plan B the other new-game buttons (New Game, Rematch, Play Again, the setup's Play), plan C a fresh bot page, where
+  // the setup's Play button starts the game. Nothing is done while a game is on, or while the Fake Review is open.
+  const LOOP_PAGE = /^\/(play|game)\/computer\b/;
+  const loop = { at: 0, stage: 0, key: null, checkAt: 0 };
+  const visible = el => !!el && el.getClientRects().length > 0 && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+  function loopButtons() {
+    const all = [...document.querySelectorAll('button, a[role="button"]')].filter(visible);
+    const label = el => (el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g, ' ').trim();
+    const same = all.filter(el => /^New \d+(\.\d+)? ?(min|sec|s|m)\b/i.test(label(el)) || /^New \d+ ?\| ?\d+/i.test(label(el)));
+    const other = all.filter(el => /^(New Game|Rematch|Play Again|New Bot Game|Play)$/i.test(label(el)));
+    // of several "Play" buttons the setup's start button is the last (the first is the site menu)
+    return { same, other: other.reverse() };
+  }
+  // Is there a game on? (ours, not over)
+  function loopGameOn(board) {
+    try {
+      if (document.querySelector('.game-over-modal-shell-container, .game-over-modal-content')) return false;
+      const playing = board && board.game && board.game.getPlayingAs && board.game.getPlayingAs();
+      if (!playing) return false;
+      const g = new BoardStudioRules.Chess(board.game.getFEN());
+      if (g.isGameOver()) return false;
+      // the game-over controls are up (a new-game button for this time control) though the window was closed
+      return !loopButtons().same.length;
+    } catch (e) { return false; }
+  }
+  function loopTick(random = Math.random) {
+    if (!settings.clutch.loop || !LOOP_PAGE.test(location.pathname) || review.open) { loop.at = 0; loop.stage = 0; return; }
+    const board = document.querySelector('wc-chess-board, chess-board');
+    if (loopGameOn(board)) { if (loop.stage) setClutch('Loop Games: a new game is on'); loop.at = 0; loop.stage = 0; return; }
+    const now = Date.now();
+    if (!loop.at) {
+      loop.at = now + Math.round(random() * 20000); loop.stage = 0;
+      setClutch(`Loop Games: next game in ${Math.round((loop.at - now) / 1000)} s`);
+      return;
+    }
+    if (now < loop.at || now < loop.checkAt) return;
+    const click = el => { try { el.click(); } catch (e) { /* gone */ } };
+    const { same, other } = loopButtons();
+    if (loop.stage === 0) {
+      // plan A: the same time control again
+      loop.stage = 1; loop.checkAt = now + 6000;
+      if (same.length) { click(same[0]); setClutch(`Loop Games: ${same[0].getAttribute('aria-label') || same[0].textContent.trim()}`); return; }
+    }
+    if (loop.stage === 1) {
+      // plan B: close the game-over window and use another new-game button
+      loop.stage = 2; loop.checkAt = now + 8000;
+      const modal = document.querySelector('.game-over-modal-shell-container');
+      const close = modal && modal.closest('.board-modal-component')?.querySelector('.cc-close-button-component, [aria-label="Close"]');
+      if (close) click(close);
+      const again = loopButtons();
+      const pick = again.same[0] || again.other[0];
+      if (pick) { click(pick); setClutch(`Loop Games: backup, ${pick.getAttribute('aria-label') || pick.textContent.trim()}`); return; }
+    }
+    if (loop.stage === 2) {
+      // plan C: a fresh bot page (after it loads, the setup's Play starts the game: plan B there)
+      loop.stage = 3; loop.checkAt = now + 15000;
+      setClutch('Loop Games: no new-game button found, opening a fresh bot page');
+      try { sessionStorage.setItem('bs-loop-fresh', '1'); } catch (e) { /* none */ }
+      location.assign('/play/computer');
+      return;
+    }
+    // nothing worked this round: wait and start over
+    loop.at = now + 5000; loop.stage = 0; loop.checkAt = 0;
+  }
+  // after plan C the fresh page starts its game soon, not after another long wait
+  try { if (sessionStorage.getItem('bs-loop-fresh')) { sessionStorage.removeItem('bs-loop-fresh'); loop.at = Date.now() + 2500; loop.stage = 1; } } catch (e) { /* none */ }
+  setInterval(loopTick, 500);
   listeners.add(() => { if (!settings.clutch.mouse || !settings.clutch.on) shownHand.reset(); });
 
   // ---------- rate moves ----------

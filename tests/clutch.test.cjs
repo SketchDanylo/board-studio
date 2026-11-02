@@ -1080,7 +1080,7 @@ test('premoves are only used where chess.com has them, and cancelling goes throu
 test('the settings are the trigger time and the Elo (with Auto); the rest is worked out from the position and the clock', () => {
   const f = setup();
   try {
-    assert.equal(Object.keys(f.api.settings.clutch).sort().join(), 'auto,draw,elo,gobble,mouse,on,time,win,witty');
+    assert.equal(Object.keys(f.api.settings.clutch).sort().join(), 'auto,draw,elo,gobble,loop,mouse,on,time,win,witty');
     assert.equal(f.api.settings.clutch.auto, true, 'Auto is the default');
     const p = f.api.clutchParams;
     const base = { on: true, time: 10 };

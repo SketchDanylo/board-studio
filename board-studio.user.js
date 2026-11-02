@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.61.0
+// @version      6.62.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4128,14 +4128,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   const wittyDepth = elo => Math.max(8, Math.min(16, Math.round(6 + (elo === undefined ? 1500 : elo) / 220)));
 
   // Does a style move keep the outcome the plain move holds? Values from the mover's side.
-  function wittyKeeps(mode, base, alt) {
+  function wittyKeeps(mode, base, alt, bold = false) {
     if (!alt || !base) return false;
-    if (base.mate !== undefined && base.mate > 0) return alt.mate !== undefined && alt.mate > 0 && alt.mate <= base.mate + 3;
+    if (base.mate !== undefined && base.mate > 0) return alt.mate !== undefined && alt.mate > 0 && alt.mate <= base.mate + (bold ? 5 : 3);
     if (alt.mate !== undefined) return alt.mate > 0 && mode !== 'draw';
     if (base.mate !== undefined) return false;                 // already being mated: no style, only defence
     if (mode === 'lose') return false;
     if (mode === 'draw') return Math.abs(alt.cp - base.cp) <= 50 && alt.cp >= -60 && alt.cp <= Math.max(base.cp, 150);
     // to win: little given up, and a win that was safe stays safe
+    // (bold, at full strength: up to two pawns, three when far ahead, and never below +3 once there: still a demolition)
+    if (bold) {
+      if (alt.cp < base.cp - (base.cp >= 500 ? 300 : 200)) return false;
+      if (base.cp >= 300 && alt.cp < 300) return false;
+      return alt.cp >= Math.min(base.cp, 150);
+    }
     if (alt.cp < base.cp - (base.cp >= 400 ? 120 : 60)) return false;
     if (base.cp >= 250 && alt.cp < 250) return false;
     return true;
@@ -4150,7 +4156,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const own = wittyFlair(fen, base.pv[0], deep(base));
     let best = null;
     for (const l of lines) {
-      if (!l || !l.pv || !l.pv[0] || l.pv[0] === base.pv[0] || !wittyKeeps(s.mode || 'win', base, l)) continue;
+      // bold (full strength) only for a real sacrifice: a check or a move at the king is held to the strict margin, or the
+      // engine's edge drains away into moves that only look sharp (measured: 3 of 4 games lost before this)
+      if (!l || !l.pv || !l.pv[0] || l.pv[0] === base.pv[0]) continue;
+      const bold = !!s.max && l.mate === undefined && isSoundSacrifice(fen, l.pv[0]);
+      if (!wittyKeeps(s.mode || 'win', base, l, bold || (!!s.max && l.mate !== undefined))) continue;
+      // at full strength the style is the sacrifice: a move that only looks sharp is not played over the engine's own
+      if (s.max && !bold && !(l.mate > 0 && isSoundSacrifice(fen, l.pv[0]))) continue;
       // no style move that walks back into a position already seen (no flourish in a shuffle)
       const st = stepFor(fen, l.pv[0]);
       if (!st || (s.seen && s.seen(st.fen) > 0)) continue;
@@ -5570,7 +5582,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (s.max) {
       const ms = clutchMaxMs(clock);
       setClutch(`Clutch: full strength, thinking ${(ms / 1000).toFixed(1)} s`);
-      return clutchEngine.analyse(fen, { depth: 40, ms, multipv: 1, onInfo: lines => onIdea(lines.filter(l => l && l.pv && l.pv[0]).map(l => ({ uci: l.pv[0], pv: l.pv, cp: l.cp }))) });
+      const main = await clutchEngine.analyse(fen, { depth: 40, ms, multipv: 1, onInfo: lines => onIdea(lines.filter(l => l && l.pv && l.pv[0]).map(l => ({ uci: l.pv[0], pv: l.pv, cp: l.cp }))) });
+      return s.witty ? wittyScan(fen, main, ms) : main;
     }
     const pieces = countPieces(fen), budget = clutchBudget(clock, pieces, s);
     // When the opponent is lower on time than we are and we are not winning, speed matters more.
@@ -5658,6 +5671,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return { ...result, lines: lines.map(swap), wittyChecked: sac.pv[0] };
   }
 
+  // Witty Alieeeen at full strength: the engine's own move is searched exactly as without the style (so the play is as strong),
+  // then a quick scan for sacrifices, and the best-looking one is searched at full depth against the engine's move. The
+  // result carries both, at the same depth, so the decision can take the sacrifice when it keeps the game crushing.
+  async function wittyScan(fen, main, ms) {
+    if (!main || !main.pv || !main.pv[0]) return main;
+    const scan = await clutchEngine.analyse(fen, { depth: 12, ms: Math.max(150, Math.min(500, ms * 0.4)), multipv: 6 });
+    const sacs = (scan && scan.lines ? scan.lines : []).filter(l => l && l.pv && l.pv[0] && l.pv[0] !== main.pv[0] && !(l.mate < 0) && isSoundSacrifice(fen, l.pv[0]));
+    if (!sacs.length) return main;
+    const check = await clutchEngine.analyse(fen, { depth: 40, ms: Math.max(300, Math.min(ms, 4000)), multipv: 2, searchMoves: [sacs[0].pv[0], main.pv[0]] });
+    const lines = check && check.lines ? check.lines.filter(l => l && l.pv && l.pv[0]) : [];
+    if (lines.length < 2) return main;
+    const best = lines.find(l => l.pv[0] === main.pv[0]) || lines[0];
+    return { ...main, lines: [best, ...lines.filter(l => l !== best)] };
+  }
+
   // From a result to what to do: a mate becomes a plan, anything else one move.
   function clutchDecide(fen, result, s) {
     // Witty Alieeeen does not see a long forced mate (only very rarely): the moves are chosen as in a won game, not as a mate
@@ -5668,7 +5696,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (result.mate > 0 && (s.mode !== 'draw' || isSimpleMate(fen, result)) && result.pv && (result.human || !(s.strength && s.strength.limited && result.mate > Math.ceil(s.strength.depthCap / 2)))) {
       // Witty Alieeeen: a mate that starts with a sacrifice (at most three moves longer) before the quickest one
       if (s.witty && s.mode !== 'draw' && !isSoundSacrifice(fen, result.pv[0])) {
-        const brilliant = (result.lines || []).find(l => l && l.pv && l.pv[0] && l.mate > 0 && l.mate <= result.mate + 3 && isSoundSacrifice(fen, l.pv[0]));
+        const brilliant = (result.lines || []).find(l => l && l.pv && l.pv[0] && l.mate > 0 && l.mate <= result.mate + (s.max ? 5 : 3) && isSoundSacrifice(fen, l.pv[0]));
         if (brilliant) {
           const line = mateLine(fen, brilliant.pv);
           if (line[0] && line[0].ours) return { plan: { start: fen, line, witty: true }, step: line[0], witty: true, brilliant: true, note: `Witty: mate in ${brilliant.mate} with a sacrifice (depth ${result.depth})` };

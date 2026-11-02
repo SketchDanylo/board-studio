@@ -186,3 +186,22 @@ test('Witty plays ordinary moves quicker and premoves freely up to half a minute
     assert.ok(f.api.clutchPaceMs(fen, st, 60, 1500, { witty: true, brilliant: true }, half) > plain * 2, 'a sacrifice still gets its long think');
   } finally { f.close(); }
 });
+
+test('at full strength Witty is bold: a sacrifice may give up two or three pawns of the margin, never the demolition', () => {
+  const f = setup();
+  try {
+    const k = f.api.wittyKeeps;
+    assert.equal(k('win', { cp: 600 }, { cp: 380 }), false, 'normally that is too much');
+    assert.equal(k('win', { cp: 600 }, { cp: 380 }, true), true, 'bold: fine, still crushing');
+    assert.equal(k('win', { cp: 600 }, { cp: 280 }, true), false, 'but never below +3 once there');
+    assert.equal(k('win', { cp: 280 }, { cp: 160 }, true), true, 'from a smaller edge, still clearly ahead after it');
+    assert.equal(k('win', { cp: 200 }, { cp: 20 }, true), false, 'never into a level game (+1.5 at least)');
+    assert.equal(k('win', { mate: 2 }, { mate: 7 }, true), true, 'a mate up to five moves longer, if it starts with a sacrifice');
+    assert.equal(k('win', { mate: 2 }, { mate: 8 }, true), false);
+    // the choice at full strength: the sacrifice line wins
+    const fen = 'q4r1k/6pp/4Q2N/8/8/8/8/6K1 w - - 0 1';
+    const lines = [{ pv: ['h6f7'], cp: 700, depth: 30 }, { pv: ['e6g8'], cp: 450, depth: 30 }];
+    assert.equal(f.api.wittyChoose(fen, lines, { witty: true, mode: 'win', max: true }, 'h6f7').line.pv[0], 'e6g8');
+    assert.equal(f.api.wittyChoose(fen, lines, { witty: true, mode: 'win' }, 'h6f7'), null, 'below full strength it is too much');
+  } finally { f.close(); }
+});

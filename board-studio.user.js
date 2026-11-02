@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.63.0
+// @version      6.64.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5075,22 +5075,64 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.later(() => { cancelAnimationFrame(this.frame); this.place(x, y); }, ms + 30);
     },
     later(fn, ms) { this.timers.push(setTimeout(fn, ms)); },
-    clearTimers() { this.timers.forEach(clearTimeout); this.timers = []; cancelAnimationFrame(this.frame); },
+    clearTimers() { this.timers.forEach(clearTimeout); this.timers = []; cancelAnimationFrame(this.frame); if (this.sel) { this.sel.remove(); this.sel = null; } },
     show() { this.ensure(); clearTimeout(this.hideTimer); this.el.classList.add('on'); },
     // fades out once Clutch's hand has been idle a while, but only when Clutch is not playing (while it plays the hand stays,
     // resting and drifting over the board like a hand waiting for its turn)
     idle(ms = 2600) { clearTimeout(this.hideTimer); this.hideTimer = setTimeout(() => { if (!this.held && this.el && !clutch.acting) this.el.classList.remove('on'); }, ms); },
-    // While it waits: now and then a slow, small move over the board (towards its own side, a piece it might play), never a jump.
+    // While it waits: it fidgets the way Hikaru does, clicking its own pieces (a quick tap, sometimes two, on the piece
+    // it is thinking of moving more than any other), and in between a slow, small move over the board. Never a jump.
+    // Only drawn: nothing is clicked on the real board.
     drift(board) {
       if (!settings.clutch.mouse || !board || this.held || Date.now() < (this.busyUntil || 0) || Date.now() < (this.nextDrift || 0)) return;
-      this.nextDrift = Date.now() + 1400 + Math.random() * 2200;
+      this.nextDrift = Date.now() + 700 + Math.random() * 1600;
       const r = board.getBoundingClientRect(), size = r.width / 8;
       this.show();
       if (this.x === null) { this.place(r.left + r.width / 2, r.top + r.height * 0.75); return; }
+      const target = Math.random() < 0.7 ? this.pickPiece(board) : null;
+      if (target) { this.tap(board, target); return; }
       // a little way from where it is, kept over the board, more often over the lower (own) half
       const nx = Math.max(r.left + size * 0.5, Math.min(r.right - size * 0.5, this.x + (Math.random() - 0.5) * size * 2.4));
       const ny = Math.max(r.top + size * 0.5, Math.min(r.bottom - size * 0.5, this.y + (Math.random() - 0.35) * size * 1.8));
       this.glide(nx, ny, 700 + Math.random() * 900);
+    },
+    // One of its own pieces to click: pieces more than pawns, near ones more than far ones, and on its own turn the
+    // piece it has decided to move most of all.
+    pickPiece(board, random = Math.random) {
+      try {
+        const own = ownColor(board);
+        if (!own) return null;
+        const game = new BoardStudioRules.Chess(board.game.getFEN());
+        const mine = game.fen().split(' ')[1] === own, decided = mine && clutch.burn && clutch.burn.step ? clutch.burn.step.from : null;
+        const size = board.getBoundingClientRect().width / 8 || 1;
+        const pool = game.board().flat().filter(p => p && p.color === own).map(p => {
+          const at = this.point(board, p.square), d = Math.hypot(at.x - this.x, at.y - this.y) / size;
+          return { sq: p.square, w: (p.square === decided ? 14 : p.type === 'p' ? 1 : p.type === 'k' ? 0.5 : 3) / (1 + d / 3) };
+        });
+        let roll = random() * pool.reduce((t, p) => t + p.w, 0);
+        for (const p of pool) { roll -= p.w; if (roll <= 0) return p.sq; }
+        return pool.length ? pool[pool.length - 1].sq : null;
+      } catch (e) { return null; }
+    },
+    // A quick click on a square: to it, a tap (the piece shows selected for a moment), now and then a second tap.
+    tap(board, sq) {
+      const p = this.point(board, sq), d = Math.hypot(p.x - this.x, p.y - this.y);
+      const ms = Math.round((140 + 55 * Math.log2(d / p.size + 1)) * (0.8 + 0.4 * Math.random()) * handScale());
+      const twice = Math.random() < 0.3;
+      this.busyUntil = Date.now() + ms + (twice ? 520 : 320);
+      this.glide(p.x + (Math.random() - 0.5) * p.size * 0.3, p.y + (Math.random() - 0.5) * p.size * 0.3, ms);
+      const click = () => {
+        this.el.classList.add('grab'); this.pulse();
+        this.later(() => this.el.classList.remove('grab'), 70 + Math.random() * 60);
+      };
+      this.later(() => {
+        click();
+        if (this.sel) this.sel.remove();
+        const sel = this.sel = boardSquareEl(board, sq, 'bs-hand-sel');
+        // the second tap puts the piece down again; one tap leaves it selected a little longer
+        this.later(() => { if (this.sel === sel) { sel.remove(); this.sel = null; } }, twice ? 200 : 380 + Math.random() * 300);
+        if (twice) this.later(click, 190);
+      }, ms);
     },
     pulse() { this.el.classList.remove('pulse'); void this.el.offsetWidth; this.el.classList.add('pulse'); },
     // Picks up the piece standing on sq: its picture rides under the hand, the piece itself fades on its square.
@@ -5699,72 +5741,169 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return { ...main, lines: [best, ...lines.filter(l => l !== best)] };
   }
 
-  // The arrows Witty Alieeeen draws while he plays, as a streamer does: after a move of a bishop, rook or queen, the pin it
-  // makes (through the pinned piece to what stands behind), or else the long open line it now holds (four squares or more);
-  // and the move the plan has next when it puts a bishop or queen on a long diagonal. [{ uci, color }] (from-to as uci).
-  const WITTY_ARROW = '#ff9f1a', WITTY_PLAN = '#f7c045';
-  function wittyArrowsFor(fen, uci, pv = null) {
-    const out = [];
+  // What Witty Alieeeen draws while he plays, the way he marks up the board on stream: arrows for the pin a move makes
+  // (and the pinned piece in red), the check, the piece the move goes after, the long open lines his bishops, rooks and
+  // queen hold (towards the king first), the moves his plan has next (a knight's outpost in green, a pawn storm), and the
+  // squares around their king that his pieces already hit, in red. { arrows: [{ uci, color, kind }], squares: [{ sq, color, kind }] }.
+  const WITTY_ARROW = '#ff9f1a', WITTY_PLAN = '#f7c045', WITTY_THREAT = '#e8584a';
+  const WITTY_RED = 'rgb(235, 97, 80)', WITTY_GREEN = 'rgb(172, 206, 89)';
+  function wittyMarksFor(fen, uci, pv = null) {
+    const arrows = [], squares = [];
+    const arrow = (from, to, color, kind) => { if (from !== to && !arrows.some(a => a.uci === from + to)) arrows.push({ uci: from + to, color, kind }); };
+    const square = (sq, color, kind) => { if (!squares.some(x => x.sq === sq)) squares.push({ sq, color, kind }); };
     try {
       const game = new BoardStudioRules.Chess(fen);
       const move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || 'q' });
-      if (!move) return out;
-      const us = move.color, rays = { b: [[1, 1], [1, -1], [-1, 1], [-1, -1]], r: [[1, 0], [-1, 0], [0, 1], [0, -1]] };
+      if (!move) return { arrows, squares };
+      const us = move.color, them = us === 'w' ? 'b' : 'w', forward = us === 'w' ? 1 : -1;
+      const rays = { b: [[1, 1], [1, -1], [-1, 1], [-1, -1]], r: [[1, 0], [-1, 0], [0, 1], [0, -1]] };
       rays.q = [...rays.b, ...rays.r];
       const sq = (f, r) => String.fromCharCode(97 + f) + (r + 1);
       const at = (f, r) => game.get(sq(f, r));
+      const fileOf = s => s.charCodeAt(0) - 97, rankOf = s => +s[1] - 1;
+      const king = game.findPiece({ type: 'k', color: them })[0];
+      const nearKing = (f, r) => king && Math.abs(f - fileOf(king)) <= 1 && Math.abs(r - rankOf(king)) <= 1;
       const lines = (from, type) => (rays[type] || []).map(([df, dr]) => {
-        const path = []; let f = from.charCodeAt(0) - 97 + df, r = +from[1] - 1 + dr;
+        const path = []; let f = fileOf(from) + df, r = rankOf(from) + dr;
         while (f >= 0 && f < 8 && r >= 0 && r < 8) { path.push({ f, r, p: at(f, r) }); if (path[path.length - 1].p) break; f += df; r += dr; }
         return { df, dr, path };
       });
+      // the best open line a piece holds: long, forward, and better still when it runs at their king
+      const bestLine = (from, type, min) => lines(from, type).map(l => {
+        const empty = l.path.filter(x => !x.p).length, end = l.path[l.path.length - 1];
+        const reach = end && end.p && end.p.color !== us ? l.path.length : empty;   // a line that ends on their piece reaches it
+        const hitsKing = l.path.some(x => nearKing(x.f, x.r));
+        return { reach, hitsKing, back: l.dr === -forward, end: reach === l.path.length ? end : l.path[empty - 1], score: reach + (l.dr === forward ? 1.5 : 0) + (hitsKing ? 2 : 0) };
+      }).filter(x => x.end && (!x.back || x.hitsKing) && (x.reach >= min || (x.hitsKing && x.reach >= 3))).sort((a, b) => b.score - a.score)[0];
+
+      // 1. the move itself: a pin, a check, the piece it goes after, or the line it now holds
+      let pinned = false;
       if (/[brq]/.test(move.piece)) {
-        // a pin: the first piece on the line theirs, and behind it (past empty squares) a bigger one of theirs, or the king
         for (const { df, dr, path } of lines(move.to, move.piece)) {
           const first = path[path.length - 1];
           if (!first || !first.p || first.p.color === us) continue;
           let f = first.f + df, r = first.r + dr, behind = null;
           while (f >= 0 && f < 8 && r >= 0 && r < 8) { const p = at(f, r); if (p) { behind = { f, r, p }; break; } f += df; r += dr; }
           if (behind && behind.p.color !== us && (behind.p.type === 'k' || SAC_VALUE[behind.p.type] > SAC_VALUE[first.p.type])) {
-            out.push({ uci: move.to + sq(behind.f, behind.r), color: WITTY_ARROW, kind: 'pin' });
+            arrow(move.to, sq(behind.f, behind.r), WITTY_ARROW, 'pin');
+            square(sq(first.f, first.r), WITTY_RED, 'pinned');
+            pinned = true;
             break;
           }
         }
-        // else the longest open line it holds now, towards their side if it can
-        if (!out.length) {
-          const forward = us === 'w' ? 1 : -1;
-          const best = lines(move.to, move.piece).map(l => {
-            const empty = l.path.filter(x => !x.p).length, end = l.path[l.path.length - 1];
-            const reach = end && end.p && end.p.color !== us ? l.path.length : empty;   // a line that ends on their piece reaches it
-            return { l, reach, end: reach === l.path.length ? end : l.path[empty - 1], score: reach + (l.dr === forward ? 1.5 : 0) };
-          }).filter(x => x.reach >= 4 && x.end).sort((a, b) => b.score - a.score)[0];
-          if (best) out.push({ uci: move.to + sq(best.end.f, best.end.r), color: WITTY_ARROW, kind: 'line' });
+      }
+      if (game.inCheck() && king && game.attackers(king, us).includes(move.to)) arrow(move.to, king, WITTY_THREAT, 'check');
+      if (!game.inCheck()) {
+        // the piece the move goes after: worth more than the mover, or left with no defender
+        const prey = game.board().flat().filter(p => p && p.color === them && p.type !== 'k' && p.type !== 'p')
+          .filter(p => game.attackers(p.square, us).includes(move.to))
+          .filter(p => SAC_VALUE[p.type] > SAC_VALUE[move.piece] || !game.attackers(p.square, them).length)
+          .sort((a, b) => SAC_VALUE[b.type] - SAC_VALUE[a.type])[0];
+        if (prey) { arrow(move.to, prey.square, WITTY_THREAT, 'threat'); square(prey.square, WITTY_RED, 'target'); }
+        // else the weak spot next to their king it hits (the f7 a knight on g5 eyes), when nothing but the king guards it
+        else if (king && move.piece !== 'k') {
+          const spot = game.board().flat().filter(p => p && p.color === them && p.type === 'p' && nearKing(fileOf(p.square), rankOf(p.square)))
+            .filter(p => game.attackers(p.square, us).includes(move.to) && game.attackers(p.square, them).every(a => a === king))[0];
+          if (spot) { arrow(move.to, spot.square, WITTY_THREAT, 'attack'); square(spot.square, WITTY_RED, 'target'); }
         }
       }
-      // the plan: our next move in the line, when it puts a bishop or queen on a long diagonal
-      if (pv && pv[2] && pv[0] && pv[0].slice(0, 4) === uci.slice(0, 4)) {
-        const theirs = pv[1] && game.move({ from: pv[1].slice(0, 2), to: pv[1].slice(2, 4), promotion: pv[1][4] || 'q' });
-        const next = theirs && game.move({ from: pv[2].slice(0, 2), to: pv[2].slice(2, 4), promotion: pv[2][4] || 'q' });
-        if (next && /[bq]/.test(next.piece)) {
-          const diag = lines(next.to, 'b').map(l => l.path.filter(x => !x.p).length).reduce((a, b) => Math.max(a, b), 0);
-          if (diag >= 4) out.push({ uci: next.from + next.to, color: WITTY_PLAN, kind: 'plan' });
+      if (!pinned && !game.inCheck() && /[brq]/.test(move.piece)) {
+        const best = bestLine(move.to, move.piece, 4);
+        if (best) arrow(move.to, sq(best.end.f, best.end.r), WITTY_ARROW, 'line');
+      }
+
+      // 2. the plan: our next moves in the line (setting up), a knight's outpost square in green
+      if (pv && pv[0] && pv[0].slice(0, 4) === uci.slice(0, 4)) {
+        const plan = new BoardStudioRules.Chess(game.fen());
+        for (let i = 1; i + 1 < Math.min(pv.length, 5); i += 2) {
+          const theirs = plan.move({ from: pv[i].slice(0, 2), to: pv[i].slice(2, 4), promotion: pv[i][4] || 'q' });
+          const next = theirs && plan.move({ from: pv[i + 1].slice(0, 2), to: pv[i + 1].slice(2, 4), promotion: pv[i + 1][4] || 'q' });
+          if (!next) break;
+          const f = fileOf(next.to), r = rankOf(next.to);
+          // a pawn storm: a pawn marching at a king that has castled (not one still in the middle)
+          const storm = next.piece === 'p' && king && !/[de]/.test(king[0]) && Math.abs(f - fileOf(king)) <= 1 && (r - rankOf(next.from)) * forward > 0;
+          const diag = /[bq]/.test(next.piece) ? Math.max(0, ...lines(next.to, 'b').map(l => l.path.filter(x => !x.p).length)) : 0;
+          if (next.piece === 'k' || (next.piece === 'p' && !storm) || (/[bq]/.test(next.piece) && diag < 3 && !next.captured)) continue;
+          arrow(next.from, next.to, WITTY_PLAN, 'plan');
+          if (next.piece === 'n' && (r - (us === 'w' ? 3 : 4)) * forward >= 0 && !squares.some(x => x.kind === 'outpost')) square(next.to, WITTY_GREEN, 'outpost');
         }
       }
-    } catch (e) { /* no arrows */ }
-    return out.slice(0, 2);
+
+      // 3. the long lines the other pieces hold (one, the best), towards their king first
+      const others = game.board().flat().filter(p => p && p.color === us && /[brq]/.test(p.type) && p.square !== move.to)
+        .map(p => ({ p, line: bestLine(p.square, p.type, 5) })).filter(x => x.line).sort((a, b) => b.line.score - a.line.score)[0];
+      if (others) arrow(others.p.square, sq(others.line.end.f, others.line.end.r), WITTY_ARROW, 'line');
+
+      // 4. their king's shelter: the squares next to it that our pieces already hit (two of them), when two or more are hit
+      if (king) {
+        const hit = [];
+        for (let df = -1; df <= 1; df++) for (let dr = -1; dr <= 1; dr++) {
+          const f = fileOf(king) + df, r = rankOf(king) + dr;
+          if ((!df && !dr) || f < 0 || f > 7 || r < 0 || r > 7) continue;
+          const p = at(f, r);
+          if (p && p.color === them && p.type !== 'p') continue;
+          const n = game.attackers(sq(f, r), us).length;
+          if (n) hit.push({ s: sq(f, r), n: n + (p ? 0.5 : 0) });
+        }
+        if (hit.length >= 2) hit.sort((a, b) => b.n - a.n).slice(0, 2).forEach(h => square(h.s, WITTY_RED, 'king'));
+      }
+    } catch (e) { /* nothing drawn */ }
+    return { arrows: arrows.slice(0, 4), squares: squares.slice(0, 3) };
   }
-  // Puts Witty's arrows on the board for a few seconds once the move has landed.
-  function wittyDraw(ctl, fen, step, pv, delay = 0) {
-    if (!ctl || !step) return;
-    const list = wittyArrowsFor(fen, step.uci || (step.from + step.to), pv);
+  const wittyArrowsFor = (fen, uci, pv = null) => wittyMarksFor(fen, uci, pv).arrows;
+
+  // Witty's highlighted squares: chess.com-like square marks under the pieces, faded in and out.
+  const WITTY_SQ_CSS = `
+    .bs-witty-sq { position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; opacity: .8;
+      animation: bs-witty-sq-in 220ms ease-out both; }
+    .bs-witty-sq.bs-leave { animation: bs-witty-sq-out 260ms ease-in forwards; }
+    .bs-hand-sel { position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; background: rgba(255, 255, 51, .5);
+      animation: bs-witty-sq-in 90ms ease-out both; }
+    @keyframes bs-witty-sq-in { from { opacity: 0; } }
+    @keyframes bs-witty-sq-out { to { opacity: 0; } }
+  `;
+  function boardSquareEl(board, sq, cls, color) {
+    if (!document.getElementById('bs-witty-css')) {
+      const st = document.createElement('style'); st.id = 'bs-witty-css'; st.textContent = WITTY_SQ_CSS; document.head.appendChild(st);
+    }
+    const flipped = board.classList.contains('flipped') || !!(board.__cc && board.__cc.flipped);
+    const f = sq.charCodeAt(0) - 97, r = +sq[1] - 1, el = document.createElement('div');
+    el.className = cls;
+    if (color) el.style.background = color;
+    el.style.left = `${(flipped ? 7 - f : f) * 12.5}%`;
+    el.style.top = `${(flipped ? r : 7 - r) * 12.5}%`;
+    board.insertBefore(el, board.querySelector(':scope > .piece') || null);
+    return el;
+  }
+  function wittyClear(ctl) {
+    if (!ctl) return;
     clearTimeout(ctl.wittyTimer);
     if (ctl.wittyArrows && ctl.wittyArrows.length) { ctl.wittyArrows = []; ctl.scheduleArrows?.(); }
-    if (!list.length) return;
-    ctl.wittyTimer = setTimeout(() => {
-      ctl.wittyArrows = list.map((a, i) => ({ id: `wa:${i}:${a.uci}`, uci: a.uci, color: a.color, opacity: 0.85 }));
-      ctl.scheduleArrows?.();
-      ctl.wittyTimer = setTimeout(() => { ctl.wittyArrows = []; ctl.scheduleArrows?.(); }, 3800);
-    }, Math.max(0, delay));
+    (ctl.wittySquares || []).forEach(el => { el.classList.add('bs-leave'); setTimeout(() => el.remove(), 280); });
+    ctl.wittySquares = [];
+  }
+  function wittyShow(ctl, marks, ms) {
+    wittyClear(ctl);
+    ctl.wittyArrows = marks.arrows.map((a, i) => ({ id: `wa:${i}:${a.uci}`, uci: a.uci, color: a.color, opacity: 0.85 }));
+    ctl.scheduleArrows?.();
+    const board = ctl.board;
+    ctl.wittySquares = board && board.isConnected !== false ? marks.squares.map(m => boardSquareEl(board, m.sq, 'bs-witty-sq', m.color)) : [];
+    ctl.wittyTimer = setTimeout(() => wittyClear(ctl), ms);
+  }
+  // Puts Witty's marks on the board once the move has landed; they stay while the opponent thinks (about seven seconds).
+  function wittyDraw(ctl, fen, step, pv, delay = 0) {
+    if (!ctl || !step) return;
+    const marks = wittyMarksFor(fen, step.uci || (step.from + step.to), pv);
+    wittyClear(ctl);
+    if (!marks.arrows.length && !marks.squares.length) return;
+    ctl.wittyTimer = setTimeout(() => wittyShow(ctl, marks, 7000), Math.max(0, delay));
+  }
+  // While he takes a long think: the move he is looking at (yellow) and the reply he expects (red), as he talks it through.
+  function wittyThink(ctl, fen, step, pv) {
+    if (!ctl || !step) return;
+    const uci = step.uci || (step.from + step.to), arrows = [{ uci: uci.slice(0, 4), color: WITTY_PLAN, kind: 'idea' }];
+    if (pv && pv[1] && pv[0] && pv[0].slice(0, 4) === uci.slice(0, 4)) arrows.push({ uci: pv[1].slice(0, 4), color: WITTY_THREAT, kind: 'reply' });
+    wittyShow(ctl, { arrows, squares: [] }, 6000);
   }
 
   // From a result to what to do: a mate becomes a plan, anything else one move.
@@ -6163,7 +6302,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const hold = Math.max(clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock), premove ? 0 : clutchPaceLeft(fen, step, clock, s.elo, { premove: !!instant, book: /opening book|\(Witty\)/.test(note), brilliant: !!extra.brilliant, follow: !!extra.follow, quick: !!extra.quick, witty: !!s.witty, slow: clutch.mode === 'lose' && clutch.way === 'time' }));
       if (hold > 0) {
         // the move decided now is the one played when the wait is over (not decided again)
-        if (!clutch.burn || clutch.burn.key !== key) clutch.burn = { key, until: Date.now() + hold, step, premove, note, instant, extra };
+        if (!clutch.burn || clutch.burn.key !== key) {
+          clutch.burn = { key, until: Date.now() + hold, step, premove, note, instant, extra };
+          // Witty talks a long think through on the board: the move he is looking at and the reply he expects
+          if (s.witty && hold >= 1500) clutch.burn.idea = setTimeout(() => wittyThink(ctl, fen, step, extra.pv), hold * (0.3 + 0.25 * Math.random()));
+        }
         if (Date.now() < clutch.burn.until) {
           setClutch(`Clutch: ${clutch.mode === 'draw' ? 'giving the opponent room on the clock' : 'thinking it over'} (${((clutch.burn.until - Date.now()) / 1000).toFixed(1)} s)`);
           clearTimeout(clutch.burn.timer);

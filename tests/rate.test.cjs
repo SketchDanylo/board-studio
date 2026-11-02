@@ -279,3 +279,32 @@ test('a move that gives material away is looked at deeper before it is called a 
     assert.equal(f.api.rateTarget(quiet, 'miss', 20), 20);
   } finally { f.close(); }
 });
+
+test('Show Mouse fidgets like Hikaru: it clicks its own pieces while it waits (drawn only)', async () => {
+  const f = setup();
+  try {
+    const board = f.board();
+    board.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400 });
+    board.game.getPlayingAs = () => 1;
+    f.api.setSetting('clutch', 'mouse', true);
+    const hand = f.api.shownHand;
+    hand.ensure(); hand.place(200, 300);
+    const fen = board.game.getFEN();
+    // only its own pieces are picked
+    for (let i = 0; i < 40; i++) {
+      const sq = hand.pickPiece(board);
+      assert.ok(sq && /[12]$/.test(sq), `${sq} is White's (${fen})`);
+    }
+    // a tap: no real event reaches the board, the square shows selected for a moment
+    const seen = [];
+    ['pointerdown', 'mousedown', 'click'].forEach(t => board.addEventListener(t, () => seen.push(t)));
+    f.api.setDPI(8000);
+    hand.tap(board, 'e2');
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(seen.length, 0);
+    assert.equal(board.querySelectorAll('.bs-hand-sel').length, 1);
+    await new Promise(r => setTimeout(r, 800));
+    assert.equal(board.querySelectorAll('.bs-hand-sel').length, 0);
+    f.api.setDPI(800);
+  } finally { f.close(); }
+});

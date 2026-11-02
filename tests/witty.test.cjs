@@ -231,3 +231,32 @@ test('Witty draws his arrows: the pin, the long line a piece holds, the diagonal
     assert.equal(ctl.wittyArrows[0].uci, 'b5e8');
   } finally { f.close(); }
 });
+
+test('Witty marks up the board like his streams: the f7 a knight eyes, the check, plan arrows, outposts, his king-attack squares', async () => {
+  const f = setup();
+  try {
+    const marks = (fen, uci, pv) => { const m = f.api.wittyMarksFor(fen, uci, pv); return m.arrows.map(a => a.uci + ':' + a.kind).join(' ') + ' | ' + m.squares.map(s => s.sq + ':' + s.kind).join(' '); };
+    const italian = 'r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4';
+    // Ng5: the knight at f7 (only the king guards it), the bishop's line to it as well; f7 in red
+    assert.equal(marks(italian, 'f3g5', ['f3g5', 'e8g8', 'd2d3']), 'g5f7:attack c4f7:line | f7:target');
+    // Bxf7+: the check, then the plan's knight jump with its square in green
+    assert.equal(marks(italian, 'c4f7', ['c4f7', 'e8f7', 'f3g5']), 'f7e8:check f3g5:plan | g5:outpost');
+    // the bishop pins the knight to the queen: arrow through, pinned piece in red
+    assert.ok(/g5d8:pin.*\| f6:pinned/.test(marks('r1bq1rk1/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 0 6', 'c1g5')));
+    // queen and bishop on a castled king: the squares next to it they hit, in red
+    const attack = f.api.wittyMarksFor('r1b2rk1/pppp1ppp/2n5/4q3/8/3B4/PPP2PPP/R2QR1K1 w - - 0 12', 'd1h5');
+    assert.ok(attack.squares.some(s => s.sq === 'h7') && attack.squares.some(s => s.kind === 'king'), JSON.stringify(attack));
+    assert.ok(attack.arrows.some(a => a.uci === 'h5h7' && a.kind === 'attack') && !attack.arrows.some(a => a.uci === 'h5d1'), JSON.stringify(attack));
+    assert.ok(attack.arrows.length <= 4 && attack.squares.length <= 3);
+    // drawn on the board: arrows on the arrow layer, squares under the pieces, both gone after a while
+    const board = f.board();
+    const ctl = { board, scheduleArrows() {} };
+    f.api.wittyDraw(ctl, italian, { from: 'f3', to: 'g5', uci: 'f3g5' }, null, 0);
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(ctl.wittyArrows.length, 2);
+    assert.equal(board.querySelectorAll('.bs-witty-sq').length, 1);
+    // a long think: the move looked at and the reply expected
+    f.api.wittyThink(ctl, italian, { from: 'f3', to: 'g5', uci: 'f3g5' }, ['f3g5', 'd7d5']);
+    assert.equal(ctl.wittyArrows.map(a => a.uci).join(), 'f3g5,d7d5');
+  } finally { f.close(); }
+});

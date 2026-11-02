@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.70.0
+// @version      6.71.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5084,34 +5084,91 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const f = sq.charCodeAt(0) - 97, r = +sq[1] - 1;
       return { x: rect.left + ((flipped ? 7 - f : f) + .5) * size, y: rect.top + ((flipped ? r : 7 - r) + .5) * size, size };
     },
+    // Puts the hand at (x, y) at once (no motion). (x, y) is where the hand aims; what is drawn adds the tremor.
     place(x, y) {
       this.x = x; this.y = y;
+      this.seg = null; this.vx = 0; this.vy = 0;
+      this.draw(x, y);
+    },
+    draw(x, y) {
       this.el.style.transform = `translate(${x}px, ${y}px)`;
       if (this.vanilla) this.el.classList.toggle('over', this.overPiece(x, y));
       const s = this.pieceSize;
       this.piece.style.transform = `translate(${x - s / 2}px, ${y - s / 2}px)`;
     },
-    // A glide from where the hand is to (x, y) in ms: eased in and out, on a slight curve, as a wrist moves.
-    glide(x, y, ms) {
-      const x0 = this.x ?? x, y0 = this.y ?? y, dx = x - x0, dy = y - y0, dist = Math.hypot(dx, dy);
-      const bend = Math.min(44, dist * (0.03 + 0.17 * Math.random())) * (Math.random() < 0.5 ? 1 : -1);
-      const start = performance.now();
-      const run = () => {
-        const t = ms <= 0 ? 1 : Math.min(1, (performance.now() - start) / ms);
-        const e = t < .5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
-        const arc = Math.sin(Math.PI * e) * bend;
-        this.place(x0 + dx * e - (dist ? dy / dist : 0) * arc, y0 + dy * e + (dist ? dx / dist : 0) * arc);
-        if (t < 1) this.frame = requestAnimationFrame(run);
+    // A movement of a real hand from where it is to (x, y) in about ms. It starts with the speed and direction the hand
+    // already has (so a new aim mid-way bends the path instead of stopping it), is quickest in the middle and slows into the
+    // target, curves a little, and on a long quick move lands a touch off (past it or short, a little to the side) and is
+    // corrected by a small second movement, as aimed movements are (Fitts / Meyer's submovements). through: keep moving at
+    // the end (a point on a longer path, not a stop). exact: no aiming error (the correction itself, a piece put down).
+    glide(x, y, ms, { through = false, exact = false } = {}) {
+      const now = performance.now(), cur = this.at(now);
+      const x0 = cur.x, y0 = cur.y, dx = x - x0, dy = y - y0, dist = Math.hypot(dx, dy);
+      ms = Math.max(30, ms);
+      const size = this.pieceSize || 60;
+      const mood = this.mood || 'calm';
+      if (!exact && !through && dist > size * 1.3 && Math.random() < (mood === 'pressure' ? 0.6 : mood === 'rush' ? 0.45 : 0.32)) {
+        // the first, quick movement lands off; the correction follows without a stop
+        const k = Math.random() < 0.6 ? 1 + 0.04 + 0.07 * Math.random() : 1 - 0.03 - 0.05 * Math.random();
+        const side = (Math.random() - 0.5) * 0.08 * dist;
+        const ax = x0 + dx * k - (dy / dist) * side, ay = y0 + dy * k + (dx / dist) * side;
+        const first = Math.round(ms * 0.82);
+        this.glide(ax, ay, first, { exact: true });
+        const fix = Math.round((70 + 70 * Math.random()) * handScale() * (mood === 'pressure' ? 0.7 : 1));
+        this.later(() => this.glide(x, y, fix, { exact: true }), Math.max(0, first - 25));
+        return;
+      }
+      const bend = dist < 4 ? 0 : Math.min(36, dist * (0.02 + 0.12 * Math.random())) * (Math.random() < 0.5 ? 1 : -1);
+      const ux = dist ? dx / dist : 0, uy = dist ? dy / dist : 0;
+      const v1 = through ? { x: ux * dist / ms * 0.9, y: uy * dist / ms * 0.9 } : { x: 0, y: 0 };
+      this.seg = { t0: now, ms, x0, y0, x1: x, y1: y, vx0: cur.vx, vy0: cur.vy, vx1: v1.x, vy1: v1.y, nx: -uy * bend, ny: ux * bend };
+      this.x = x; this.y = y;
+      this.run();
+    },
+    // Where the hand is at time t on its movement (Hermite curve: positions and speeds at both ends, so movements join
+    // smoothly), and how fast it is going.
+    at(t) {
+      const g = this.seg;
+      if (!g) return { x: this.x ?? 0, y: this.y ?? 0, vx: 0, vy: 0 };
+      const u = Math.min(1, Math.max(0, (t - g.t0) / g.ms));
+      if (u >= 1) return { x: g.x1, y: g.y1, vx: g.vx1, vy: g.vy1 };
+      const u2 = u * u, u3 = u2 * u, T = g.ms;
+      const h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
+      const b = 16 * u2 * (1 - u) * (1 - u);                            // the curve, nothing at either end
+      const d00 = 6 * u2 - 6 * u, d10 = 3 * u2 - 4 * u + 1, d01 = -6 * u2 + 6 * u, d11 = 3 * u2 - 2 * u;
+      const db = 32 * u * (1 - u) * (1 - 2 * u);
+      return {
+        x: h00 * g.x0 + h10 * T * g.vx0 + h01 * g.x1 + h11 * T * g.vx1 + b * g.nx,
+        y: h00 * g.y0 + h10 * T * g.vy0 + h01 * g.y1 + h11 * T * g.vy1 + b * g.ny,
+        vx: (d00 * g.x0 + d10 * T * g.vx0 + d01 * g.x1 + d11 * T * g.vx1 + db * g.nx) / T,
+        vy: (d00 * g.y0 + d10 * T * g.vy0 + d01 * g.y1 + d11 * T * g.vy1 + db * g.ny) / T
       };
-      cancelAnimationFrame(this.frame);
-      run();
-      // animation frames stop in a hidden tab: make sure it ends where it should
-      this.later(() => { cancelAnimationFrame(this.frame); this.place(x, y); }, ms + 30);
+    },
+    // One clock for every movement: each frame draws where the hand is, with the small tremor a hand on a mouse always has
+    // (stronger when hurried) and, resting, a slow drift of a few pixels, so the pointer is never frozen.
+    run() {
+      if (this.running) return;
+      this.running = true;
+      this.phase = this.phase || [0, 1, 2, 3, 4, 5].map(() => Math.random() * 6.28);
+      const step = () => {
+        if (!this.el || !this.el.isConnected) { this.running = false; return; }
+        const t = performance.now(), p = this.at(t), ph = this.phase;
+        const moving = this.seg && t - this.seg.t0 < this.seg.ms;
+        const amp = this.mood === 'pressure' ? 1.3 : 0.7, rest = moving ? 0 : Math.min(1, (t - ((this.seg && this.seg.t0 + this.seg.ms) || 0)) / 900);
+        const tx = amp * (0.6 * Math.sin(t * 0.011 + ph[0]) + 0.3 * Math.sin(t * 0.027 + ph[1]) + 0.1 * Math.sin(t * 0.063 + ph[2]))
+          + rest * 2.6 * Math.sin(t * 0.0009 + ph[3]);
+        const ty = amp * (0.6 * Math.sin(t * 0.013 + ph[4]) + 0.3 * Math.sin(t * 0.023 + ph[5]) + 0.1 * Math.sin(t * 0.071 + ph[0]))
+          + rest * 2.2 * Math.sin(t * 0.0011 + ph[1]);
+        if (this.el.classList.contains('on')) this.draw(p.x + tx, p.y + ty);
+        // a hidden tab gets no animation frames: a timer keeps the clock going (positions come from the time anyway)
+        this.frame = document.hidden ? setTimeout(step, 50) : requestAnimationFrame(step);
+      };
+      step();
     },
     later(fn, ms) { this.timers.push(setTimeout(fn, ms)); },
-    clearTimers() { this.timers.forEach(clearTimeout); this.timers = []; cancelAnimationFrame(this.frame); if (this.sel) { this.sel.remove(); this.sel = null; } },
+    clearTimers() { this.timers.forEach(clearTimeout); this.timers = []; if (this.sel) { this.sel.remove(); this.sel = null; } },
     show() {
-      this.ensure(); clearTimeout(this.hideTimer); this.el.classList.add('on');
+      this.ensure(); clearTimeout(this.hideTimer); this.el.classList.add('on'); this.run();
       this.vanilla = !!settings.clutch.witty;
       this.el.classList.toggle('vanilla', this.vanilla); this.piece.classList.toggle('vanilla', this.vanilla);
     },
@@ -5141,12 +5198,23 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // (a premove shown the vanilla way leaves the hand free: it goes on fidgeting)
       if (!settings.clutch.mouse || !board || (this.held && !this.pre) || Date.now() < (this.busyUntil || 0) || Date.now() < (this.nextDrift || 0)) return;
       this.board = board;
-      this.nextDrift = Date.now() + 250 + Math.random() * 1400;
       const r = board.getBoundingClientRect(), size = r.width / 8;
+      this.mood = this.moodNow();
+      const mood = this.mood;
+      this.nextDrift = Date.now() + (mood === 'pressure' ? 120 + Math.random() * 380 : mood === 'rush' ? 200 + Math.random() * 900 : 250 + Math.random() * 1400);
+      if (!this.pieceSize) this.pieceSize = size;
       this.show();
       if (this.x === null) { this.place(r.left + r.width / 2, r.top + r.height * 0.75); return; }
       // what it does while it waits, never the same thing twice running
-      const kinds = { tease: 18, lift: 12, tap: 13, hover: 16, circle: 8, trace: 8, shake: 5, rest: 12, wander: 6, glide: 10 };
+      const kinds = {
+        calm: { tease: 18, lift: 12, tap: 13, hover: 16, circle: 8, trace: 8, shake: 5, rest: 12, wander: 6, glide: 10 },
+        // the clock running out: no time for tricks, the hand stays on the pieces it is about to move
+        pressure: { hover: 34, tease: 12, tap: 14, shake: 12, glide: 10, lift: 4, rest: 3 },
+        // winning, and it knows: quick, confident, toying with the pieces
+        rush: { tease: 26, tap: 16, hover: 14, lift: 12, trace: 10, glide: 10, shake: 6, rest: 4 },
+        // worse: long looks, going round and round
+        tense: { circle: 16, hover: 20, tease: 14, rest: 16, wander: 10, trace: 10, lift: 7, glide: 7 }
+      }[mood] || {};
       if (this.lastKind) kinds[this.lastKind] *= 0.2;
       let roll = Math.random() * Object.values(kinds).reduce((a, b) => a + b, 0), kind = 'glide';
       for (const [k, w] of Object.entries(kinds)) { roll -= w; if (roll <= 0) { kind = k; break; } }
@@ -5172,7 +5240,44 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // How long the hand takes to a point (Fitts-like, at clutchDPI speed).
     reachMs(x, y, size, random = Math.random) {
       const d = Math.hypot(x - this.x, y - this.y);
-      return Math.round((140 + 60 * Math.log2(d / size + 1)) * (0.7 + 0.6 * random()) * handScale());
+      const pace = { pressure: 0.55, rush: 0.75, tense: 1.15 }[this.mood] || 1;
+      return Math.round((150 + 75 * Math.log2(d / size + 1)) * (0.75 + 0.5 * random()) * handScale() * pace);
+    },
+    // The game as the player feels it: the clock nearly out, a won game, a worse one, or calm.
+    moodNow() {
+      try {
+        const own = clutchClock('own'), v = clutch.lastValue, winning = clutch.mode === 'win' || !clutch.mode;
+        if (own !== null && !clutchUntimed() && own < 12) return 'pressure';
+        if (winning && v !== null && v !== undefined && v >= 500) return 'rush';
+        if (v !== null && v !== undefined && v <= -250 && clutch.mode !== 'lose') return 'tense';
+      } catch (e) { /* calm */ }
+      return 'calm';
+    },
+    // Their move has come: a look at the piece they moved, then at a piece of ours it hits (if it hits one), then at what
+    // we might play. Interrupted the moment a real move starts.
+    react(board, fen, own, last) {
+      if (!settings.clutch.mouse || !board || !last || (this.held && !this.pre)) return;
+      this.board = board; this.clearTimers(); this.show();
+      this.mood = this.moodNow();
+      if (this.x === null) return;
+      const size = board.getBoundingClientRect().width / 8;
+      if (!this.pieceSize) this.pieceSize = size;
+      const look = (sq, hold) => { const p = this.point(board, sq), ms = this.reachMs(p.x, p.y, size); return { p, ms, hold }; };
+      const stops = [look(last.to, 250 + Math.random() * 450)];
+      try {
+        const g = new BoardStudioRules.Chess(fen);
+        const hit = g.board().flat().filter(pc => pc && pc.color === own && pc.type !== 'k' && pc.type !== 'p' && g.attackers(pc.square, own === 'w' ? 'b' : 'w').includes(last.to))[0];
+        if (hit) stops.push(look(hit.square, 200 + Math.random() * 400));
+      } catch (e) { /* only the look */ }
+      const m = this.pickMove(board);
+      if (m) stops.push(look(m.from, 150 + Math.random() * 300));
+      let t = 120 + Math.random() * 260 * (this.mood === 'pressure' ? 0.4 : 1);   // seeing it takes a moment
+      for (const st of stops) {
+        const j = () => (Math.random() - 0.5) * size * 0.3;
+        this.later(() => this.glide(st.p.x + j(), st.p.y + j(), st.ms), t);
+        t += st.ms + st.hold;
+      }
+      this.busyUntil = Date.now() + t;
     },
     // A move worth showing interest in: the one it has decided on, the ones Clutch is weighing (its answers and ideas),
     // else a piece of its own and a square it could go to. { from, to } with our piece on from now.
@@ -5203,7 +5308,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const n = 2 + Math.floor(Math.random() * 3);
       for (let i = 0; i < n; i++) {
         const leg = 160 + Math.random() * 320;
-        this.later(() => this.glide(p.x + (Math.random() - 0.5) * p.size * 0.3, p.y + (Math.random() - 0.5) * p.size * 0.3, leg), t);
+        this.later(() => this.glide(p.x + (Math.random() - 0.5) * p.size * 0.3, p.y + (Math.random() - 0.5) * p.size * 0.3, leg, { exact: true }), t);
         t += leg + Math.random() * 250;
       }
       this.busyUntil = Date.now() + t + 100;
@@ -5215,8 +5320,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       let t = this.reachMs(p.x + rad, p.y, p.size);
       this.glide(p.x + Math.cos(a0) * rad, p.y + Math.sin(a0) * rad, t);
       for (let i = 1; i <= steps; i++) {
-        const a = a0 + dir * i * Math.PI * 2 / 7, leg = 70 + Math.random() * 50;
-        this.later(() => this.glide(p.x + Math.cos(a) * rad, p.y + Math.sin(a) * rad, leg), t);
+        const a = a0 + dir * i * Math.PI * 2 / 7, leg = 70 + Math.random() * 50, last = i === steps;
+        this.later(() => this.glide(p.x + Math.cos(a) * rad, p.y + Math.sin(a) * rad, leg + 25, { through: !last, exact: true }), t);
         t += leg;
       }
       this.busyUntil = Date.now() + t + 150;
@@ -5252,10 +5357,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const n = 3 + Math.floor(Math.random() * 3);
       for (let i = 0; i < n; i++) {
         const leg = 45 + Math.random() * 45, dx = (Math.random() - 0.5) * size * 0.3, dy = (Math.random() - 0.5) * size * 0.3;
-        this.later(() => this.glide(x + dx, y + dy, leg), t);
+        this.later(() => this.glide(x + dx, y + dy, leg + 20, { through: true, exact: true }), t);
         t += leg;
       }
-      this.later(() => this.glide(x, y, 80), t);
+      this.later(() => this.glide(x, y, 90, { exact: true }), t);
       this.busyUntil = Date.now() + t + 200;
     },
     // Off the board for a moment (towards the clocks or the move list) and back again.
@@ -5394,7 +5499,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.restore();
       if (real) { this.dimmed = { el: real, opacity: real.style.opacity }; real.style.opacity = '.3'; }
       this.el.classList.add('grab'); this.piece.classList.add('on');
-      this.place(this.x, this.y);
       this.pulse();
     },
     restore() { if (this.dimmed) { this.dimmed.el.style.opacity = this.dimmed.opacity; this.dimmed = null; } },
@@ -5451,12 +5555,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (style === 'overshoot') {
         const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, over = a.size * (0.18 + 0.2 * Math.random());
         this.later(() => this.glide(b.x + dx / d * over, b.y + dy / d * over, withPiece), toPiece + beat);
-        this.later(() => this.glide(b.x, b.y, Math.max(60, extra)), toPiece + beat + withPiece);
+        this.later(() => this.glide(b.x, b.y, Math.max(60, extra), { exact: true }), toPiece + beat + withPiece);
       } else if (style === 'hesitate') {
         const k = 0.35 + 0.3 * Math.random(), m = { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
         this.later(() => this.glide(m.x, m.y, Math.round(withPiece * k)), toPiece + beat);
         this.later(() => this.glide(b.x, b.y, Math.round(withPiece * (1 - k))), toPiece + beat + Math.round(withPiece * k) + extra);
-      } else this.later(() => this.glide(b.x, b.y, withPiece), toPiece + beat);
+      } else this.later(() => this.glide(b.x, b.y, withPiece, { exact: Math.random() < 0.5 }), toPiece + beat);
     },
     // A premove held ready: carried to its square and held there (red) until it is played or given up.
     hold(board, step) {
@@ -5861,7 +5965,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // forced move, more for a hard one; a little quicker at a low rating, a little slower at a high one; hurried when the
   // clock is low. Only the waiting changes: what is played is decided exactly as before. A premove is a premove (made at
   // once) only with the clock under 15 s; with more on it, an obvious move still takes a moment.
-  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false, settled = false, endgame = false, gobble = false } = {}, random = Math.random) {
+  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false, settled = false, endgame = false, gobble = false, rush = false } = {}, random = Math.random) {
     if (!step || clock === null || clock === undefined) return 0;
     // the endgame plan is premoved and goes the instant they move (a pawn race is played on premoves)
     if (premove && endgame) return 0;
@@ -5887,6 +5991,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (slow) kind = Math.max(kind, 0.5) * 1.7;
     // Witty Alieeeen plays his ordinary moves quickly (the long thinks are for the sacrifices)
     if (witty && !brilliant && !follow) kind *= 0.75;
+    // a won game is played with a rush: quicker, sure of itself
+    if (rush) kind *= 0.6;
     // Gobble plays fast, fastest in the endgame (no long thinks there)
     if (gobble) kind *= gobbleEndgame(fen) ? 0.35 : 0.6;
     // How a person's times spread (what chess.com's time bars show): not the same few seconds every move, but mostly short
@@ -5895,7 +6001,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // above, so the clock is used as before. Opening moves out of book still go quicker than middlegame ones.
     const c = Math.max(0, Math.min(3, crit || 0));
     const gEnd = gobble && gobbleEndgame(fen);
-    const pInstinct = settled || gEnd ? 0.5 : c ? 0.18 : 0.32, pDeep = settled || gEnd ? 0 : 0.06 + 0.05 * c;
+    const pInstinct = settled || gEnd || rush ? 0.5 : c ? 0.18 : 0.32, pDeep = settled || gEnd || rush ? 0 : 0.06 + 0.05 * c;
     const roll = random(), u = Math.min(0.999, Math.max(0.001, random())), z = 4.91 * (u ** 0.14 - (1 - u) ** 0.14);   // a normal draw (Tukey's approximation)
     let shape = Math.exp(0.6 * z - 0.18);                                    // log-normal, median 0.84
     if (roll < pInstinct) shape *= 0.22 + 0.25 * random();                   // seen at a glance
@@ -5908,6 +6014,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // a real move takes a moment of looking, however obvious (not a premove, a book move or a forced one)
     if (clock >= 10 && kind >= 0.5) ms = Math.max(ms, 300 + 500 * random());
     if (clock < 5) ms *= 0.3;
+    else if (clock < 15) ms *= 0.6;          // the clock getting short: everything quicker
     const cap = roomy && (brilliant || follow) && clock >= 20 ? 0.2 : slow ? 0.18 : 0.12;
     // no clock (No Limit): never more than 17 s; with a clock, a long think is bounded by the clock alone (a share of it, at most 90 s)
     return Math.round(Math.min(ms, clock * 1000 * cap, clutchUntimed() ? 17000 : 90000));
@@ -6722,6 +6829,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }
       const playingAs = board.game.getPlayingAs && board.game.getPlayingAs();
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
+      // their move has just come: the shown hand looks at it (unless a move of ours is already on its way)
+      if (own && fen.split(' ')[1] === own && clutch.reactFen !== fen && clutch.lastMove && clutch.acting && settings.clutch.mouse && Date.now() >= (clutch.moveUntil || 0)) {
+        clutch.reactFen = fen;
+        const lm = clutch.lastMove;
+        setTimeout(() => { if (Date.now() >= (clutch.moveUntil || 0) && clutch.reactFen === fen) shownHand.react(board, fen, own, lm); }, 0);
+      }
       if (own && fen.split(' ')[1] === own && clutch.turnFen !== fen) { clutch.turnFen = fen; clutch.turnAt = Date.now(); }
     } catch (e) { return; }
     if (!own) { clutch.racing = false; setClutchMode(null); clutch.burn = null; clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); shownHand.unhold(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
@@ -6778,13 +6891,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const mayPlay = clutchMayPlay();
     const act = (step, premove, note, instant, extra = {}) => {
       if (!mayPlay) { setClutch(`Clutch: ${note} (drawn only, it moves pieces in games against the computer)`); return; }
-      const hold = Math.max(clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock), premove ? 0 : clutchPaceLeft(fen, step, clock, s.elo, { premove: !!instant, book: /opening book|\(Witty\)/.test(note), brilliant: !!extra.brilliant, follow: !!extra.follow, quick: !!extra.quick, witty: !!s.witty, gobble: !!s.gobble, slow: clutch.mode === 'lose' && clutch.way === 'time' }));
+      const hold = Math.max(clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock), premove ? 0 : clutchPaceLeft(fen, step, clock, s.elo, { premove: !!instant, book: /opening book|\(Witty\)/.test(note), brilliant: !!extra.brilliant, follow: !!extra.follow, quick: !!extra.quick, witty: !!s.witty, gobble: !!s.gobble, rush: (clutch.mode === 'win' || !clutch.mode) && clutch.lastValue >= 500, slow: clutch.mode === 'lose' && clutch.way === 'time' }));
       if (hold > 0) {
         // the move decided now is the one played when the wait is over (not decided again)
         if (!clutch.burn || clutch.burn.key !== key) {
           clutch.burn = { key, until: Date.now() + hold, step, premove, note, instant, extra };
           // Witty talks a long think through on the board: the move he is looking at and the reply he expects
           if (s.witty && hold >= 1500) clutch.burn.idea = setTimeout(() => wittyThink(ctl, fen, step, extra.pv), hold * (0.3 + 0.25 * Math.random()));
+          // the end of a long think: the hand settles over the piece it is about to move
+          if (settings.clutch.mouse && hold >= 1400) setTimeout(() => { if (clutch.burn && clutch.burn.key === key) { shownHand.busyUntil = Date.now() + 2000; shownHand.hover(board, step.from); } }, hold - 600 - Math.random() * 500);
         }
         if (Date.now() < clutch.burn.until) {
           setClutch(`Clutch: ${clutch.mode === 'draw' ? 'giving the opponent room on the clock' : 'thinking it over'} (${((clutch.burn.until - Date.now()) / 1000).toFixed(1)} s)`);

@@ -169,11 +169,10 @@ test('Show Mouse: the hand carries every move; a held premove is let go at once'
     f.api.clutchMove(board, { from: 'g1', to: 'f3', uci: 'g1f3' }, 'w', true);
     assert.equal(seen.length, 1, 'played at once');
     assert.equal(hand.held, null);
-    // an instant move the hand is not holding is carried by hand instead
+    // a premove the hand had not finished carrying is played at once all the same (a premove is a premove)
     seen.length = 0;
     f.api.clutchMove(board, { from: 'b1', to: 'c3', uci: 'b1c3' }, 'w', true);
-    assert.equal(seen.length, 0, 'not in no time');
-    assert.ok(f.api.clutch.moveUntil > Date.now() + 200);
+    assert.equal(seen.length, 1, 'at once');
     f.api.setSetting('clutch', 'mouse', false);
     assert.equal(f.w.document.querySelector('.bs-hand.on'), null, 'switching it off hides the hand');
   } finally { f.close(); }

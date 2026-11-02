@@ -1520,3 +1520,28 @@ test('pawn endings are played on premoves: the move that keeps the outcome again
     assert.equal(f.api.clutchPaceMs('8/k7/8/8/8/8/6P1/5K2 w - - 0 51', { from: 'f1', to: 'g2' }, 120, 1500, { premove: true, endgame: true }), 0);
   } finally { kill(); f.close(); }
 });
+
+test('a shown premove is played the moment they move; the engine has a tenth of a second to call it off', async () => {
+  const f = setup();
+  try {
+    const v = f.api.premoveVerdict;
+    const fen = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2';
+    const step = { uci: 'b8c6', from: 'b8', to: 'c6' };
+    const later = (ms, value) => new Promise(r => setTimeout(() => r(value), ms));
+    // the look comes back in time and the premove is fine: played
+    assert.equal(await v(fen, step, 'win', () => later(20, { cp: 30 }), () => later(20, { lines: [{ pv: ['b8c6'], cp: 20 }] })), true);
+    // it throws away the outcome: called off
+    assert.equal(await v(fen, step, 'win', () => later(20, { cp: 40 }), () => later(20, { lines: [{ pv: ['b8c6'], cp: -400 }] })), false);
+    assert.equal(await v(fen, step, 'win', () => later(20, { mate: 3 }), () => later(20, { lines: [{ pv: ['b8c6'], cp: 200 }] })), false, 'a mate given up');
+    // the look is too slow: after a tenth of a second the premove goes anyway
+    const t = Date.now();
+    assert.equal(await v(fen, step, 'win', () => later(400, { cp: 40 }), () => later(400, { lines: [{ pv: ['b8c6'], cp: -900 }] })), true);
+    assert.ok(Date.now() - t < 160, `decided in ${Date.now() - t} ms`);
+    // losing: never called off
+    assert.equal(await v(fen, step, 'lose', () => later(5, { cp: 40 }), () => later(5, { lines: [{ pv: ['b8c6'], cp: -900 }] })), true);
+    // drawing: called off when it loses the balance
+    assert.equal(await v(fen, step, 'draw', () => later(5, { cp: 0 }), () => later(5, { lines: [{ pv: ['b8c6'], cp: -250 }] })), false);
+    // a winning game keeps it when it stays well won
+    assert.equal(await v(fen, step, 'win', () => later(5, { cp: 900 }), () => later(5, { lines: [{ pv: ['b8c6'], cp: 500 }] })), true);
+  } finally { f.close(); }
+});

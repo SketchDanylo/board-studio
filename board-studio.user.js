@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.71.1
+// @version      6.72.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -4987,6 +4987,27 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // as shown, not re-decided now that their move is known: whatever the book would answer, the premove goes, as long
   // as it is legal. A trade premove is no different: it counts on their taking, and if they did not, the board itself
   // refuses it (it is not a legal move) and the move is decided afresh. Null when there is no premove to play.
+  // The tenth of a second a premove can still be called off in: a quick look by the engine at the position that came. Resolves true
+  // (play it) unless the look shows it throws the outcome away; when the look takes longer than the tenth, it is played.
+  function premoveVerdict(fen, step, mode, analyse = (f, o) => clutchEngine.analyse(f, o), analyse2 = (f, o) => mateEngine.analyse(f, o), limit = 100) {
+    if (mode === 'lose') return Promise.resolve(true);                    // losing, a bad premove is just how it goes
+    const val = l => l && (l.mate !== undefined ? Math.sign(l.mate) * (10000 - Math.abs(l.mate)) : l.cp);
+    let legal = [];
+    try { legal = new BoardStudioRules.Chess(fen).moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || '')); } catch (e) { return Promise.resolve(true); }
+    const filler = legal.find(u => u !== step.uci);
+    const look = Promise.all([
+      analyse(fen, { depth: 12, ms: 75, multipv: 1, fresh: true }),
+      analyse2(fen, { depth: 12, ms: 75, multipv: filler ? 2 : 1, searchMoves: filler ? [step.uci, filler] : [step.uci], fresh: true })
+    ]).then(([best, mine]) => {
+      const b = val(best), line = mine && (mine.lines || [mine]).find(l => l && l.pv && l.pv[0] === step.uci), m = val(line);
+      if (b === undefined || m === undefined || b === null || m === null) return true;
+      if (b > 9000 && m < 9000) return false;                                 // a mate given up
+      if (m <= -9000 && b > -9000) return false;                              // walking into a mate
+      return mode === 'draw' ? !(m < Math.min(b - 150, -100)) : !(m < b - 250 && m < 300);
+    }).catch(() => true);
+    return Promise.race([look, new Promise(r => setTimeout(() => r(true), limit))]);
+  }
+
   function clutchAuthenticStep(prem, fen, entry) {
     if (!prem || !prem.step) return null;
     const step = stepFor(fen, prem.step.uci);
@@ -5648,9 +5669,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     let total = 0;
     const held = shownHand.holds(step);
     if (!held) shownHand.unhold();
-    if (instant && settings.clutch.mouse && !held) instant = false;
     if (instant) {
       shownHand.drop();
+      if (settings.clutch.mouse && !held && shownHand.board) { const q = shownHand.point(board, step.to); shownHand.glide(q.x, q.y, 120, { exact: true }); }
       dragPiece(board, step.from, step.to, true);
       const r = board.getBoundingClientRect(), size = r.width / 8, flipped = board.classList.contains('flipped');
       const f = step.to.charCodeAt(0) - 97, rank = +step.to[1] - 1;
@@ -6848,9 +6869,33 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (clutch.engaged && clutch.book && fen.split(' ')[1] === own && clutchMayPlay()) {
       const quickKey = repKey(fen), e = clutch.book.entries.get(quickKey), prem = clutch.book.premove;
       let fixed = clutchAuthenticStep(prem, fen, e);                         // the premove, as indicated
-      // Made blind, a premove can meet a reply nobody prepared for. If it would leave material hanging in the position that
-      // really came (and the prepared answer would not), it is not played: the aim comes before the show.
-      if (fixed && s.mode !== 'lose' && materialAtRisk(fen, fixed.uci) >= 300 && !(e && e.step && materialAtRisk(fen, e.step.uci) >= 300)) fixed = null;
+      // A premove that was shown is played the moment their move comes, whatever the clock: that is what a premove is. The only
+      // way out is the first tenth of a second: an at-once check (it would leave material hanging where the prepared answer
+      // would not), then a quick look by the engine; a premove that would throw away the outcome is called off there.
+      if (fixed && clutch.played !== quickKey) {
+        if (clutch.mode !== 'lose' && materialAtRisk(fen, fixed.uci) >= 300 && !(e && e.step && materialAtRisk(fen, e.step.uci) >= 300)) fixed = null;
+        else {
+          clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
+          clutch.moveUntil = Date.now() + 140;                              // nothing else decides meanwhile
+          const step = fixed, mode = clutch.mode;
+          premoveVerdict(fen, step, mode).then(ok => {
+            let cur = null;
+            try { cur = board.game.getFEN(); } catch (err) { /* board gone */ }
+            clutch.moveUntil = 0;
+            if (!cur || !sameFen(cur, fen)) return;
+            if (ok) {
+              clutchMove(board, step, own, true, clutchClock('own'));
+              clutchStopBook(); showClutchGhosts(ctl, []);
+              setClutch(`Clutch: premove ${step.from}-${step.to} played`);
+            } else {
+              shownHand.unhold(); clutch.played = ''; clutch.book && (clutch.book.premove = null);
+              setClutch(`Clutch: premove ${step.from}-${step.to} called off in time`);
+              clutchTick();
+            }
+          });
+          return;
+        }
+      }
       const chosen = fixed || (e && e.step && (e.book || !e.crit) ? e.step : null);
       const paced = chosen && clutchPaceLeft(fen, chosen, clutchClock('own'), clutchEloFor(base, readOpponentElo()), { premove: !!fixed, endgame: !!(fixed && prem && prem.endgame), book: !!(e && e.book), witty: clutchStyle(base, fen).witty, gobble: clutchStyle(base, fen).gobble, slow: clutch.mode === 'lose' && clutch.way === 'time' });
       if (chosen && !paced && (!!(fixed && prem && prem.endgame && !clutchRace(clutch.mode, clutchClock('own') || 99, readClock('opp'))) || !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, clutchClock('own') || 99, readClock('opp'))) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
@@ -7022,10 +7067,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const refresh = entry => {
       // The answers to the three likeliest replies are enough to name a premove; waiting for all of them was why they were rare.
       if (!book.complete && book.total && book.entries.size >= Math.min(3, book.total)) book.complete = true;
-      const certain = clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw' || !!s.gobble);
+      const racing = clutchRace(s.mode, clock, readClock('opp'));
+      const certain = racing ? null : clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw' || !!s.gobble);
       // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
       const sticky = book.premove && (book.premove.wiggle || book.premove.gamble || book.premove.likely || book.premove.endgame);
-      const now = sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (book.endgame || certain || book.wiggle || null);
+      const now = racing ? null : sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (book.endgame || certain || book.wiggle || null);
       if (book.premove && (!now || now.step.uci !== book.premove.step.uci)) {
         if (book.premoveSet) cancelPremove(board);
         book.premove = null; book.premoveSet = false; book.spent = true;

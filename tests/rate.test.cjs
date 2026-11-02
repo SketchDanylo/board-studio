@@ -305,6 +305,21 @@ test('Show Mouse fidgets like Hikaru: it clicks its own pieces while it waits (d
     assert.equal(board.querySelectorAll('.bs-hand-sel').length, 1);
     await new Promise(r => setTimeout(r, 800));
     assert.equal(board.querySelectorAll('.bs-hand-sel').length, 0);
+    // a lift: the piece is picked up (its picture under the hand), carried over a square it could go to and put back
+    const moved = [];
+    const glide = hand.glide.bind(hand);
+    hand.glide = (x, y, ms) => { moved.push([Math.round(x), Math.round(y)]); glide(x, y, ms); };
+    hand.lift(board, 'g1', () => 0.1);
+    await new Promise(r => setTimeout(r, 60));
+    assert.ok(hand.piece.classList.contains('on'), 'holding the knight');
+    await new Promise(r => setTimeout(r, 400));
+    assert.equal(seen.length, 0, 'nothing reaches the board');
+    assert.ok(!hand.piece.classList.contains('on'), 'put back');
+    const g1 = hand.point(board, 'g1');
+    assert.ok(moved.length >= 3, 'to it, over a square, back');
+    assert.deepEqual(moved[moved.length - 1].join(), [Math.round(g1.x), Math.round(g1.y)].join(), 'ends where it started');
+    assert.ok(['f3', 'h3', 'e2'].some(t => { const q = hand.point(board, t); return moved.some(m => m.join() === [Math.round(q.x), Math.round(q.y)].join()); }), 'tried on a square the knight could go to');
+    hand.glide = glide;
     f.api.setDPI(800);
   } finally { f.close(); }
 });

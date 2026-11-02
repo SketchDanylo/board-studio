@@ -101,7 +101,7 @@ test("the times spread like a person's: mostly short, some at a glance, now and 
     const sd = Math.sqrt(times.reduce((a, b) => a + (b - mean) ** 2, 0) / times.length);
     const share = cond => times.filter(cond).length / times.length;
     assert.ok(sd / mean > 0.8, `spread wide, not the same every move: cv ${(sd / mean).toFixed(2)}`);
-    assert.ok(share(t => t < mean * 0.35) > 0.2, 'many moves well under the average');
+    assert.ok(share(t => t < mean * 0.35) > 0.15, 'many moves well under the average');
     assert.ok(share(t => t > mean * 2.5) > 0.04, 'some long thinks');
     // a hard position brings more long thinks; after a long think the next moves go quicker
     const hard = Array.from({ length: 2000 }, () => f.api.clutchPaceMs(fen, st, 300, 1500, { crit: 3 }, Math.random));

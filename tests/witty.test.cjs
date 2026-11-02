@@ -205,3 +205,29 @@ test('at full strength Witty is bold: a sacrifice may give up two or three pawns
     assert.equal(f.api.wittyChoose(fen, lines, { witty: true, mode: 'win' }, 'h6f7'), null, 'below full strength it is too much');
   } finally { f.close(); }
 });
+
+test('Witty draws his arrows: the pin, the long line a piece holds, the diagonal the plan goes for', async () => {
+  const f = setup();
+  try {
+    // Bb5 pins the knight on c6 to the king (d7 is empty)
+    const pin = f.api.wittyArrowsFor('r1bqkbnr/ppp2ppp/2np4/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4', 'f1b5');
+    assert.equal(pin.map(a => a.uci + ':' + a.kind).join(), 'b5e8:pin');
+    // Bg2 on the long diagonal: through the pawn on b7 to the rook on a8 (a pin, the classic fianchetto arrow)
+    const line = f.api.wittyArrowsFor('rnbqkbnr/pppp1ppp/8/4p3/8/6P1/PPPPPP1P/RNBQKBNR w KQkq - 0 2', 'f1g2');
+    assert.equal(line.map(a => a.uci + ':' + a.kind).join(), 'g2a8:pin');
+    // a rook on an open file it holds: the long line
+    const file = f.api.wittyArrowsFor('6k1/8/8/8/8/8/8/R5K1 w - - 0 1', 'a1a2');
+    assert.equal(file.map(a => a.uci + ':' + a.kind).join(), 'a2a8:line');
+    // a quiet pawn move whose plan is the fianchetto: the planned bishop move is drawn
+    const plan = f.api.wittyArrowsFor('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', 'g2g3', ['g2g3', 'e7e6', 'f1g2']);
+    assert.equal(plan.map(a => a.uci + ':' + a.kind).join(), 'f1g2:plan');
+    // nothing to say: nothing drawn
+    assert.equal(f.api.wittyArrowsFor('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', 'a2a3').length, 0);
+    // drawn on the board's arrow layer for a few seconds
+    const ctl = { scheduleArrows() {} };
+    f.api.wittyDraw(ctl, 'r1bqkbnr/ppp2ppp/2np4/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4', { from: 'f1', to: 'b5', uci: 'f1b5' }, null, 0);
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(ctl.wittyArrows.length, 1);
+    assert.equal(ctl.wittyArrows[0].uci, 'b5e8');
+  } finally { f.close(); }
+});

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.62.0
+// @version      6.63.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -720,7 +720,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // your own custom arrows, so they look and move exactly like them.
   const ENGINE_COLOR = '#f7c045';
   function addEngineArrows(seen) {
-    [...(this.engineArrows || []), ...(this.chainArrows || []), ...(this.clutchArrows || [])].forEach(spec => {
+    [...(this.engineArrows || []), ...(this.chainArrows || []), ...(this.clutchArrows || []), ...(this.wittyArrows || [])].forEach(spec => {
       const m = MOVE.exec(spec.uci.slice(0, 4));
       if (!m) return;
       seen.add(spec.id);
@@ -5077,8 +5077,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     later(fn, ms) { this.timers.push(setTimeout(fn, ms)); },
     clearTimers() { this.timers.forEach(clearTimeout); this.timers = []; cancelAnimationFrame(this.frame); },
     show() { this.ensure(); clearTimeout(this.hideTimer); this.el.classList.add('on'); },
-    // fades out once Clutch's hand has been idle a while
-    idle(ms = 2600) { clearTimeout(this.hideTimer); this.hideTimer = setTimeout(() => { if (!this.held && this.el) this.el.classList.remove('on'); }, ms); },
+    // fades out once Clutch's hand has been idle a while, but only when Clutch is not playing (while it plays the hand stays,
+    // resting and drifting over the board like a hand waiting for its turn)
+    idle(ms = 2600) { clearTimeout(this.hideTimer); this.hideTimer = setTimeout(() => { if (!this.held && this.el && !clutch.acting) this.el.classList.remove('on'); }, ms); },
+    // While it waits: now and then a slow, small move over the board (towards its own side, a piece it might play), never a jump.
+    drift(board) {
+      if (!settings.clutch.mouse || !board || this.held || Date.now() < (this.busyUntil || 0) || Date.now() < (this.nextDrift || 0)) return;
+      this.nextDrift = Date.now() + 1400 + Math.random() * 2200;
+      const r = board.getBoundingClientRect(), size = r.width / 8;
+      this.show();
+      if (this.x === null) { this.place(r.left + r.width / 2, r.top + r.height * 0.75); return; }
+      // a little way from where it is, kept over the board, more often over the lower (own) half
+      const nx = Math.max(r.left + size * 0.5, Math.min(r.right - size * 0.5, this.x + (Math.random() - 0.5) * size * 2.4));
+      const ny = Math.max(r.top + size * 0.5, Math.min(r.bottom - size * 0.5, this.y + (Math.random() - 0.35) * size * 1.8));
+      this.glide(nx, ny, 700 + Math.random() * 900);
+    },
     pulse() { this.el.classList.remove('pulse'); void this.el.offsetWidth; this.el.classList.add('pulse'); },
     // Picks up the piece standing on sq: its picture rides under the hand, the piece itself fades on its square.
     grab(board, sq) {
@@ -5113,10 +5126,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // The whole move, timed like the move itself: to the piece, a beat, then with it to its square.
     drag(board, start, from, to, toPiece, beat, withPiece) {
       this.clearTimers(); this.restore(); this.held = null;
-      const wasOn = !!(this.el && this.el.classList.contains('on'));
       this.show();
-      if (this.x === null || !wasOn) this.place(start.x, start.y);
+      // the hand starts where it was left (it remembers its place, even after fading); only the very first time from the pointer
+      if (this.x === null) this.place(start.x, start.y);
       const a = this.point(board, from), b = this.point(board, to);
+      this.busyUntil = Date.now() + toPiece + beat + withPiece + 400;
       this.glide(a.x, a.y, toPiece);
       this.later(() => this.grab(board, from), toPiece);
       this.later(() => this.glide(b.x, b.y, withPiece), toPiece + beat);
@@ -5128,9 +5142,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (this.held === key) return;
       this.unhold();
       this.clearTimers();
-      const wasOn = !!(this.el && this.el.classList.contains('on'));
       this.show();
-      if (this.x === null || !wasOn) { const r = board.getBoundingClientRect(); this.place(hand.x ?? r.left + r.width / 2, hand.y ?? r.top + r.height / 2); }
+      if (this.x === null) { const r = board.getBoundingClientRect(); this.place(hand.x ?? r.left + r.width / 2, hand.y ?? r.top + r.height / 2); }
       const a = this.point(board, step.from), b = this.point(board, step.to);
       const times = mouseTimes(Math.hypot(a.x - this.x, a.y - this.y), Math.hypot(b.x - a.x, b.y - a.y), a.size);
       const beat = Math.round(40 * handScale());
@@ -5686,6 +5699,74 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return { ...main, lines: [best, ...lines.filter(l => l !== best)] };
   }
 
+  // The arrows Witty Alieeeen draws while he plays, as a streamer does: after a move of a bishop, rook or queen, the pin it
+  // makes (through the pinned piece to what stands behind), or else the long open line it now holds (four squares or more);
+  // and the move the plan has next when it puts a bishop or queen on a long diagonal. [{ uci, color }] (from-to as uci).
+  const WITTY_ARROW = '#ff9f1a', WITTY_PLAN = '#f7c045';
+  function wittyArrowsFor(fen, uci, pv = null) {
+    const out = [];
+    try {
+      const game = new BoardStudioRules.Chess(fen);
+      const move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || 'q' });
+      if (!move) return out;
+      const us = move.color, rays = { b: [[1, 1], [1, -1], [-1, 1], [-1, -1]], r: [[1, 0], [-1, 0], [0, 1], [0, -1]] };
+      rays.q = [...rays.b, ...rays.r];
+      const sq = (f, r) => String.fromCharCode(97 + f) + (r + 1);
+      const at = (f, r) => game.get(sq(f, r));
+      const lines = (from, type) => (rays[type] || []).map(([df, dr]) => {
+        const path = []; let f = from.charCodeAt(0) - 97 + df, r = +from[1] - 1 + dr;
+        while (f >= 0 && f < 8 && r >= 0 && r < 8) { path.push({ f, r, p: at(f, r) }); if (path[path.length - 1].p) break; f += df; r += dr; }
+        return { df, dr, path };
+      });
+      if (/[brq]/.test(move.piece)) {
+        // a pin: the first piece on the line theirs, and behind it (past empty squares) a bigger one of theirs, or the king
+        for (const { df, dr, path } of lines(move.to, move.piece)) {
+          const first = path[path.length - 1];
+          if (!first || !first.p || first.p.color === us) continue;
+          let f = first.f + df, r = first.r + dr, behind = null;
+          while (f >= 0 && f < 8 && r >= 0 && r < 8) { const p = at(f, r); if (p) { behind = { f, r, p }; break; } f += df; r += dr; }
+          if (behind && behind.p.color !== us && (behind.p.type === 'k' || SAC_VALUE[behind.p.type] > SAC_VALUE[first.p.type])) {
+            out.push({ uci: move.to + sq(behind.f, behind.r), color: WITTY_ARROW, kind: 'pin' });
+            break;
+          }
+        }
+        // else the longest open line it holds now, towards their side if it can
+        if (!out.length) {
+          const forward = us === 'w' ? 1 : -1;
+          const best = lines(move.to, move.piece).map(l => {
+            const empty = l.path.filter(x => !x.p).length, end = l.path[l.path.length - 1];
+            const reach = end && end.p && end.p.color !== us ? l.path.length : empty;   // a line that ends on their piece reaches it
+            return { l, reach, end: reach === l.path.length ? end : l.path[empty - 1], score: reach + (l.dr === forward ? 1.5 : 0) };
+          }).filter(x => x.reach >= 4 && x.end).sort((a, b) => b.score - a.score)[0];
+          if (best) out.push({ uci: move.to + sq(best.end.f, best.end.r), color: WITTY_ARROW, kind: 'line' });
+        }
+      }
+      // the plan: our next move in the line, when it puts a bishop or queen on a long diagonal
+      if (pv && pv[2] && pv[0] && pv[0].slice(0, 4) === uci.slice(0, 4)) {
+        const theirs = pv[1] && game.move({ from: pv[1].slice(0, 2), to: pv[1].slice(2, 4), promotion: pv[1][4] || 'q' });
+        const next = theirs && game.move({ from: pv[2].slice(0, 2), to: pv[2].slice(2, 4), promotion: pv[2][4] || 'q' });
+        if (next && /[bq]/.test(next.piece)) {
+          const diag = lines(next.to, 'b').map(l => l.path.filter(x => !x.p).length).reduce((a, b) => Math.max(a, b), 0);
+          if (diag >= 4) out.push({ uci: next.from + next.to, color: WITTY_PLAN, kind: 'plan' });
+        }
+      }
+    } catch (e) { /* no arrows */ }
+    return out.slice(0, 2);
+  }
+  // Puts Witty's arrows on the board for a few seconds once the move has landed.
+  function wittyDraw(ctl, fen, step, pv, delay = 0) {
+    if (!ctl || !step) return;
+    const list = wittyArrowsFor(fen, step.uci || (step.from + step.to), pv);
+    clearTimeout(ctl.wittyTimer);
+    if (ctl.wittyArrows && ctl.wittyArrows.length) { ctl.wittyArrows = []; ctl.scheduleArrows?.(); }
+    if (!list.length) return;
+    ctl.wittyTimer = setTimeout(() => {
+      ctl.wittyArrows = list.map((a, i) => ({ id: `wa:${i}:${a.uci}`, uci: a.uci, color: a.color, opacity: 0.85 }));
+      ctl.scheduleArrows?.();
+      ctl.wittyTimer = setTimeout(() => { ctl.wittyArrows = []; ctl.scheduleArrows?.(); }, 3800);
+    }, Math.max(0, delay));
+  }
+
   // From a result to what to do: a mate becomes a plan, anything else one move.
   function clutchDecide(fen, result, s) {
     // Witty Alieeeen does not see a long forced mate (only very rarely): the moves are chosen as in a won game, not as a mate
@@ -6012,6 +6093,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       }).observe(board, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
     }
     if (clutch.suspended) return;
+    if (clutch.acting && settings.clutch.mouse) shownHand.drift(board);
     let fen, own;
     try {
       fen = board.game.getFEN();
@@ -6095,6 +6177,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       clutch.played = key; clutch.playedAt = Date.now();
       setClutch(`Clutch: ${premove ? 'premoving' : 'playing'} ${step.from}-${step.to}, ${note}`);
       clutchMove(board, step, own, instant, clock);
+      if (s.witty && !premove) wittyDraw(ctl, fen, step, extra.pv, (clutch.moveUntil || 0) - Date.now() - 250);
       // Witty Alieeeen: a sacrifice played starts its follow-through; a follow-through move uses one up; anything else ends it
       if (!premove) {
         clutch.witAfter = extra.brilliant ? 6 : Math.max(0, (clutch.witAfter || 0) - 1);
@@ -6144,7 +6227,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (!think) {
           if (entry.plan) clutch.plan = entry.plan;
           clutchShow(ctl, [{ id: 'cl:' + entry.step.uci, uci: entry.step.uci, color: CLUTCH_COLOR }]);
-          act(entry.step, false, `prepared answer to ${entry.reply} (${entry.note})`, false, { brilliant: !!entry.brilliant, follow: !!entry.follow, quick: !!entry.quick, line: entry.line || null });
+          act(entry.step, false, `prepared answer to ${entry.reply} (${entry.note})`, false, { brilliant: !!entry.brilliant, follow: !!entry.follow, quick: !!entry.quick, line: entry.line || null, pv: entry.pv || null });
           return;
         }
         // The answer was only looked at shallowly and the move calls for care: think a bit more first.
@@ -6160,7 +6243,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           const use = decision || { plan: entry.plan, step: entry.step, note: entry.note };
           if (use.plan) clutch.plan = use.plan;
           clutchShow(ctl, [{ id: 'cl:' + use.step.uci, uci: use.step.uci, color: CLUTCH_COLOR }]);
-          act(use.step, false, use.note, false, { brilliant: !!use.brilliant, follow: !!use.follow, quick: !!use.quick, line: use.line || null });
+          act(use.step, false, use.note, false, { brilliant: !!use.brilliant, follow: !!use.follow, quick: !!use.quick, line: use.line || null, pv: (use.pv || result.pv) || null });
         });
         return;
       }
@@ -6179,7 +6262,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         showClutchGhosts(ctl, (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv[0]).slice(0, 4).map(l => ({ fen, uci: l.pv[0], line: [l.pv[0]], then: l.pv[2] && l.pv[2].slice(0, 2) === l.pv[0].slice(2, 4) ? l.pv[2] : null, analysis: l.pv.slice(0, 2), color: CLUTCH_BLUE })));
         if (decision.plan) clutch.plan = decision.plan;
         clutchShow(ctl, [{ id: 'cl:' + decision.step.uci, uci: decision.step.uci, color: CLUTCH_COLOR }]);
-        act(decision.step, false, s.throw ? 'losing on purpose' : decision.note, !!(s.throw || s.max), { brilliant: !!decision.brilliant, follow: !!decision.follow, quick: !!decision.quick, line: decision.line || null });
+        act(decision.step, false, s.throw ? 'losing on purpose' : decision.note, !!(s.throw || s.max), { brilliant: !!decision.brilliant, follow: !!decision.follow, quick: !!decision.quick, line: decision.line || null, pv: result.pv || null });
       });
       return;
     }

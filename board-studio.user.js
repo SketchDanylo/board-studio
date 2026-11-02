@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.72.0
+// @version      6.73.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5049,7 +5049,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // draws; the move itself is made exactly as without it.
   const HAND_CSS = `
     .bs-hand { position: fixed; left: 0; top: 0; width: 0; height: 0; z-index: 2147483001; pointer-events: none;
-      opacity: 0; transition: opacity 220ms ease; }
+      opacity: 0; transition: opacity 220ms ease; will-change: transform; }
+    /* the hand's own small unsteadiness, run by the browser itself (smooth however busy the page is) */
+    .bs-hand .jit { position: absolute; left: 0; top: 0; animation: bs-jit 1.9s ease-in-out infinite alternate, bs-jit2 0.83s ease-in-out infinite alternate; }
+    .bs-hand.rest .jit { animation: bs-jit 1.9s ease-in-out infinite alternate, bs-jit2 0.83s ease-in-out infinite alternate, bs-rest 6.5s ease-in-out infinite alternate; }
+    @keyframes bs-jit { 0% { translate: 0 0; } 23% { translate: .6px -.4px; } 51% { translate: -.3px .5px; } 77% { translate: .4px .3px; } 100% { translate: -.5px -.2px; } }
+    @keyframes bs-jit2 { 0% { margin-left: 0; margin-top: 0; } 50% { margin-left: .35px; margin-top: -.3px; } 100% { margin-left: -.25px; margin-top: .3px; } }
+    @keyframes bs-rest { 0% { rotate: 0deg; transform-origin: -3px 6px; } 50% { rotate: 1.2deg; } 100% { rotate: -0.9deg; } }
     .bs-hand.on { opacity: 1; }
     .bs-hand .cur { position: absolute; left: -5px; top: -4px; width: 30px; height: 30px; transform-origin: 5px 4px;
       transition: transform 140ms cubic-bezier(.3, 1.4, .5, 1); filter: drop-shadow(0 0 5px rgba(76, 194, 255, .85)) drop-shadow(0 2px 2px rgba(0, 0, 0, .45)); }
@@ -5064,7 +5070,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .bs-hand .tag { position: absolute; left: 20px; top: 22px; font: 700 10px/1 system-ui, sans-serif; color: #fff;
       background: #fa5146; border-radius: 6px; padding: 3px 5px; opacity: 0; transform: scale(.6); transition: opacity 160ms, transform 160ms; white-space: nowrap; }
     .bs-hand.held .tag { opacity: 1; transform: scale(1); }
-    .bs-hand-piece { position: fixed; left: 0; top: 0; z-index: 2147483000; pointer-events: none; background-size: contain;
+    .bs-hand-piece { position: fixed; left: 0; top: 0; z-index: 2147483000; pointer-events: none; will-change: transform; background-size: contain;
       background-repeat: no-repeat; background-position: center; opacity: 0; transition: opacity 120ms;
       filter: drop-shadow(0 7px 7px rgba(0, 0, 0, .35)); }
     .bs-hand-piece.on { opacity: .96; }
@@ -5093,10 +5099,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const st = document.createElement('style'); st.id = 'bs-hand-css'; st.textContent = HAND_CSS; document.head.appendChild(st);
       }
       this.el = document.createElement('div'); this.el.className = 'bs-hand';
-      this.el.innerHTML = '<svg class="cur" viewBox="0 0 28 28" aria-hidden="true"><path d="M5 3.5l16.5 10.2-7.3 1.6 4.4 8.2-3.4 1.8-4.4-8.2-5.2 5.1z" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg><i class="ring"></i><b class="tag">premove</b>'
+      this.el.innerHTML = '<div class="jit"><svg class="cur" viewBox="0 0 28 28" aria-hidden="true"><path d="M5 3.5l16.5 10.2-7.3 1.6 4.4 8.2-3.4 1.8-4.4-8.2-5.2 5.1z" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg><i class="ring"></i><b class="tag">premove</b>'
         + '<svg class="van arrow" viewBox="0 0 22 22" aria-hidden="true"><path d="M2 1.5v16.2l4.1-3.9 2.9 6.6 2.8-1.2-2.9-6.5h5.8z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg>'
         + '<svg class="van open" viewBox="0 0 26 26" aria-hidden="true"><g fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"><rect x="7" y="5" width="3" height="10" rx="1.5"/><rect x="10" y="3" width="3" height="11" rx="1.5"/><rect x="13" y="3.6" width="3" height="10.5" rx="1.5"/><rect x="16" y="5.6" width="3" height="9" rx="1.5"/><rect x="2.6" y="11.2" width="3" height="8" rx="1.5" transform="rotate(-38 4.1 15.2)"/><rect x="6.6" y="11" width="12.6" height="11.6" rx="4.6"/></g></svg>'
-        + '<svg class="van closed" viewBox="0 0 26 26" aria-hidden="true"><g fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"><rect x="7" y="8.6" width="3" height="5.4" rx="1.5"/><rect x="10" y="7.8" width="3" height="6" rx="1.5"/><rect x="13" y="8" width="3" height="6" rx="1.5"/><rect x="16" y="8.8" width="3" height="5.4" rx="1.5"/><rect x="6.6" y="11" width="12.6" height="11" rx="4.6"/><rect x="4.4" y="12.6" width="3" height="5.6" rx="1.5" transform="rotate(-20 5.9 15.4)"/></g></svg>';
+        + '<svg class="van closed" viewBox="0 0 26 26" aria-hidden="true"><g fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"><rect x="7" y="8.6" width="3" height="5.4" rx="1.5"/><rect x="10" y="7.8" width="3" height="6" rx="1.5"/><rect x="13" y="8" width="3" height="6" rx="1.5"/><rect x="16" y="8.8" width="3" height="5.4" rx="1.5"/><rect x="6.6" y="11" width="12.6" height="11" rx="4.6"/><rect x="4.4" y="12.6" width="3" height="5.6" rx="1.5" transform="rotate(-20 5.9 15.4)"/></g></svg></div>';
       this.piece = document.createElement('div'); this.piece.className = 'bs-hand-piece';
       document.body.append(this.piece, this.el);
     },
@@ -5109,7 +5115,27 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     place(x, y) {
       this.x = x; this.y = y;
       this.seg = null; this.vx = 0; this.vy = 0;
+      this.anim?.cancel(); this.panim?.cancel(); this.anim = this.panim = null;
       this.draw(x, y);
+    },
+    // Hands the movement to the browser: the path, worked out once (the same curve as at()), runs as a compositor animation,
+    // so it stays smooth while the page is busy thinking (as a real pointer, which the page never draws). Without the
+    // animation API (or before the first paint) the frame loop draws it instead.
+    paint(pieceOnly = false) {
+      const g = this.seg;
+      if (!g || !this.el || typeof this.el.animate !== 'function') return false;
+      const now = performance.now(), from = Math.max(g.t0, now), left = g.t0 + g.ms - from;
+      if (left <= 0) return false;
+      const n = Math.max(2, Math.min(120, Math.round(left / 12))), s = this.pieceSize || 0, kf = [], kp = [];
+      for (let i = 0; i <= n; i++) {
+        const p = this.at(from + left * i / n);
+        kf.push({ transform: `translate3d(${p.x}px, ${p.y}px, 0)` });
+        kp.push({ transform: `translate3d(${p.x - s / 2}px, ${p.y - s / 2}px, 0)` });
+      }
+      const opts = { duration: left, fill: 'forwards', easing: 'linear' };
+      if (!pieceOnly) { this.anim?.cancel(); this.anim = this.el.animate(kf, opts); }
+      this.panim?.cancel(); this.panim = this.piece.animate(kp, opts);
+      return true;
     },
     draw(x, y) {
       this.el.style.transform = `translate(${x}px, ${y}px)`;
@@ -5144,6 +5170,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const v1 = through ? { x: ux * dist / ms * 0.9, y: uy * dist / ms * 0.9 } : { x: 0, y: 0 };
       this.seg = { t0: now, ms, x0, y0, x1: x, y1: y, vx0: cur.vx, vy0: cur.vy, vx1: v1.x, vy1: v1.y, nx: -uy * bend, ny: ux * bend };
       this.x = x; this.y = y;
+      this.composited = this.paint();
+      this.el.classList.remove('rest');
       this.run();
     },
     // Where the hand is at time t on its movement (Hermite curve: positions and speeds at both ends, so movements join
@@ -5180,7 +5208,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           + rest * 2.6 * Math.sin(t * 0.0009 + ph[3]);
         const ty = amp * (0.6 * Math.sin(t * 0.013 + ph[4]) + 0.3 * Math.sin(t * 0.023 + ph[5]) + 0.1 * Math.sin(t * 0.071 + ph[0]))
           + rest * 2.2 * Math.sin(t * 0.0011 + ph[1]);
-        if (this.el.classList.contains('on')) this.draw(p.x + tx, p.y + ty);
+        const arrived = !this.seg || t >= this.seg.t0 + this.seg.ms;
+        if (this.el.classList.contains('on')) {
+          if (!this.composited) this.draw(p.x + tx, p.y + ty);
+          else {
+            // the browser moves it; here only the hand shape (open over a piece) and, at rest, the slow drift of a resting hand
+            if (this.vanilla && t - (this.overAt || 0) > 70) { this.overAt = t; this.el.classList.toggle('over', this.overPiece(p.x, p.y)); }
+            if (arrived && this.seg && t - this.seg.t0 - this.seg.ms > 900) this.el.classList.add('rest');
+          }
+        }
         // the next frame; a window that is covered or hidden gets no animation frames, so a timer stands in when none comes
         // (positions come from the time anyway, so either way it is where it should be)
         let done = false;
@@ -5206,7 +5242,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           this.occAt = Date.now();
           this.occ = new Set(new BoardStudioRules.Chess(board.game.getFEN()).board().flat().filter(Boolean).map(p => p.square));
         }
-        const r = board.getBoundingClientRect(), size = r.width / 8, flipped = board.classList.contains('flipped');
+        if (!this.rect || Date.now() - this.rectAt > 500) { this.rect = board.getBoundingClientRect(); this.rectAt = Date.now(); }
+        const r = this.rect, size = r.width / 8, flipped = board.classList.contains('flipped');
         const c = Math.floor((x - r.left) / size), w = Math.floor((y - r.top) / size);
         if (c < 0 || c > 7 || w < 0 || w > 7) return false;
         const sq = String.fromCharCode(97 + (flipped ? 7 - c : c)) + (flipped ? w + 1 : 8 - w);
@@ -5524,6 +5561,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.restore();
       if (real) { this.dimmed = { el: real, opacity: real.style.opacity }; real.style.opacity = '.3'; }
       this.el.classList.add('grab'); this.piece.classList.add('on');
+      if (this.composited) { if (!this.paint(true)) { this.panim?.cancel(); const q = this.at(performance.now()), z = this.pieceSize; this.panim = null; this.piece.style.transform = `translate3d(${q.x - z / 2}px, ${q.y - z / 2}px, 0)`; } }
       this.pulse();
     },
     restore() { if (this.dimmed) { this.dimmed.el.style.opacity = this.dimmed.opacity; this.dimmed = null; } },
@@ -7067,10 +7105,17 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const refresh = entry => {
       // The answers to the three likeliest replies are enough to name a premove; waiting for all of them was why they were rare.
       if (!book.complete && book.total && book.entries.size >= Math.min(3, book.total)) book.complete = true;
-      const racing = clutchRace(s.mode, clock, readClock('opp'));
-      const certain = racing ? null : clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw' || !!s.gobble);
+      // Time trouble (under 10 s of our own): every move is premoved, whatever the outcome; the answer to their likeliest reply,
+      // which the book works out for the outcome Clutch plays for (so a win premoves good moves, a loss poorer ones).
+      const scramble = clock < 10 && !clutchUntimed();
+      const racing = clutchRace(s.mode, clock, readClock('opp')) && !scramble;
+      let certain = racing ? null : clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw' || !!s.gobble);
+      if (!certain && scramble && !racing) {
+        const lead = [...book.entries.values()].find(e => e.reply === book.topReply) || [...book.entries.values()][0];
+        if (lead && lead.step) certain = { step: lead.step, fen: lead.fen, line: [lead.step.uci], conditional: false, scramble: true, why: 'time trouble: premoving' };
+      }
       // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
-      const sticky = book.premove && (book.premove.wiggle || book.premove.gamble || book.premove.likely || book.premove.endgame);
+      const sticky = book.premove && (book.premove.wiggle || book.premove.gamble || book.premove.likely || book.premove.endgame || book.premove.scramble);
       const now = racing ? null : sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (book.endgame || certain || book.wiggle || null);
       if (book.premove && (!now || now.step.uci !== book.premove.step.uci)) {
         if (book.premoveSet) cancelPremove(board);

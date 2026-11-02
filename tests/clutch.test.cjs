@@ -1005,14 +1005,22 @@ test('a simple mate is delivered when drawing, a complex one (a sacrifice) is no
   } finally { f.close(); }
 });
 
-test('playing to lose with their clock nearly out: the whole clock is run out, on any move, instead of letting them flag', () => {
+test('playing to lose with their clock nearly out: our clock is run out over a few long thinks (never one frozen sit), instead of letting them flag', () => {
   const f = setup();
   try {
     const burn = f.api.clutchBurnMs;
     const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 20';
     const quiet = { uci: 'g1f3', check: false, capture: false, promotion: null };
-    assert.ok(burn('lose', 'board', quiet, fen, 40, 8) >= 40800, 'they have 8 s, we have 40: our clock is run out');
-    assert.ok(burn('lose', 'board', { ...quiet, capture: true }, fen, 40, 8) >= 40800, 'even a capture waits');
+    f.api.clutch.racing = false;
+    const hold = burn('lose', 'board', quiet, fen, 40, 8);
+    assert.ok(hold >= 11000 && hold <= 16000, `they have 8 s, we have 40: a long think, a third or so of ours (${hold} ms), not all of it`);
+    assert.ok(burn('lose', 'board', { ...quiet, capture: true }, fen, 40, 8) >= 11000, 'even a capture waits');
+    // over the next moves the clock goes down to nothing: a few holds, the last few seconds in one
+    let clock = 40, moves = 0;
+    while (clock > 0 && moves < 20) { clock -= burn('lose', 'board', quiet, fen.replace(/ 20$/, ' ' + (20 + moves)), clock, 8) / 1000; moves++; }
+    assert.ok(clock <= 0 && moves >= 3 && moves <= 10, `out of time after ${moves} moves`);
+    assert.ok(burn('lose', 'board', quiet, fen, 4, 2) >= 4800, 'the last seconds: the flag falls');
+    f.api.clutch.racing = false;
     assert.equal(burn('lose', 'board', quiet, fen, 40, 30), 0, 'they have plenty: the board decides');
     assert.equal(burn('lose', 'board', quiet, fen, 10, 15), 0, 'they have more than us: no race, ours is lower already');
     assert.equal(burn('win', null, quiet, fen, 40, 8), 0, 'only a loss does it');

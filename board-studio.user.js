@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.69.1
+// @version      6.69.2
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5572,12 +5572,19 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   //    more than 40% of its own, and only when it has plenty: a floor of 12 s on its own clock stays untouched.
   //  - Playing to lose with their clock nearly out (under 20 s and below ours), the whole clock is run out at once.
   // Returns how long to hold this move, 0 for none.
-  const clutchRace = (mode, clock, oppClock) => mode === 'lose' && oppClock !== null && oppClock !== undefined && oppClock < 20 && oppClock < clock * 0.9;
+  // (once begun, the race goes on until our flag falls, even after our clock has dropped below theirs; a new game resets it)
+  const clutchRace = (mode, clock, oppClock) => {
+    if (mode !== 'lose' || oppClock === null || oppClock === undefined || oppClock >= 20) return false;
+    if (oppClock < clock * 0.9) clutch.racing = true;
+    return !!clutch.racing;
+  };
   function clutchBurnMs(mode, way, step, fen, clock, oppClock = null) {
     if (!step || (mode !== 'lose' && mode !== 'draw')) return 0;
     // A loss with the other side nearly out of time: they would flag before the board decides anything, and that is a win for us.
     // So the clock is run out here instead, on any move: it is our turn, their clock does not move while we sit.
-    if (clutchRace(mode, clock, oppClock)) return Math.round(clock * 1000 + 800);
+    // Not in one frozen sit (that looks like the page hung): a long think on every move, about a third of what is left (at least
+    // 3 s), so the clock runs down over a few moves; only the last few seconds go in one.
+    if (clutchRace(mode, clock, oppClock)) return clock < 5 ? Math.round(clock * 1000 + 800) : Math.round(Math.min(clock * 1000 + 800, Math.max(3000, clock * 1000 * (0.28 + 0.12 * unitHash(fen + 'race')))));
     if (mode === 'lose' && way !== 'time') return 0;
     const full = +String(fen).split(' ')[5] || 1;
     let forced = false;
@@ -6460,7 +6467,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         clutch.lastMove = inferLastMove(clutch.curFen, fen); clutch.curFen = fen;
         // a move was made, by either side: what was shown belonged to the position before it, and goes
         if (ctl) showClutchGhosts(ctl, []);
-        if (/^rnbqkbnr\/pppppppp\/8\/8\/8\/8\/PPPPPPPP\/RNBQKBNR/.test(fen) && fen.split(' ')[5] === '1' && fen.split(' ')[1] === 'w') { clutch.seen = {}; clutch.mode = null; clutch.way = null; clutch.sunk = 0; clutch.burn = null; clutch.lastValue = null; }
+        if (/^rnbqkbnr\/pppppppp\/8\/8\/8\/8\/PPPPPPPP\/RNBQKBNR/.test(fen) && fen.split(' ')[5] === '1' && fen.split(' ')[1] === 'w') { clutch.racing = false; clutch.seen = {}; clutch.mode = null; clutch.way = null; clutch.sunk = 0; clutch.burn = null; clutch.lastValue = null; }
         const k = fen.split(' ').slice(0, 3).join(' ');
         clutch.seen = clutch.seen || {};
         clutch.seen[k] = (clutch.seen[k] || 0) + 1;
@@ -6469,7 +6476,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       own = playingAs === 1 ? 'w' : playingAs === 2 ? 'b' : null;
       if (own && fen.split(' ')[1] === own && clutch.turnFen !== fen) { clutch.turnFen = fen; clutch.turnAt = Date.now(); }
     } catch (e) { return; }
-    if (!own) { setClutchMode(null); clutch.burn = null; clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); shownHand.unhold(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
+    if (!own) { clutch.racing = false; setClutchMode(null); clutch.burn = null; clutch.acting = false; clutch.seen = {}; clutch.mode = null; clutch.lastValue = null; clutch.jitter = null; clutch.engaged = false; clutchStopBook(); shownHand.unhold(); if (ctl) clutchClear(ctl); setClutch('Clutch: waiting for a game you are playing'); return; }
     // The fast path: the opponent has just made a move the book was ready for and the answer is the premove
     // (or an opening-book or plain answer that needs no more thought). Nothing is read or worked out first:
     // the move goes out in the same breath as the board changing.
@@ -6507,7 +6514,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // (the ends of the Elo slider decide the outcome themselves: 0 loses, 3501 wins)
     const throwing = elo <= ELO_THROW, maxed = elo >= ELO_MAX;
     const odds = throwing ? 'throw' : maxed ? 'max' : base.win + '/' + base.draw;
-    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = throwing ? 'lose' : maxed ? 'win' : clutchRollMode(base); clutch.odds = odds; clutch.way = !throwing && clutch.mode === 'lose' && Math.random() < 0.4 ? 'time' : 'board'; }
+    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = throwing ? 'lose' : maxed ? 'win' : clutchRollMode(base); clutch.odds = odds; clutch.way = !throwing && clutch.mode === 'lose' && !clutchUntimed() && Math.random() < 0.4 ? 'time' : 'board'; }
+    // no clock in this game (No Limit): there is no losing on time, it is done on the board
+    if (clutch.way === 'time' && clutchUntimed()) clutch.way = 'board';
     s.mode = clutch.mode; s.throw = throwing; s.max = maxed;
     // Witty leads until the endgame, Gobble in it
     { const st = clutchStyle(base, fen); s.witty = st.witty; s.gobble = st.gobble; }

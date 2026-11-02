@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.71.0
+// @version      6.71.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5160,8 +5160,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const ty = amp * (0.6 * Math.sin(t * 0.013 + ph[4]) + 0.3 * Math.sin(t * 0.023 + ph[5]) + 0.1 * Math.sin(t * 0.071 + ph[0]))
           + rest * 2.2 * Math.sin(t * 0.0011 + ph[1]);
         if (this.el.classList.contains('on')) this.draw(p.x + tx, p.y + ty);
-        // a hidden tab gets no animation frames: a timer keeps the clock going (positions come from the time anyway)
-        this.frame = document.hidden ? setTimeout(step, 50) : requestAnimationFrame(step);
+        // the next frame; a window that is covered or hidden gets no animation frames, so a timer stands in when none comes
+        // (positions come from the time anyway, so either way it is where it should be)
+        let done = false;
+        const go = () => { if (done) return; done = true; clearTimeout(this.tmo); step(); };
+        this.frame = requestAnimationFrame(go);
+        this.tmo = setTimeout(go, document.hidden ? 50 : 40);
       };
       step();
     },

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.64.0
+// @version      6.65.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5557,14 +5557,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // forced move, more for a hard one; a little quicker at a low rating, a little slower at a high one; hurried when the
   // clock is low. Only the waiting changes: what is played is decided exactly as before. A premove is a premove (made at
   // once) only with the clock under 15 s; with more on it, an obvious move still takes a moment.
-  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false } = {}, random = Math.random) {
+  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false, settled = false } = {}, random = Math.random) {
     if (!step || clock === null || clock === undefined) return 0;
     // a premove goes at once with little time left; a fast blitz player (Witty Alieeeen) premoves freely up to half a minute
     if (premove && clock < (witty ? 30 : 15)) return 0;
     // taking back in an exchange is done at once, premoved or not (nobody stops to think about a recapture)
     if (recapture) return 0;
     const full = +String(fen).split(' ')[5] || 1;
-    const left = Math.max(20, 45 - full);
+    // (with no clock the five minutes never run down, so they are shared as if 40 moves were always left)
+    const left = clutchUntimed() ? 40 : Math.max(20, 45 - full);
     let forced = false;
     try { forced = new BoardStudioRules.Chess(fen).moves().length === 1; } catch (e) { /* none */ }
     let kind = forced ? 0.15 : book ? 0.15 : quick ? 0.25 : premove ? 0.4 : step.check ? 0.8 : 1;
@@ -5578,10 +5579,27 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (slow) kind = Math.max(kind, 0.5) * 1.7;
     // Witty Alieeeen plays his ordinary moves quickly (the long thinks are for the sacrifices)
     if (witty && !brilliant && !follow) kind *= 0.75;
-    let ms = clock * 1000 / left * kind * rating * (0.55 + 0.9 * random());
+    // How a person's times spread (what chess.com's time bars show): not the same few seconds every move, but mostly short
+    // moves, some played on instinct in a moment, and now and then a long think (more often in a hard position), after
+    // which the next moves or two go quickly because the plan is made (settled). The spread averages out to the share
+    // above, so the clock is used as before. Opening moves out of book still go quicker than middlegame ones.
+    const c = Math.max(0, Math.min(3, crit || 0));
+    const pInstinct = settled ? 0.5 : c ? 0.18 : 0.32, pDeep = settled ? 0 : 0.06 + 0.05 * c;
+    const roll = random(), u = Math.min(0.999, Math.max(0.001, random())), z = 4.91 * (u ** 0.14 - (1 - u) ** 0.14);   // a normal draw (Tukey's approximation)
+    let shape = Math.exp(0.6 * z - 0.18);                                    // log-normal, median 0.84
+    if (roll < pInstinct) shape *= 0.22 + 0.25 * random();                   // seen at a glance
+    else if (roll > 1 - pDeep) shape *= 2.8 + 2.2 * random();                // the long think
+    if (settled) shape *= 0.6;
+    if (full <= 10 && !book) shape *= 0.7;
+    let ms = clock * 1000 / left * kind * rating * shape;
+    // with no clock (No Limit) a person plays briskly: most moves a few seconds
+    if (clutchUntimed()) ms *= 0.6;
+    // a real move takes a moment of looking, however obvious (not a premove, a book move or a forced one)
+    if (clock >= 10 && kind >= 0.5) ms = Math.max(ms, 300 + 500 * random());
     if (clock < 5) ms *= 0.3;
     const cap = roomy && (brilliant || follow) && clock >= 20 ? 0.2 : slow ? 0.18 : 0.12;
-    return Math.round(Math.min(ms, clock * 1000 * cap, clutchUntimed() ? 17000 : (brilliant || follow) && roomy ? 25000 : 17000));
+    // no clock (No Limit): never more than 17 s; with a clock, a long think is bounded by the clock alone (a share of it, at most 90 s)
+    return Math.round(Math.min(ms, clock * 1000 * cap, clutchUntimed() ? 17000 : 90000));
   }
 
   function clutchPaceLeft(fen, step, clock, elo, opts = {}) {
@@ -5589,7 +5607,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const key = fen + '|' + step.from + step.to;
     if (!clutch.pace || clutch.pace.key !== key) {
       const recapture = !!(step.capture && clutch.lastMove && clutch.lastMove.to === step.to);
-      clutch.pace = { key, ms: clutchPaceMs(fen, step, clock, elo, { ...opts, recapture }) };
+      const full = +String(fen).split(' ')[5] || 1;
+      // a long think a move or two ago: the plan is made, these go quickly
+      const settled = clutch.longAt !== undefined && full - clutch.longAt >= 1 && full - clutch.longAt <= 2;
+      const ms = clutchPaceMs(fen, step, clock, elo, { ...opts, recapture, settled });
+      const usual = clutchUntimed() ? (clock || 0) * 1000 / 40 * 0.6 : (clock || 0) * 1000 / Math.max(20, 45 - full);
+      if (ms > usual * 2.2) clutch.longAt = full;
+      else if (clutch.longAt !== undefined && full - clutch.longAt > 2) clutch.longAt = undefined;
+      clutch.pace = { key, ms };
     }
     const spent = clutch.turnFen === fen && clutch.turnAt ? Date.now() - clutch.turnAt : 0;
     return Math.max(0, clutch.pace.ms - spent);

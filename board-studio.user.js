@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.67.0
+// @version      6.68.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -91,7 +91,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Clutch: from `time` seconds on your clock down, the engine takes over, playing at `elo`
     // (with `auto` the opponent's rating). Everything else (what counts as winning, how deep to look,
     // how much clock a deep search may cost) it works out itself.
-    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40, mouse: false, witty: false },
+    clutch: { on: false, time: 10, elo: 1500, auto: true, win: 60, draw: 40, mouse: false, witty: false, gobble: false },
     global: { on: true }
   };
 
@@ -2289,6 +2289,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
           <em class="elo-hint"></em>
           <div class="sub" data-key="mouse" title="Shows Clutch's hand as a second mouse pointer: how it goes to a piece, picks it up, carries it and lets go, and the premove it holds ready. Its speed is clutchDPI at the top of the script."><span>Show Mouse</span><button class="sw" role="switch" type="button" aria-label="Show Mouse"></button></div>
           <div class="sub" data-key="witty" title="Plays like Witty_Alien: his gambits (Alien, Martian, Elephant, Englund) where the rating leaves room for them, and the sacrifice or the move that tears the king open rather than the plain best move, a mate with a sacrifice rather than the quickest. Never at the cost of the outcome Clutch plays for."><span>Witty Alieeeen</span><button class="sw" role="switch" type="button" aria-label="Witty Alieeeen"></button></div>
+          <div class="sub" data-key="gobble" title="Greedy and quick: takes the material it likes (pieces before pawns) whenever the outcome Clutch plays for allows it, premoves a lot and plays fast, fastest in the endgame. With Witty Alieeeen on as well, Witty leads until the endgame; in the endgame Gobble takes over."><span>Gobble</span><button class="sw" role="switch" type="button" aria-label="Gobble"></button></div>
           <div class="odds" title="How a game is played: to win, to draw or to lose. Drag the two balls; what is left of the bar is losing.">
             <div class="odds-bar"><i class="seg w"></i><i class="seg d"></i><i class="seg l"></i><button class="ball" type="button" data-ball="0" aria-label="Win share ends here"></button><button class="ball" type="button" data-ball="1" aria-label="Draw share ends here"></button></div>
           </div>
@@ -5604,10 +5605,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   // forced move, more for a hard one; a little quicker at a low rating, a little slower at a high one; hurried when the
   // clock is low. Only the waiting changes: what is played is decided exactly as before. A premove is a premove (made at
   // once) only with the clock under 15 s; with more on it, an obvious move still takes a moment.
-  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false, settled = false, endgame = false } = {}, random = Math.random) {
+  function clutchPaceMs(fen, step, clock, elo = 1500, { premove = false, book = false, crit = 0, recapture = false, brilliant = false, follow = false, slow = false, quick = false, witty = false, settled = false, endgame = false, gobble = false } = {}, random = Math.random) {
     if (!step || clock === null || clock === undefined) return 0;
     // the endgame plan is premoved and goes the instant they move (a pawn race is played on premoves)
     if (premove && endgame) return 0;
+    // Gobble premoves at once with up to a minute on the clock
+    if (premove && gobble && clock < 60) return 0;
     // a premove goes at once with little time left; a fast blitz player (Witty Alieeeen) premoves freely up to half a minute
     if (premove && clock < (witty ? 30 : 15)) return 0;
     // taking back in an exchange is done at once, premoved or not (nobody stops to think about a recapture)
@@ -5628,12 +5631,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (slow) kind = Math.max(kind, 0.5) * 1.7;
     // Witty Alieeeen plays his ordinary moves quickly (the long thinks are for the sacrifices)
     if (witty && !brilliant && !follow) kind *= 0.75;
+    // Gobble plays fast, fastest in the endgame (no long thinks there)
+    if (gobble) kind *= gobbleEndgame(fen) ? 0.35 : 0.6;
     // How a person's times spread (what chess.com's time bars show): not the same few seconds every move, but mostly short
     // moves, some played on instinct in a moment, and now and then a long think (more often in a hard position), after
     // which the next moves or two go quickly because the plan is made (settled). The spread averages out to the share
     // above, so the clock is used as before. Opening moves out of book still go quicker than middlegame ones.
     const c = Math.max(0, Math.min(3, crit || 0));
-    const pInstinct = settled ? 0.5 : c ? 0.18 : 0.32, pDeep = settled ? 0 : 0.06 + 0.05 * c;
+    const gEnd = gobble && gobbleEndgame(fen);
+    const pInstinct = settled || gEnd ? 0.5 : c ? 0.18 : 0.32, pDeep = settled || gEnd ? 0 : 0.06 + 0.05 * c;
     const roll = random(), u = Math.min(0.999, Math.max(0.001, random())), z = 4.91 * (u ** 0.14 - (1 - u) ** 0.14);   // a normal draw (Tukey's approximation)
     let shape = Math.exp(0.6 * z - 0.18);                                    // log-normal, median 0.84
     if (roll < pInstinct) shape *= 0.22 + 0.25 * random();                   // seen at a glance
@@ -5924,7 +5930,21 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         if (hit.length >= 2) hit.sort((a, b) => b.n - a.n).slice(0, 2).forEach(h => square(h.s, WITTY_RED, 'king'));
       }
     } catch (e) { /* nothing drawn */ }
-    return { arrows: arrows.slice(0, 4), squares: squares.slice(0, 5) };
+    // the lines, marked square by square like an edited video (a band along the whole file, rank or diagonal)
+    const bands = [];
+    const bandColor = { pin: WITTY_ORANGE, line: WITTY_ORANGE, check: WITTY_RED, plan: WITTY_GREEN };
+    for (const a of arrows) {
+      const path = linePath(a.uci.slice(0, 2), a.uci.slice(2, 4));
+      if (path && path.length >= 3 && bandColor[a.kind] && bands.length < 3) bands.push({ squares: path, color: bandColor[a.kind], kind: a.kind });
+    }
+    return { arrows: arrows.slice(0, 4), squares: squares.slice(0, 5), bands };
+  }
+  // The squares from one square to another along a file, rank or diagonal (both ends included); null when they are not on one line.
+  function linePath(from, to) {
+    const f0 = from.charCodeAt(0) - 97, r0 = +from[1] - 1, f1 = to.charCodeAt(0) - 97, r1 = +to[1] - 1;
+    const df = Math.sign(f1 - f0), dr = Math.sign(r1 - r0), n = Math.max(Math.abs(f1 - f0), Math.abs(r1 - r0));
+    if (!n || (f0 !== f1 && r0 !== r1 && Math.abs(f1 - f0) !== Math.abs(r1 - r0))) return null;
+    return Array.from({ length: n + 1 }, (_, i) => String.fromCharCode(97 + f0 + df * i) + (r0 + dr * i + 1));
   }
   const wittyArrowsFor = (fen, uci, pv = null) => wittyMarksFor(fen, uci, pv).arrows;
 
@@ -5933,6 +5953,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .bs-witty-sq { position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; opacity: .8;
       animation: bs-witty-sq-in 220ms ease-out both; }
     .bs-witty-sq.bs-leave { animation: bs-witty-sq-out 260ms ease-in forwards; }
+    .bs-witty-sq.band { opacity: .42; animation: bs-witty-band-in 200ms ease-out both; }
+    .bs-witty-sq.band.bs-leave { animation: bs-witty-sq-out 260ms ease-in forwards; }
+    @keyframes bs-witty-band-in { from { opacity: 0; transform: scale(.6); } }
     .bs-hand-sel { position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; background: rgba(255, 255, 51, .5);
       animation: bs-witty-sq-in 90ms ease-out both; }
     @keyframes bs-witty-sq-in { from { opacity: 0; } }
@@ -5962,7 +5985,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // (only the highlighted squares are drawn, the way the user marks the board; the arrows are worked out but not shown)
     wittyClear(ctl);
     const board = ctl.board;
-    ctl.wittySquares = board && board.isConnected !== false ? marks.squares.map(m => boardSquareEl(board, m.sq, 'bs-witty-sq', m.color)) : [];
+    const els = [];
+    if (board && board.isConnected !== false) {
+      // the bands first (swept in along the line, one square after another), the marked squares solid over them
+      const taken = new Set(marks.squares.map(m => m.sq));
+      (marks.bands || []).forEach((band, b) => band.squares.forEach((sq, i) => {
+        if (taken.has(sq)) return;
+        taken.add(sq);
+        const el = boardSquareEl(board, sq, 'bs-witty-sq band', band.color);
+        el.style.animationDelay = `${b * 120 + i * 40}ms`;
+        els.push(el);
+      }));
+      marks.squares.forEach(m => els.push(boardSquareEl(board, m.sq, 'bs-witty-sq', m.color)));
+    }
+    ctl.wittySquares = els;
     ctl.wittyTimer = setTimeout(() => wittyClear(ctl), ms);
   }
   // Puts Witty's marks on the board once the move has landed; they stay while the opponent thinks (about seven seconds).
@@ -5970,7 +6006,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (!ctl || !step) return;
     const marks = wittyMarksFor(fen, step.uci || (step.from + step.to), pv);
     wittyClear(ctl);
-    if (!marks.squares.length) return;
+    if (!marks.squares.length && !(marks.bands || []).length) return;
     ctl.wittyTimer = setTimeout(() => wittyShow(ctl, marks, 7000), Math.max(0, delay));
   }
   // While he takes a long think: the square he is looking at going to (green) and where he expects the reply (red).
@@ -5982,6 +6018,47 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   }
 
   // From a result to what to do: a mate becomes a plan, anything else one move.
+  // ---------- Gobble ----------
+
+  // The endgame, as far as Gobble is concerned: no queens and at most six pieces besides kings and pawns, or queens and at most three.
+  function gobbleEndgame(fen) {
+    const b = String(fen).split(' ')[0], big = (b.match(/[nbrq]/gi) || []).length;
+    return /q/i.test(b) ? big <= 3 : big <= 6;
+  }
+  // Which style leads this move: Witty until the endgame, Gobble in it (it switches Witty off there).
+  function clutchStyle(base, fen) {
+    const end = gobbleEndgame(fen);
+    return { gobble: !!base.gobble && (end || !base.witty), witty: !!base.witty && !(base.gobble && end), endgame: end };
+  }
+  // Gobble's pick: among the moves looked at, the capture that wins the most material it likes (a piece more than a pawn),
+  // as long as the outcome holds (winning: little given up, more once clearly ahead; drawing: level stays level; losing: any).
+  // Null when no capture qualifies or the best move already is one.
+  function gobbleChoose(fen, lines, s, baseUci) {
+    const val = l => l.mate !== undefined ? Math.sign(l.mate) * (10000 - Math.abs(l.mate)) : l.cp;
+    const base = lines.find(l => l.pv[0] === baseUci) || lines[0];
+    if (!base || val(base) === undefined) return null;
+    const b = val(base), mode = s.mode || 'win';
+    if (base.mate > 0) return null;                                   // a mate is never swapped for material
+    let best = null;
+    for (const l of lines) {
+      const uci = l.pv[0], v = val(l);
+      if (!uci || v === undefined || uci === baseUci) continue;
+      const st = stepFor(fen, uci);
+      const g = new BoardStudioRules.Chess(fen), target = g.get(uci.slice(2, 4));
+      if (!st || !target || target.color === g.turn()) continue;     // only captures
+      const gain = SAC_VALUE[target.type] * 100 - materialAtRisk(fen, uci);
+      if (gain < 100) continue;
+      const ok = mode === 'win' ? v >= b - (b >= 300 ? 200 : 80) && !(b >= 250 && v < 200)
+        : mode === 'draw' ? v >= Math.min(b, -40) && v >= b - 60
+        : mode === 'lose' ? v <= b + 150 && v < 300                   // losing: the greedy grab that does not save the game
+        : v >= b - 100;
+      if (!ok) continue;
+      const score = gain + (target.type !== 'p' ? 150 : 0) + (v - b) * 0.5;
+      if (!best || score > best.score) best = { line: l, step: st, gain, score, piece: target.type };
+    }
+    return best;
+  }
+
   function clutchDecide(fen, result, s) {
     // Witty Alieeeen does not see a long forced mate (only very rarely): the moves are chosen as in a won game, not as a mate
     if (s.witty && result.mate > wittyMateCap(fen) && !s.max) {
@@ -6022,6 +6099,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const score = pick.line.mate !== undefined ? `mate ${pick.line.mate}` : (pick.line.cp / 100).toFixed(2);
         const brilliant = isSoundSacrifice(fen, styled.uci);
         return { plan: null, step: styled, crit: 0, gap: Infinity, witty: true, brilliant, line: brilliant ? pick.line.pv : null, note: `Witty: ${brilliant ? 'a sacrifice, ' : ''}${styled.from}-${styled.to} (${score}, flair ${pick.flair}, depth ${result.depth})` };
+      }
+    }
+    // Gobble: the capture it likes, when the outcome allows
+    if (s.gobble && !result.drawSlip) {
+      const lines = (result.lines && result.lines.length ? result.lines : [result]).filter(l => l && l.pv && l.pv.length);
+      const grab = gobbleChoose(fen, lines, s, step.uci);
+      if (grab) {
+        const sc = grab.line.mate !== undefined ? `mate ${grab.line.mate}` : (grab.line.cp / 100).toFixed(2);
+        return { plan: null, step: grab.step, crit: 0, gap: Infinity, quick: true, gobble: true, note: `Gobble: takes the ${({ p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen' })[grab.piece]} ${grab.step.from}-${grab.step.to} (${sc})` };
       }
     }
     const score = result.mate !== undefined ? `mate ${result.mate}` : (result.cp / 100).toFixed(2);
@@ -6393,7 +6479,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // really came (and the prepared answer would not), it is not played: the aim comes before the show.
       if (fixed && s.mode !== 'lose' && materialAtRisk(fen, fixed.uci) >= 300 && !(e && e.step && materialAtRisk(fen, e.step.uci) >= 300)) fixed = null;
       const chosen = fixed || (e && e.step && (e.book || !e.crit) ? e.step : null);
-      const paced = chosen && clutchPaceLeft(fen, chosen, clutchClock('own'), clutchEloFor(base, readOpponentElo()), { premove: !!fixed, endgame: !!(fixed && prem && prem.endgame), book: !!(e && e.book), witty: !!base.witty, slow: clutch.mode === 'lose' && clutch.way === 'time' });
+      const paced = chosen && clutchPaceLeft(fen, chosen, clutchClock('own'), clutchEloFor(base, readOpponentElo()), { premove: !!fixed, endgame: !!(fixed && prem && prem.endgame), book: !!(e && e.book), witty: clutchStyle(base, fen).witty, gobble: clutchStyle(base, fen).gobble, slow: clutch.mode === 'lose' && clutch.way === 'time' });
       if (chosen && !paced && (!!(fixed && prem && prem.endgame && !clutchRace(clutch.mode, clutchClock('own') || 99, readClock('opp'))) || !clutchBurnMs(clutch.mode, clutch.way, chosen, fen, clutchClock('own') || 99, readClock('opp'))) && !(clutch.played === quickKey && Date.now() - clutch.playedAt < 2500)) {
         clutch.played = quickKey; clutch.playedAt = Date.now(); clutch.tries = 1;
         if (!fixed && e.plan) clutch.plan = e.plan;
@@ -6422,6 +6508,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const odds = throwing ? 'throw' : maxed ? 'max' : base.win + '/' + base.draw;
     if (!clutch.mode || clutch.odds !== odds) { clutch.mode = throwing ? 'lose' : maxed ? 'win' : clutchRollMode(base); clutch.odds = odds; clutch.way = !throwing && clutch.mode === 'lose' && Math.random() < 0.4 ? 'time' : 'board'; }
     s.mode = clutch.mode; s.throw = throwing; s.max = maxed;
+    // Witty leads until the endgame, Gobble in it
+    { const st = clutchStyle(base, fen); s.witty = st.witty; s.gobble = st.gobble; }
     setClutchMode(clutch.mode, clutch.mode === 'lose' ? clutch.way : null);
     if (s.mode !== 'win') s.human = true; // a game not played to win goes through the human model at any rating
     s.seen = after => (clutch.seen && clutch.seen[String(after).split(' ').slice(0, 3).join(' ')]) || 0;
@@ -6432,7 +6520,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const mayPlay = clutchMayPlay();
     const act = (step, premove, note, instant, extra = {}) => {
       if (!mayPlay) { setClutch(`Clutch: ${note} (drawn only, it moves pieces in games against the computer)`); return; }
-      const hold = Math.max(clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock), premove ? 0 : clutchPaceLeft(fen, step, clock, s.elo, { premove: !!instant, book: /opening book|\(Witty\)/.test(note), brilliant: !!extra.brilliant, follow: !!extra.follow, quick: !!extra.quick, witty: !!s.witty, slow: clutch.mode === 'lose' && clutch.way === 'time' }));
+      const hold = Math.max(clutchBurnMs(clutch.mode, clutch.way, step, fen, clock, oppClock), premove ? 0 : clutchPaceLeft(fen, step, clock, s.elo, { premove: !!instant, book: /opening book|\(Witty\)/.test(note), brilliant: !!extra.brilliant, follow: !!extra.follow, quick: !!extra.quick, witty: !!s.witty, gobble: !!s.gobble, slow: clutch.mode === 'lose' && clutch.way === 'time' }));
       if (hold > 0) {
         // the move decided now is the one played when the wait is over (not decided again)
         if (!clutch.burn || clutch.burn.key !== key) {
@@ -6557,7 +6645,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const refresh = entry => {
       // The answers to the three likeliest replies are enough to name a premove; waiting for all of them was why they were rare.
       if (!book.complete && book.total && book.entries.size >= Math.min(3, book.total)) book.complete = true;
-      const certain = clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw');
+      const certain = clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw' || !!s.gobble);
       // A premove that tolerates a slight slip counts too, once named it stays (never swapped).
       const sticky = book.premove && (book.premove.wiggle || book.premove.gamble || book.premove.likely || book.premove.endgame);
       const now = sticky ? (certain && certain.step.uci === book.premove.step.uci ? certain : book.premove) : (book.endgame || certain || book.wiggle || null);
@@ -6590,7 +6678,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       setClutch(`Clutch: ready for ${book.entries.size} replies, depth ${depth}. Premove: ${prem ? `${prem.step.from}-${prem.step.to} (${prem.why})` : book.complete ? 'none, the replies need different answers' : 'working it out'}${native ? '' : '. No premoves in this game: answers are held and played the instant they move'}`);
       // Where chess.com has premoves, a certain one is set for real (a trade is not: it must not
       // run if they do not take).
-      if (native && mayPlay && prem && !prem.likely && book.fullRound && !book.premoveSet && !(s.mode === 'draw' && clock >= 6)) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
+      if (native && mayPlay && prem && (!prem.likely || (s.gobble && gobbleEndgame(fen))) && book.fullRound && !book.premoveSet && !(s.mode === 'draw' && clock >= 6 && !s.gobble)) { book.premoveSet = true; act(prem.step, true, prem.why, false); }
     };
     const stillTheirMove = () => {
       if (book.token.stop) return false;

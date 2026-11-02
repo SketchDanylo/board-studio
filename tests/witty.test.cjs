@@ -229,7 +229,8 @@ test('Witty draws his arrows: the pin, the long line a piece holds, the diagonal
     f.api.wittyDraw(ctl, 'r1bqkbnr/ppp2ppp/2np4/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4', { from: 'f1', to: 'b5', uci: 'f1b5' }, null, 0);
     await new Promise(r => setTimeout(r, 20));
     assert.ok(!ctl.wittyArrows || !ctl.wittyArrows.length, 'no arrows');
-    assert.equal(board.querySelectorAll('.bs-witty-sq').length, 2);
+    assert.equal(board.querySelectorAll('.bs-witty-sq:not(.band)').length, 2, 'c6 and e8 marked');
+    assert.equal([...board.querySelectorAll('.bs-witty-sq.band')].map(e => e.style.left + e.style.top).length, 2, 'b5 and d7: the rest of the line as a band');
   } finally { f.close(); }
 });
 
@@ -255,9 +256,10 @@ test('Witty marks up the board like his streams: the f7 a knight eyes, the check
     f.api.wittyDraw(ctl, italian, { from: 'f3', to: 'g5', uci: 'f3g5' }, null, 0);
     await new Promise(r => setTimeout(r, 20));
     assert.ok(!ctl.wittyArrows || !ctl.wittyArrows.length, 'highlights only');
-    assert.equal(board.querySelectorAll('.bs-witty-sq').length, 1);
+    assert.equal(board.querySelectorAll('.bs-witty-sq:not(.band)').length, 1);
+    assert.ok(board.querySelectorAll('.bs-witty-sq.band').length >= 2, 'the knight-to-f7 and bishop lines banded');
     // a long think: the move looked at and the reply expected
     f.api.wittyThink(ctl, italian, { from: 'f3', to: 'g5', uci: 'f3g5' }, ['f3g5', 'd7d5']);
-    assert.equal([...board.querySelectorAll('.bs-witty-sq')].filter(e => !e.classList.contains('bs-leave')).length, 2, 'g5 looked at, d5 expected');
+    assert.equal([...board.querySelectorAll('.bs-witty-sq')].filter(e => !e.classList.contains('bs-leave') && !e.classList.contains('band')).length, 2, 'g5 looked at, d5 expected');
   } finally { f.close(); }
 });

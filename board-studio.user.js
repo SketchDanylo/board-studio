@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.69.2
+// @version      6.70.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5049,6 +5049,20 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     .bs-hand-piece.on { opacity: .96; }
     .bs-hand-piece.held { opacity: .62; }
     @keyframes bs-hand-ring { from { opacity: .95; transform: scale(.5); } to { opacity: 0; transform: scale(1.7); } }
+    /* vanilla (Witty Alieeeen): an ordinary system pointer, chess.com's open hand over a piece and its fist while holding one */
+    .bs-hand .van { display: none; position: absolute; width: 26px; height: 26px; }
+    .bs-hand .van.arrow { left: -2px; top: -2px; width: 22px; height: 22px; }
+    .bs-hand .van.open, .bs-hand .van.closed { left: -12px; top: -11px; }
+    .bs-hand.vanilla .cur, .bs-hand.vanilla .ring, .bs-hand.vanilla .tag { display: none; }
+    .bs-hand.vanilla .van.arrow { display: block; }
+    .bs-hand.vanilla.over .van.arrow, .bs-hand.vanilla.grab .van.arrow { display: none; }
+    .bs-hand.vanilla.over:not(.grab) .van.open { display: block; }
+    .bs-hand.vanilla.grab .van.closed { display: block; }
+    .bs-hand-piece.vanilla { filter: none; }
+    .bs-hand-piece.vanilla.on { opacity: 1; }
+    .bs-premove-sq { position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; background: rgba(244, 42, 50, .55); }
+    .bs-premove-piece { position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; background-size: contain;
+      background-repeat: no-repeat; background-position: center; z-index: 3; }
   `;
   const shownHand = {
     el: null, piece: null, x: null, y: null, timers: [], dimmed: null, held: null, hideTimer: 0, frame: 0, pieceSize: 0,
@@ -5058,7 +5072,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const st = document.createElement('style'); st.id = 'bs-hand-css'; st.textContent = HAND_CSS; document.head.appendChild(st);
       }
       this.el = document.createElement('div'); this.el.className = 'bs-hand';
-      this.el.innerHTML = '<svg class="cur" viewBox="0 0 28 28" aria-hidden="true"><path d="M5 3.5l16.5 10.2-7.3 1.6 4.4 8.2-3.4 1.8-4.4-8.2-5.2 5.1z" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg><i class="ring"></i><b class="tag">premove</b>';
+      this.el.innerHTML = '<svg class="cur" viewBox="0 0 28 28" aria-hidden="true"><path d="M5 3.5l16.5 10.2-7.3 1.6 4.4 8.2-3.4 1.8-4.4-8.2-5.2 5.1z" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg><i class="ring"></i><b class="tag">premove</b>'
+        + '<svg class="van arrow" viewBox="0 0 22 22" aria-hidden="true"><path d="M2 1.5v16.2l4.1-3.9 2.9 6.6 2.8-1.2-2.9-6.5h5.8z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg>'
+        + '<svg class="van open" viewBox="0 0 26 26" aria-hidden="true"><g fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"><rect x="7" y="5" width="3" height="10" rx="1.5"/><rect x="10" y="3" width="3" height="11" rx="1.5"/><rect x="13" y="3.6" width="3" height="10.5" rx="1.5"/><rect x="16" y="5.6" width="3" height="9" rx="1.5"/><rect x="2.6" y="11.2" width="3" height="8" rx="1.5" transform="rotate(-38 4.1 15.2)"/><rect x="6.6" y="11" width="12.6" height="11.6" rx="4.6"/></g></svg>'
+        + '<svg class="van closed" viewBox="0 0 26 26" aria-hidden="true"><g fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"><rect x="7" y="8.6" width="3" height="5.4" rx="1.5"/><rect x="10" y="7.8" width="3" height="6" rx="1.5"/><rect x="13" y="8" width="3" height="6" rx="1.5"/><rect x="16" y="8.8" width="3" height="5.4" rx="1.5"/><rect x="6.6" y="11" width="12.6" height="11" rx="4.6"/><rect x="4.4" y="12.6" width="3" height="5.6" rx="1.5" transform="rotate(-20 5.9 15.4)"/></g></svg>';
       this.piece = document.createElement('div'); this.piece.className = 'bs-hand-piece';
       document.body.append(this.piece, this.el);
     },
@@ -5070,13 +5087,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     place(x, y) {
       this.x = x; this.y = y;
       this.el.style.transform = `translate(${x}px, ${y}px)`;
+      if (this.vanilla) this.el.classList.toggle('over', this.overPiece(x, y));
       const s = this.pieceSize;
       this.piece.style.transform = `translate(${x - s / 2}px, ${y - s / 2}px)`;
     },
     // A glide from where the hand is to (x, y) in ms: eased in and out, on a slight curve, as a wrist moves.
     glide(x, y, ms) {
       const x0 = this.x ?? x, y0 = this.y ?? y, dx = x - x0, dy = y - y0, dist = Math.hypot(dx, dy);
-      const bend = Math.min(40, dist * .12) * (((x0 * 7 + y0 * 3) | 0) % 2 ? 1 : -1);
+      const bend = Math.min(44, dist * (0.03 + 0.17 * Math.random())) * (Math.random() < 0.5 ? 1 : -1);
       const start = performance.now();
       const run = () => {
         const t = ms <= 0 ? 1 : Math.min(1, (performance.now() - start) / ms);
@@ -5092,7 +5110,27 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     },
     later(fn, ms) { this.timers.push(setTimeout(fn, ms)); },
     clearTimers() { this.timers.forEach(clearTimeout); this.timers = []; cancelAnimationFrame(this.frame); if (this.sel) { this.sel.remove(); this.sel = null; } },
-    show() { this.ensure(); clearTimeout(this.hideTimer); this.el.classList.add('on'); },
+    show() {
+      this.ensure(); clearTimeout(this.hideTimer); this.el.classList.add('on');
+      this.vanilla = !!settings.clutch.witty;
+      this.el.classList.toggle('vanilla', this.vanilla); this.piece.classList.toggle('vanilla', this.vanilla);
+    },
+    // Is there a piece under the point? (the board's pieces, read at most every quarter second)
+    overPiece(x, y) {
+      const board = this.board;
+      if (!board) return false;
+      try {
+        if (!this.occ || Date.now() - this.occAt > 250) {
+          this.occAt = Date.now();
+          this.occ = new Set(new BoardStudioRules.Chess(board.game.getFEN()).board().flat().filter(Boolean).map(p => p.square));
+        }
+        const r = board.getBoundingClientRect(), size = r.width / 8, flipped = board.classList.contains('flipped');
+        const c = Math.floor((x - r.left) / size), w = Math.floor((y - r.top) / size);
+        if (c < 0 || c > 7 || w < 0 || w > 7) return false;
+        const sq = String.fromCharCode(97 + (flipped ? 7 - c : c)) + (flipped ? w + 1 : 8 - w);
+        return this.occ.has(sq) && !(this.pre && this.pre.from === sq);
+      } catch (e) { return false; }
+    },
     // fades out once Clutch's hand has been idle a while, but only when Clutch is not playing (while it plays the hand stays,
     // resting and drifting over the board like a hand waiting for its turn)
     idle(ms = 2600) { clearTimeout(this.hideTimer); this.hideTimer = setTimeout(() => { if (!this.held && this.el && !clutch.acting) this.el.classList.remove('on'); }, ms); },
@@ -5100,17 +5138,173 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // it is thinking of moving more than any other), and in between a slow, small move over the board. Never a jump.
     // Only drawn: nothing is clicked on the real board.
     drift(board) {
-      if (!settings.clutch.mouse || !board || this.held || Date.now() < (this.busyUntil || 0) || Date.now() < (this.nextDrift || 0)) return;
-      this.nextDrift = Date.now() + 700 + Math.random() * 1600;
+      // (a premove shown the vanilla way leaves the hand free: it goes on fidgeting)
+      if (!settings.clutch.mouse || !board || (this.held && !this.pre) || Date.now() < (this.busyUntil || 0) || Date.now() < (this.nextDrift || 0)) return;
+      this.board = board;
+      this.nextDrift = Date.now() + 250 + Math.random() * 1400;
       const r = board.getBoundingClientRect(), size = r.width / 8;
       this.show();
       if (this.x === null) { this.place(r.left + r.width / 2, r.top + r.height * 0.75); return; }
-      const target = Math.random() < 0.75 ? this.pickPiece(board) : null;
-      if (target) { if (Math.random() < 0.55) this.lift(board, target); else this.tap(board, target); return; }
+      // what it does while it waits, never the same thing twice running
+      const kinds = { tease: 18, lift: 12, tap: 13, hover: 16, circle: 8, trace: 8, shake: 5, rest: 12, wander: 6, glide: 10 };
+      if (this.lastKind) kinds[this.lastKind] *= 0.2;
+      let roll = Math.random() * Object.values(kinds).reduce((a, b) => a + b, 0), kind = 'glide';
+      for (const [k, w] of Object.entries(kinds)) { roll -= w; if (roll <= 0) { kind = k; break; } }
+      this.lastKind = kind;
+      const move = ['tease', 'hover', 'circle'].includes(kind) ? this.pickMove(board) : null;
+      const sq = move ? move.from : ['lift', 'tap'].includes(kind) ? this.pickPiece(board) : null;
+      if (kind === 'tease' && move) return this.tease(board, move);
+      if (kind === 'lift' && sq) return this.lift(board, sq);
+      if (kind === 'tap' && sq) return this.tap(board, sq);
+      if (kind === 'hover' && sq) return this.hover(board, Math.random() < 0.35 && move.to ? move.to : sq);
+      if (kind === 'circle' && sq) return this.circle(board, Math.random() < 0.5 && move.to ? move.to : sq);
+      if (kind === 'trace' && this.trace(board)) return;
+      if (kind === 'shake') return this.shake(board);
+      if (kind === 'rest') { this.busyUntil = Date.now() + 1200 + Math.random() * 3000; return; }
+      if (kind === 'wander') return this.wander(board);
       // a little way from where it is, kept over the board, more often over the lower (own) half
       const nx = Math.max(r.left + size * 0.5, Math.min(r.right - size * 0.5, this.x + (Math.random() - 0.5) * size * 2.4));
       const ny = Math.max(r.top + size * 0.5, Math.min(r.bottom - size * 0.5, this.y + (Math.random() - 0.35) * size * 1.8));
-      this.glide(nx, ny, 700 + Math.random() * 900);
+      const ms = 400 + Math.random() * 1100;
+      this.busyUntil = Date.now() + ms;
+      this.glide(nx, ny, ms);
+    },
+    // How long the hand takes to a point (Fitts-like, at clutchDPI speed).
+    reachMs(x, y, size, random = Math.random) {
+      const d = Math.hypot(x - this.x, y - this.y);
+      return Math.round((140 + 60 * Math.log2(d / size + 1)) * (0.7 + 0.6 * random()) * handScale());
+    },
+    // A move worth showing interest in: the one it has decided on, the ones Clutch is weighing (its answers and ideas),
+    // else a piece of its own and a square it could go to. { from, to } with our piece on from now.
+    pickMove(board, random = Math.random) {
+      try {
+        const own = ownColor(board);
+        if (!own) return null;
+        const game = new BoardStudioRules.Chess(board.game.getFEN());
+        const pool = [];
+        const add = (uci, w) => { if (!uci) return; const pc = game.get(uci.slice(0, 2)); if (pc && pc.color === own && !(this.pre && this.pre.from === uci.slice(0, 2))) pool.push({ from: uci.slice(0, 2), to: uci.slice(2, 4), w }); };
+        if (clutch.burn && clutch.burn.step) add(clutch.burn.step.uci || clutch.burn.step.from + clutch.burn.step.to, 12);
+        (clutch.ideas || []).forEach((i, k) => add(i.ours ? i.uci : i.answer, 6 / (1 + k * 0.4)));
+        if (clutch.book && clutch.book.entries) [...clutch.book.entries.values()].slice(0, 6).forEach(e => e.step && add(e.step.uci, 3));
+        if (!pool.length || random() < 0.2) {
+          const sq = this.pickPiece(board, random), spots = sq ? this.tries(board, sq) : [];
+          if (sq) pool.push({ from: sq, to: spots.length ? spots[Math.floor(random() * spots.length)] : null, w: 4 });
+        }
+        let roll = random() * pool.reduce((t, p) => t + p.w, 0);
+        for (const p of pool) { roll -= p.w; if (roll <= 0) return p; }
+        return pool[0] || null;
+      } catch (e) { return null; }
+    },
+    // Rests over a square, the pointer never quite still.
+    hover(board, sq) {
+      const p = this.point(board, sq), ms = this.reachMs(p.x, p.y, p.size);
+      let t = ms;
+      this.glide(p.x + (Math.random() - 0.5) * p.size * 0.35, p.y + (Math.random() - 0.5) * p.size * 0.35, ms);
+      const n = 2 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < n; i++) {
+        const leg = 160 + Math.random() * 320;
+        this.later(() => this.glide(p.x + (Math.random() - 0.5) * p.size * 0.3, p.y + (Math.random() - 0.5) * p.size * 0.3, leg), t);
+        t += leg + Math.random() * 250;
+      }
+      this.busyUntil = Date.now() + t + 100;
+    },
+    // Circles a square, the way a mouse goes round while its owner thinks.
+    circle(board, sq) {
+      const p = this.point(board, sq), rad = p.size * (0.22 + 0.2 * Math.random()), loops = Math.random() < 0.6 ? 1 : 2;
+      const steps = 7 * loops, dir = Math.random() < 0.5 ? 1 : -1, a0 = Math.random() * Math.PI * 2;
+      let t = this.reachMs(p.x + rad, p.y, p.size);
+      this.glide(p.x + Math.cos(a0) * rad, p.y + Math.sin(a0) * rad, t);
+      for (let i = 1; i <= steps; i++) {
+        const a = a0 + dir * i * Math.PI * 2 / 7, leg = 70 + Math.random() * 50;
+        this.later(() => this.glide(p.x + Math.cos(a) * rad, p.y + Math.sin(a) * rad, leg), t);
+        t += leg;
+      }
+      this.busyUntil = Date.now() + t + 150;
+    },
+    // Traces a line one of its bishops, rooks or queen holds, slowly, as if showing it ("this diagonal is mine").
+    trace(board) {
+      try {
+        const own = ownColor(board), game = new BoardStudioRules.Chess(board.game.getFEN());
+        const rays = { b: [[1, 1], [1, -1], [-1, 1], [-1, -1]], r: [[1, 0], [-1, 0], [0, 1], [0, -1]] }; rays.q = [...rays.b, ...rays.r];
+        const lines = [];
+        game.board().flat().filter(pc => pc && pc.color === own && rays[pc.type]).forEach(pc => rays[pc.type].forEach(([df, dr]) => {
+          let f = pc.square.charCodeAt(0) - 97 + df, r = +pc.square[1] - 1 + dr, end = null, n = 0;
+          while (f >= 0 && f < 8 && r >= 0 && r < 8) { end = String.fromCharCode(97 + f) + (r + 1); n++; if (game.get(end)) break; f += df; r += dr; }
+          if (end && n >= 3) lines.push({ from: pc.square, to: end, n });
+        }));
+        if (!lines.length) return false;
+        const line = lines.sort((a, b) => b.n - a.n)[Math.floor(Math.random() * Math.min(4, lines.length))];
+        const a = this.point(board, line.from), b = this.point(board, line.to);
+        let t = this.reachMs(a.x, a.y, a.size);
+        this.glide(a.x, a.y, t);
+        const along = Math.round((260 + 110 * line.n) * (0.8 + 0.5 * Math.random()));
+        this.later(() => this.glide(b.x, b.y, along), t + 120);
+        t += 120 + along;
+        if (Math.random() < 0.4) { const back = Math.round(along * 0.6); this.later(() => this.glide((a.x + b.x) / 2, (a.y + b.y) / 2, back), t + 150); t += back + 150; }
+        this.busyUntil = Date.now() + t + 200;
+        return true;
+      } catch (e) { return false; }
+    },
+    // A quick little shake where it is.
+    shake(board) {
+      const size = board.getBoundingClientRect().width / 8, x = this.x, y = this.y;
+      let t = 0;
+      const n = 3 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < n; i++) {
+        const leg = 45 + Math.random() * 45, dx = (Math.random() - 0.5) * size * 0.3, dy = (Math.random() - 0.5) * size * 0.3;
+        this.later(() => this.glide(x + dx, y + dy, leg), t);
+        t += leg;
+      }
+      this.later(() => this.glide(x, y, 80), t);
+      this.busyUntil = Date.now() + t + 200;
+    },
+    // Off the board for a moment (towards the clocks or the move list) and back again.
+    wander(board) {
+      const r = board.getBoundingClientRect(), size = r.width / 8;
+      const out = { x: r.right + size * (0.5 + Math.random()), y: Math.random() < 0.5 ? r.top + size * (0.3 + Math.random() * 1.5) : r.bottom - size * (0.3 + Math.random() * 1.5) };
+      const go = this.reachMs(out.x, out.y, size), stay = 500 + Math.random() * 1800;
+      this.glide(out.x, out.y, go);
+      const back = { x: r.left + r.width * (0.3 + 0.5 * Math.random()), y: r.top + r.height * (0.45 + 0.4 * Math.random()) };
+      this.later(() => this.glide(back.x, back.y, Math.round(go * 1.1)), go + stay);
+      this.busyUntil = Date.now() + go * 2.1 + stay + 200;
+    },
+    // Teases a move: the piece picked up and carried most of the way (or all the way) to a square it is weighing, held
+    // there a moment, maybe tried on a second square, then taken back. Now and then it is click-selected instead
+    // and the square pointed at, without carrying it.
+    tease(board, move) {
+      const p = this.point(board, move.from);
+      const to = move.to || (this.tries(board, move.from)[0]);
+      if (!to) return this.tap(board, move.from);
+      const q = this.point(board, to);
+      let t = this.reachMs(p.x, p.y, p.size);
+      this.glide(p.x + (Math.random() - 0.5) * p.size * 0.2, p.y + (Math.random() - 0.5) * p.size * 0.2, t);
+      if (Math.random() < 0.25) {
+        // click-select, point at the square, click the piece again to let it go
+        this.later(() => this.tap(board, move.from), Math.max(0, t - 150));
+        t += 450;
+        const leg = Math.round((180 + 60 * Math.random()) * handScale());
+        this.later(() => this.glide(q.x, q.y, leg), t); t += leg + 200 + Math.random() * 500;
+        const back = Math.round(leg * 0.9);
+        this.later(() => this.glide(p.x, p.y, back), t); t += back;
+        this.later(() => this.tap(board, move.from), t - 100); t += 400;
+        this.busyUntil = Date.now() + t;
+        return;
+      }
+      this.later(() => this.grab(board, move.from), t);
+      t += 50 + Math.random() * 120;
+      const share = Math.random() < 0.45 ? 1 : 0.55 + 0.35 * Math.random();
+      const leg = Math.round((150 + 90 * Math.random()) * handScale());
+      this.later(() => this.glide(p.x + (q.x - p.x) * share, p.y + (q.y - p.y) * share, leg), t);
+      t += leg + 150 + Math.random() * 600;
+      if (Math.random() < 0.3) {
+        const alt = this.tries(board, move.from).filter(s2 => s2 !== to);
+        if (alt.length) { const z = this.point(board, alt[Math.floor(Math.random() * alt.length)]), l2 = Math.round(leg * 0.8); this.later(() => this.glide(z.x, z.y, l2), t); t += l2 + 120 + Math.random() * 350; }
+      }
+      const back = Math.round((120 + 70 * Math.random()) * handScale());
+      this.later(() => this.glide(p.x, p.y, back), t);
+      t += back + 20;
+      this.later(() => { this.restore(); this.el.classList.remove('grab'); this.piece.classList.remove('on'); this.pulse(); }, t);
+      this.busyUntil = Date.now() + t + 250;
     },
     // One of its own pieces to click: pieces more than pawns, near ones more than far ones, and on its own turn the
     // piece it has decided to move most of all.
@@ -5121,7 +5315,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         const game = new BoardStudioRules.Chess(board.game.getFEN());
         const mine = game.fen().split(' ')[1] === own, decided = mine && clutch.burn && clutch.burn.step ? clutch.burn.step.from : null;
         const size = board.getBoundingClientRect().width / 8 || 1;
-        const pool = game.board().flat().filter(p => p && p.color === own).map(p => {
+        const pool = game.board().flat().filter(p => p && p.color === own && !(this.pre && this.pre.from === p.square)).map(p => {
           const at = this.point(board, p.square), d = Math.hypot(at.x - this.x, at.y - this.y) / size;
           return { sq: p.square, w: (p.square === decided ? 14 : p.type === 'p' ? 1 : p.type === 'k' ? 0.5 : 3) / (1 + d / 3) };
         });
@@ -5204,27 +5398,65 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.pulse();
     },
     restore() { if (this.dimmed) { this.dimmed.el.style.opacity = this.dimmed.opacity; this.dimmed = null; } },
+    // A premove shown the way chess.com shows its own: the piece already on its new square, both squares in premove red.
+    showPre(board, step) {
+      this.clearPre();
+      const f = step.from.charCodeAt(0) - 96, r = step.from[1];
+      const real = board.querySelector(`:scope > .piece.square-${f}${r}`);
+      const els = [boardSquareEl(board, step.from, 'bs-premove-sq'), boardSquareEl(board, step.to, 'bs-premove-sq')];
+      const pc = boardSquareEl(board, step.to, 'bs-premove-piece');
+      pc.style.backgroundImage = this.piece.style.backgroundImage;
+      board.appendChild(pc);
+      els.push(pc);
+      this.pre = { from: step.from, to: step.to, els, real, opacity: real ? real.style.opacity : '' };
+      if (real) real.style.opacity = '0';
+    },
+    clearPre() {
+      if (!this.pre) return;
+      this.pre.els.forEach(el => el.remove());
+      if (this.pre.real) this.pre.real.style.opacity = this.pre.opacity;
+      this.pre = null;
+    },
     // Lets go: the piece picture goes (the real move has been made, or the move was called off).
     drop() {
       if (!this.el) return;
+      this.clearPre();
       this.restore();
       this.el.classList.remove('grab', 'held'); this.piece.classList.remove('on', 'held');
       this.held = null;
       this.idle();
     },
     // The whole move, timed like the move itself: to the piece, a beat, then with it to its square.
-    drag(board, start, from, to, toPiece, beat, withPiece) {
+    // style: 'drag' (plain), 'overshoot' (past the square and back), 'hesitate' (a stop on the way), 'click' (select the piece,
+    // then click the square: nothing is carried); extra is the time the style adds (already in the move's timing).
+    drag(board, start, from, to, toPiece, beat, withPiece, style = 'drag', extra = 0) {
       this.clearTimers(); this.restore(); this.held = null;
       // a fidget cut short: the piece picture it was holding goes before the real move starts
       if (this.piece) { this.piece.classList.remove('on'); this.el.classList.remove('grab'); }
+      this.board = board;
       this.show();
       // the hand starts where it was left (it remembers its place, even after fading); only the very first time from the pointer
       if (this.x === null) this.place(start.x, start.y);
       const a = this.point(board, from), b = this.point(board, to);
-      this.busyUntil = Date.now() + toPiece + beat + withPiece + 400;
-      this.glide(a.x, a.y, toPiece);
+      this.busyUntil = Date.now() + toPiece + beat + withPiece + extra + 400;
+      const jit = () => (Math.random() - 0.5) * a.size * 0.18;
+      this.glide(a.x + jit(), a.y + jit(), toPiece);
+      if (style === 'click') {
+        this.later(() => this.tap(board, from), Math.max(0, toPiece - 150));
+        this.later(() => this.glide(b.x + jit(), b.y + jit(), withPiece), toPiece + beat + Math.round(extra * 0.5));
+        this.later(() => { this.el.classList.add('grab'); this.pulse(); this.later(() => this.el.classList.remove('grab'), 90); }, toPiece + beat + extra + withPiece - 60);
+        return;
+      }
       this.later(() => this.grab(board, from), toPiece);
-      this.later(() => this.glide(b.x, b.y, withPiece), toPiece + beat);
+      if (style === 'overshoot') {
+        const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, over = a.size * (0.18 + 0.2 * Math.random());
+        this.later(() => this.glide(b.x + dx / d * over, b.y + dy / d * over, withPiece), toPiece + beat);
+        this.later(() => this.glide(b.x, b.y, Math.max(60, extra)), toPiece + beat + withPiece);
+      } else if (style === 'hesitate') {
+        const k = 0.35 + 0.3 * Math.random(), m = { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+        this.later(() => this.glide(m.x, m.y, Math.round(withPiece * k)), toPiece + beat);
+        this.later(() => this.glide(b.x, b.y, Math.round(withPiece * (1 - k))), toPiece + beat + Math.round(withPiece * k) + extra);
+      } else this.later(() => this.glide(b.x, b.y, withPiece), toPiece + beat);
     },
     // A premove held ready: carried to its square and held there (red) until it is played or given up.
     hold(board, step) {
@@ -5233,6 +5465,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       if (this.held === key) return;
       this.unhold();
       this.clearTimers();
+      this.board = board;
       this.show();
       if (this.x === null) { const r = board.getBoundingClientRect(); this.place(hand.x ?? r.left + r.width / 2, hand.y ?? r.top + r.height / 2); }
       const a = this.point(board, step.from), b = this.point(board, step.to);
@@ -5242,7 +5475,15 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       this.glide(a.x, a.y, times.toPiece);
       this.later(() => this.grab(board, step.from), times.toPiece);
       this.later(() => this.glide(b.x, b.y, times.withPiece), times.toPiece + beat);
-      this.later(() => { if (this.held === key) { this.el.classList.add('held'); this.piece.classList.add('held'); this.pulse(); } }, times.toPiece + beat + times.withPiece);
+      this.later(() => {
+        if (this.held !== key) return;
+        if (this.vanilla) {
+          // set the way chess.com sets a premove: the piece put down on its square (red squares), the hand let go and free
+          this.restore(); this.el.classList.remove('grab'); this.piece.classList.remove('on');
+          this.showPre(board, step);
+          this.busyUntil = Date.now() + 300;
+        } else { this.el.classList.add('held'); this.piece.classList.add('held'); this.pulse(); }
+      }, times.toPiece + beat + times.withPiece);
     },
     holds(step) { return !!step && !!this.held && this.held === step.from + step.to; },
     // The held premove is given up: the hand lets go and the piece shows on its square again.
@@ -5264,9 +5505,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const start = hand.x === null ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : { x: hand.x, y: hand.y };
     const times = mouseTimes(Math.hypot(a.x - start.x, a.y - start.y), Math.hypot(b.x - a.x, b.y - a.y), size, fast, random);
     const beat = Math.round(((fast ? 15 : 30) + 25 * random()) * handScale());
-    const total = times.toPiece + beat + times.withPiece;
+    // how the move is made this time (only how it looks and a little of how long it takes; the move is the same)
+    const roll = Math.random(), style = fast ? 'drag' : roll < 0.56 ? 'drag' : roll < 0.71 ? 'overshoot' : roll < 0.83 ? 'hesitate' : 'click';
+    const extra = !settings.clutch.mouse ? 0 : style === 'overshoot' ? Math.round((70 + 50 * Math.random()) * handScale()) : style === 'hesitate' ? Math.round((120 + 260 * Math.random()) * handScale()) : style === 'click' ? Math.round(160 * handScale()) : 0;
+    const total = times.toPiece + beat + times.withPiece + extra;
     const fen = blunderFEN(board);
-    if (settings.clutch.mouse) shownHand.drag(board, start, from, to, times.toPiece, beat, times.withPiece);
+    if (settings.clutch.mouse) shownHand.drag(board, start, from, to, times.toPiece, beat, times.withPiece, style, extra);
     setTimeout(() => {
       // only if the board is still as it was when the move was decided
       if (fen && blunderFEN(board) !== fen) { shownHand.drop(); return; }
@@ -5386,6 +5630,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   const claimedBy = (m, main) => !!main && m.color === main.color;
 
   function showClutchGhosts(ctl, items) {
+    // the moves Clutch is weighing, for the shown hand to toy with (ours: our idea, or our answer to their reply)
+    if (items.length) clutch.ideas = items.map(i => ({ uci: (i.line && i.line[0]) || i.uci, answer: i.answer || (i.analysis && i.theirs ? i.analysis[1] : null), ours: !i.theirs })).filter(i => i.uci);
+    // Witty Alieeeen plays without ghosts
+    if (settings.clutch.witty) items = [];
     const board = ctl.board;
     let layer = ctl.clutchGhostLayer;
     if (!items.length && !layer) return;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.73.0
+// @version      6.73.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5150,7 +5150,13 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // the end (a point on a longer path, not a stop). exact: no aiming error (the correction itself, a piece put down).
     glide(x, y, ms, { through = false, exact = false } = {}) {
       const now = performance.now(), cur = this.at(now);
-      const x0 = cur.x, y0 = cur.y, dx = x - x0, dy = y - y0, dist = Math.hypot(dx, dy);
+      let x0 = cur.x, y0 = cur.y;
+      // start from where the pointer really is on screen (the browser's animation may run behind the clock in a busy or covered
+      // window): never a jump
+      if (this.anim && this.el) {
+        try { const m = new DOMMatrix(getComputedStyle(this.el).transform); if (isFinite(m.m41) && isFinite(m.m42) && (m.m41 || m.m42)) { x0 = m.m41; y0 = m.m42; } } catch (e) { /* the clock's position */ }
+      }
+      const dx = x - x0, dy = y - y0, dist = Math.hypot(dx, dy);
       ms = Math.max(30, ms);
       const size = this.pieceSize || 60;
       const mood = this.mood || 'calm';

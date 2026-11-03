@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.75.0
+// @version      6.75.1
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5273,6 +5273,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
         return { t, s: { x, y, vx: 0, vy: 0, ex: x, ey: y, evx: 0, evy: 0, eax: 0, eay: 0, ax: x, ay: y, dx: 0, dy: 0, tx: 0, ty: 0, tvx: 0, tvy: 0 } };
       }
       const k = Math.max(0, Math.min(g.n - 1, Math.floor((t - g.t0) / g.dt)));
+      // past the end of the track: the hand is where it stopped, now (a track never starts in the past)
+      if (t >= g.t0 + g.ms) return { t, s: { ...g.states[g.n - 1] } };
       return { t: g.t0 + k * g.dt, s: { ...g.states[k] } };
     },
     // A movement of a real hand to (x, y), the movement itself taking about ms (see handTrack: an arm with weight, swung from

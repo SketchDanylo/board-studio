@@ -153,3 +153,17 @@ test('the hand physics: arrives on time, bows away from the arm sideways, correc
     assert.ok(spread > 0.5 && spread < 15, `rest wander ${spread.toFixed(1)} px`);
   } finally { f.close(); }
 });
+
+test('a movement after a long stillness starts now, from where the hand stopped (no jump)', async () => {
+  const f = setup();
+  try {
+    const hand = f.api.shownHand;
+    hand.ensure(); hand.place(100, 100); hand.pieceSize = 50;
+    hand.glide(200, 100, 60, { exact: true });
+    hand.seg.t0 -= 20000;                       // that track ended long ago
+    const now = f.w.performance.now();
+    hand.glide(400, 100, 300, { exact: true });
+    assert.ok(Math.abs(hand.seg.t0 - now) < 50, 'the new track starts now');
+    assert.ok(Math.abs(hand.at(f.w.performance.now()).x - 200) < 5, 'from where it stopped');
+  } finally { f.close(); }
+});

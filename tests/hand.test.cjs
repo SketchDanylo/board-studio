@@ -94,7 +94,7 @@ test('the hand moves like a hand: a new aim mid-way keeps the speed it had (no j
     hand.place(0, 0); hand.glide(200, 0, 300, { exact: true });
     const t0 = hand.seg.t0, sp = k => Math.abs(hand.at(t0 + 300 * k).vx);
     assert.ok(sp(0.5) > sp(0.1) * 2 && sp(0.5) > sp(0.9) * 2);
-    assert.equal(Math.round(hand.at(t0 + 400).x), 200, 'and it arrives');
+    assert.ok(Math.abs(hand.at(t0 + 400).x - 200) < 2, 'and it arrives');
   } finally { f.api.setDPI(800); f.close(); }
 });
 
@@ -122,4 +122,34 @@ test('the mood follows the game: clock running out, a won game, a worse one; the
     assert.ok(seen.length && Math.hypot(seen[0][0] - e5.x, seen[0][1] - e5.y) < 20, 'first to e5');
     hand.glide = glide;
   } finally { f.api.clutch.mode = null; f.api.clutch.lastValue = null; f.api.setDPI(800); f.close(); }
+});
+
+test('the hand physics: arrives on time, bows away from the arm sideways, corrects a miss, never stands still', () => {
+  const f = setup();
+  try {
+    const { handTrack } = f.api;
+    const fresh = (x, y) => ({ x, y, vx: 0, vy: 0, ex: x, ey: y, evx: 0, evy: 0, eax: 0, eay: 0, ax: x, ay: y, dx: 0, dy: 0, tx: 0, ty: 0, tvx: 0, tvy: 0 });
+    const arm = { r: 450, lean: 0.25 };
+    let late = 0, bowUp = 0, fixes = 0;
+    for (let i = 0; i < 60; i++) {
+      // sideways across the board: the pivot is below, so the path bows up (smaller y) in the middle
+      const g = handTrack(fresh(40, 300), 0, { x: 520, y: 300, ms: 500, size: 60, arm });
+      const end = Math.round(500 / g.dt), mid = Math.round(250 / g.dt);
+      if (Math.hypot(g.xs[Math.min(g.n - 1, end + 25)] - 520, g.ys[Math.min(g.n - 1, end + 25)] - 300) > 12) late++;
+      if (g.ys[mid] < 300) bowUp++;
+      // where it is half way into the time asked, along the line: the throw is not the same every time
+      if (Math.abs(g.xs[Math.round(400 / g.dt)] - 520) > 8) fixes++;
+    }
+    assert.ok(late <= 6, `on target 100 ms after the time asked, nearly always (${60 - late}/60)`);
+    assert.ok(bowUp >= 45, `bows away from the arm (${bowUp}/60)`);
+    assert.ok(fixes >= 3 && fixes <= 57, `not every throw lands alike (${fixes}/60 still under way or off at 80% of the time)`);
+    // exact: no aiming error
+    const g = handTrack(fresh(0, 0), 0, { x: 300, y: 0, ms: 300, exact: true, size: 60, arm });
+    const k = Math.round(450 / g.dt);
+    assert.ok(Math.abs(g.xs[k] - 300) < 2.5, `put down where it was meant (${g.xs[k]})`);
+    // at rest it is never frozen, but stays within a few pixels
+    const r = handTrack(fresh(100, 100), 0, { rest: true, size: 60, arm });
+    const xs = Array.from(r.xs), spread = Math.max(...xs) - Math.min(...xs);
+    assert.ok(spread > 0.5 && spread < 15, `rest wander ${spread.toFixed(1)} px`);
+  } finally { f.close(); }
 });

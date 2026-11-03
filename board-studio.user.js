@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.74.0
+// @version      6.75.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -5041,6 +5041,125 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     return near[Math.floor(random() * near.length) % near.length];
   }
 
+  // ---------- the hand's own physics (Show Mouse) ----------
+  // A real pointer is moved by an arm, and that is what is simulated here, step by step (2 ms), not drawn along a curve:
+  //  - The brain plans a smooth movement of the hand's aim (minimum jerk: quickest in the middle, no jolt at either end),
+  //    going on from whatever the aim was already doing, so movements flow into each other.
+  //  - The hand is a weight on springy muscles that follows that aim (mass, stiffness, damping): it lags a little, carries
+  //    its speed, and when hurried (less damping) runs a touch past and settles back.
+  //  - The mouse is swung from the wrist and the elbow, so a sideways movement bows away from the arm (an arc round a pivot
+  //    below and to the right of the hand, for a right hand); movements towards or away from the arm stay straight.
+  //  - Aiming is noisy in proportion to the movement (signal-dependent noise): a long fast move lands off, more along the
+  //    line than across it, and when it lands outside the target a correction follows after a reaction time (submovements);
+  //    the noise also wobbles the path a little while the hand is fast.
+  //  - An 8-12 Hz physiological tremor rides on everything, and at rest the aim wanders slowly (the hand lying on the mouse).
+  const gaussRand = (random = Math.random) => { let u = 0; while (!u) u = random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(6.283185307 * random()); };
+  // quintic from (p0, v0, a0) to (p1, v1, 0) over T ms: position, speed, acceleration at time t
+  function handQuintic(p0, v0, a0, p1, v1, T) {
+    const c = a0 / 2, H = p1 - p0 - v0 * T - c * T * T, V = (v1 - v0 - 2 * c * T) * T, A = -2 * c * T * T;
+    const d = (10 * H - 4 * V + A / 2) / T ** 3, e = (-15 * H + 7 * V - A) / T ** 4, f = (6 * H - 3 * V + A / 2) / T ** 5;
+    return t => {
+      if (t >= T) return [p1 + v1 * (t - T), v1, 0];
+      return [p0 + v0 * t + c * t * t + d * t ** 3 + e * t ** 4 + f * t ** 5, v0 + 2 * c * t + 3 * d * t * t + 4 * e * t ** 3 + 5 * f * t ** 4, 2 * c + 6 * d * t + 12 * e * t * t + 20 * f * t ** 3];
+    };
+  }
+  // the player's arm: how far the pivot is, in screen pixels (a higher DPI means smaller hand movements: a longer arm on screen)
+  const handArm = (random = Math.random) => ({ r: (380 + 270 * random()) / handScale(), lean: 0.15 + 0.3 * random() });
+  const HAND_MOOD = {
+    calm: { zeta: 0.82, aim: 0.022, wob: 0.010, trem: 0.32, drift: 1.8, react: 1 },
+    tense: { zeta: 0.85, aim: 0.02, wob: 0.010, trem: 0.4, drift: 2.4, react: 1.1 },
+    rush: { zeta: 0.68, aim: 0.03, wob: 0.014, trem: 0.38, drift: 1.4, react: 0.85 },
+    pressure: { zeta: 0.58, aim: 0.042, wob: 0.02, trem: 0.6, drift: 1.0, react: 0.7 }
+  };
+  // Simulates the hand from state st at time t0. Movement: { x, y, ms, through, exact }; or { rest: true }. Returns the track:
+  // positions (tremor included) and speeds every 4 ms, and the full state there, so a later movement can go on from any point.
+  function handTrack(st, t0, { x, y, ms = 300, through = false, exact = false, rest = false, mood = 'calm', size = 60, arm = { r: 500, lean: 0.25 } } = {}, random = Math.random) {
+    const M = HAND_MOOD[mood] || HAND_MOOD.calm, s = { ...st };
+    const omega = 0.042, zeta = M.zeta, lag = 2 * zeta / omega;
+    // the movements the aim makes: [{ at, T, x, y, vx, vy, bx, by }] (bx, by: the bow of the path)
+    const moves = [];
+    let total;
+    if (rest) total = 2600 + 1400 * random();
+    else {
+      const dx = x - s.ex, dy = y - s.ey, dist = Math.hypot(dx, dy), ux = dist ? dx / dist : 0, uy = dist ? dy / dist : 0;
+      let T = Math.max(40, ms - lag * 0.8);
+      // where it really lands: off along the line (more often long than short) and less across it, more on long fast moves
+      const speed = dist / T, noisy = !exact && !through && dist > size * 0.6;
+      const sPar = noisy ? dist * M.aim * (0.7 + 0.5 * Math.min(1.5, speed)) : 0, sPerp = sPar * 0.5;
+      const ePar = sPar * gaussRand(random) + (noisy ? dist * 0.008 : 0), ePerp = sPerp * gaussRand(random);
+      const ax = x + ux * ePar - uy * ePerp, ay = y + uy * ePar + ux * ePerp;
+      // landed outside what it aimed at: a correction after a reaction time, overlapping the end of the first movement; the
+      // first movement is then a quicker throw, so the whole still arrives at about the time asked
+      const err = Math.hypot(ax - x, ay - y), tol = size * 0.16, fix = noisy && err > tol;
+      if (fix) T = Math.max(40, T * 0.8);
+      // the arc: the pivot (wrist/elbow) below and a little to the right of the hand; the sideways part of a movement bows away from it
+      const mx = (s.ex + ax) / 2, my = (s.ey + ay) / 2, px = mx + arm.r * arm.lean, py = my + arm.r;
+      const ox = mx - px, oy = my - py, ol = Math.hypot(ox, oy) || 1, nx = ox / ol, ny = oy / ol;
+      const side = Math.abs(dx * ny - dy * nx), sag = Math.min(size * 0.9, side * side / (8 * arm.r)) * (0.7 + 0.6 * random());
+      const wig = dist * 0.03 * gaussRand(random);                                   // and no two movements alike
+      const v1 = through ? 0.9 * dist / T : 0;
+      moves.push({ at: 0, T, x: ax, y: ay, vx: ux * v1, vy: uy * v1, bx: nx * sag - uy * wig, by: ny * sag + ux * wig });
+      let end = T;
+      if (fix) {
+        const at = Math.round(T * (0.7 + 0.1 * random()) + (60 + 50 * random()) * M.react);
+        const T2 = Math.round((80 + 50 * Math.log2(err / tol + 1)) * (0.85 + 0.3 * random()) * M.react * handScale());
+        moves.push({ at, T: T2, x, y, vx: 0, vy: 0, bx: 0, by: 0 });
+        end = Math.max(end, at + T2);
+      }
+      total = end + lag * 3 + 350 + 900 * random();                                  // settling, then a little rest
+    }
+    const dt = 2, every = 2, steps = Math.ceil(total / dt), n = Math.floor(steps / every) + 1;
+    const xs = new Float32Array(n), ys = new Float32Array(n), vxs = new Float32Array(n), vys = new Float32Array(n), states = new Array(n);
+    // tremor: a lightly damped resonator at 8.5-11 Hz driven by noise, sized to the mood
+    const wT = 2 * Math.PI * (8.5 + 2.5 * random()) / 1000, zT = 0.18, sT = M.trem * Math.sqrt(4 * zT * wT ** 3);
+    // rest: the aim wanders around where it settled (Ornstein-Uhlenbeck), slowly, a couple of pixels
+    const tau = 1300, sD = M.drift * Math.sqrt(2 / tau);
+    let mi = 0, cur = null, restFrom = moves.length ? Infinity : 0, k = 0;
+    for (let i = 0; i <= steps; i++) {
+      const t = i * dt;
+      // (the state at time t, before this step moves it on)
+      if (i % every === 0 && k < n) { xs[k] = s.x + s.tx; ys[k] = s.y + s.ty; vxs[k] = s.vx; vys[k] = s.vy; states[k] = { ...s }; k++; }
+      // the aim: a new planned movement begins (from where the aim is, with its speed and acceleration)
+      if (mi < moves.length && t >= moves[mi].at) {
+        cur = moves[mi++];
+        cur.qx = handQuintic(s.ex, s.evx, s.eax, cur.x, cur.vx, cur.T);
+        cur.qy = handQuintic(s.ey, s.evy, s.eay, cur.y, cur.vy, cur.T);
+        cur.t0 = t; s.dx = s.dy = 0;
+        if (mi === moves.length) restFrom = t + cur.T + 250;
+      }
+      if (cur) {
+        const u = Math.min(1, (t - cur.t0) / cur.T), qx = cur.qx(t - cur.t0), qy = cur.qy(t - cur.t0);
+        const b = 16 * u * u * (1 - u) * (1 - u), db = u < 1 ? 32 * u * (1 - u) * (1 - 2 * u) / cur.T : 0;
+        s.ex = qx[0] + b * cur.bx; s.ey = qy[0] + b * cur.by; s.evx = qx[1] + db * cur.bx; s.evy = qy[1] + db * cur.by; s.eax = qx[2]; s.eay = qy[2];
+        if (u >= 1) {
+          s.ax = s.ex; s.ay = s.ey;
+          // a movement that runs on (through) keeps its speed for the next one; a stop is a stop
+          if (!(cur.vx || cur.vy)) { s.evx = s.evy = 0; }
+          s.eax = s.eay = 0; cur = null;
+        }
+      } else if (t >= restFrom) {
+        // resting: the aim wanders slowly around where it came to rest
+        s.dx += -s.dx / tau * dt + sD * Math.sqrt(dt) * gaussRand(random);
+        s.dy += -s.dy / tau * dt + sD * Math.sqrt(dt) * gaussRand(random);
+        s.ex = s.ax + s.dx; s.ey = s.ay + s.dy; s.evx = s.evy = 0;
+      } else if (s.evx || s.evy) {
+        // ran on past a through point with nothing after it: the aim coasts to a stop
+        s.evx *= 0.9; s.evy *= 0.9; s.ex += s.evx * dt; s.ey += s.evy * dt; s.ax = s.ex; s.ay = s.ey;
+        if (Math.hypot(s.evx, s.evy) < 0.002) s.evx = s.evy = 0;
+      }
+      // the hand: a weight on springy muscles following the aim, with a wobble that grows with its speed
+      const wob = M.wob * Math.hypot(s.evx, s.evy) * Math.sqrt(dt);
+      s.vx += (omega * omega * (s.ex - s.x) - 2 * zeta * omega * s.vx) * dt + wob * gaussRand(random) * 0.05;
+      s.vy += (omega * omega * (s.ey - s.y) - 2 * zeta * omega * s.vy) * dt + wob * gaussRand(random) * 0.05;
+      s.x += s.vx * dt; s.y += s.vy * dt;
+      // the tremor
+      s.tvx += (-wT * wT * s.tx - 2 * zT * wT * s.tvx) * dt + sT * Math.sqrt(dt) * gaussRand(random);
+      s.tvy += (-wT * wT * s.ty - 2 * zT * wT * s.tvy) * dt + sT * Math.sqrt(dt) * gaussRand(random);
+      s.tx += s.tvx * dt; s.ty += s.tvy * dt;
+    }
+    return { t0, dt: dt * every, n: k, xs, ys, vxs, vys, states, ms: (k - 1) * dt * every, x1: rest ? s.ax : x, y1: rest ? s.ay : y };
+  }
+
   // ---------- Clutch's hand, shown (Show Mouse) ----------
 
   // A second mouse pointer, in Clutch's blue, that does on screen what Clutch does: it goes to the piece, closes on it,
@@ -5050,12 +5169,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
   const HAND_CSS = `
     .bs-hand { position: fixed; left: 0; top: 0; width: 0; height: 0; z-index: 2147483001; pointer-events: none;
       opacity: 0; transition: opacity 220ms ease; will-change: transform; }
-    /* the hand's own small unsteadiness, run by the browser itself (smooth however busy the page is) */
-    .bs-hand .jit { position: absolute; left: 0; top: 0; animation: bs-jit 1.9s ease-in-out infinite alternate, bs-jit2 0.83s ease-in-out infinite alternate; }
-    .bs-hand.rest .jit { animation: bs-jit 1.9s ease-in-out infinite alternate, bs-jit2 0.83s ease-in-out infinite alternate, bs-rest 6.5s ease-in-out infinite alternate; }
-    @keyframes bs-jit { 0% { translate: 0 0; } 23% { translate: .6px -.4px; } 51% { translate: -.3px .5px; } 77% { translate: .4px .3px; } 100% { translate: -.5px -.2px; } }
-    @keyframes bs-jit2 { 0% { margin-left: 0; margin-top: 0; } 50% { margin-left: .35px; margin-top: -.3px; } 100% { margin-left: -.25px; margin-top: .3px; } }
-    @keyframes bs-rest { 0% { rotate: 0deg; transform-origin: -3px 6px; } 50% { rotate: 1.2deg; } 100% { rotate: -0.9deg; } }
+    /* (the tremor and the resting wander are part of the hand's physics, see handTrack) */
+    .bs-hand .jit { position: absolute; left: 0; top: 0; }
     .bs-hand.on { opacity: 1; }
     .bs-hand .cur { position: absolute; left: -5px; top: -4px; width: 30px; height: 30px; transform-origin: 5px 4px;
       transition: transform 140ms cubic-bezier(.3, 1.4, .5, 1); filter: drop-shadow(0 0 5px rgba(76, 194, 255, .85)) drop-shadow(0 2px 2px rgba(0, 0, 0, .45)); }
@@ -5111,28 +5226,35 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const f = sq.charCodeAt(0) - 97, r = +sq[1] - 1;
       return { x: rect.left + ((flipped ? 7 - f : f) + .5) * size, y: rect.top + ((flipped ? r : 7 - r) + .5) * size, size };
     },
-    // Puts the hand at (x, y) at once (no motion). (x, y) is where the hand aims; what is drawn adds the tremor.
+    // Puts the hand at (x, y) at once (no motion); from there it rests (see rest()).
     place(x, y) {
       this.x = x; this.y = y;
       this.seg = null; this.vx = 0; this.vy = 0;
-      this.anim?.cancel(); this.panim?.cancel(); this.anim = this.panim = null;
+      this.anim?.cancel(); this.panim?.cancel(); this.anim = this.panim = null; this.composited = false;
       this.draw(x, y);
     },
-    // Hands the movement to the browser: the path, worked out once (the same curve as at()), runs as a compositor animation,
-    // so it stays smooth while the page is busy thinking (as a real pointer, which the page never draws). Without the
-    // animation API (or before the first paint) the frame loop draws it instead.
+    // Hands the movement to the browser: the track the physics worked out runs as a compositor animation, so it stays smooth
+    // while the page is busy thinking (a real pointer is never drawn by the page either). Without the animation API the frame
+    // loop draws it instead.
     paint(pieceOnly = false) {
       const g = this.seg;
       if (!g || !this.el || typeof this.el.animate !== 'function') return false;
-      const now = performance.now(), from = Math.max(g.t0, now), left = g.t0 + g.ms - from;
-      if (left <= 0) return false;
-      const n = Math.max(2, Math.min(120, Math.round(left / 12))), s = this.pieceSize || 0, kf = [], kp = [];
-      for (let i = 0; i <= n; i++) {
-        const p = this.at(from + left * i / n);
-        kf.push({ transform: `translate3d(${p.x}px, ${p.y}px, 0)` });
-        kp.push({ transform: `translate3d(${p.x - s / 2}px, ${p.y - s / 2}px, 0)` });
-      }
-      const opts = { duration: left, fill: 'forwards', easing: 'linear' };
+      const now = performance.now(), from = Math.max(g.t0, now);
+      if (g.t0 + g.ms - from <= 8) return false;
+      const k0 = Math.floor((from - g.t0) / g.dt), k1 = g.n - 1, stride = Math.max(2, Math.ceil((k1 - k0) / 420));
+      const s = this.pieceSize || 0, kf = [], kp = [], times = [];
+      const push = (p, t) => {
+        kf.push({ transform: `translate3d(${p.x.toFixed(2)}px, ${p.y.toFixed(2)}px, 0)` });
+        kp.push({ transform: `translate3d(${(p.x - s / 2).toFixed(2)}px, ${(p.y - s / 2).toFixed(2)}px, 0)` });
+        times.push(t);
+      };
+      push(this.at(from), from);
+      for (let k = k0 + stride; k < k1; k += stride) push({ x: g.xs[k], y: g.ys[k] }, g.t0 + k * g.dt);
+      push({ x: g.xs[k1], y: g.ys[k1] }, g.t0 + k1 * g.dt);
+      const span = times[times.length - 1] - from;
+      if (span <= 8) return false;
+      times.forEach((t, i) => { kf[i].offset = kp[i].offset = Math.min(1, Math.max(0, (t - from) / span)); });
+      const opts = { duration: span, fill: 'forwards', easing: 'linear' };
       if (!pieceOnly) { this.anim?.cancel(); this.anim = this.el.animate(kf, opts); }
       this.panim?.cancel(); this.panim = this.piece.animate(kp, opts);
       return true;
@@ -5143,88 +5265,71 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       const s = this.pieceSize;
       this.piece.style.transform = `translate(${x - s / 2}px, ${y - s / 2}px)`;
     },
-    // A movement of a real hand from where it is to (x, y) in about ms. It starts with the speed and direction the hand
-    // already has (so a new aim mid-way bends the path instead of stopping it), is quickest in the middle and slows into the
-    // target, curves a little, and on a long quick move lands a touch off (past it or short, a little to the side) and is
-    // corrected by a small second movement, as aimed movements are (Fitts / Meyer's submovements). through: keep moving at
-    // the end (a point on a longer path, not a stop). exact: no aiming error (the correction itself, a piece put down).
+    // The physical state of the hand at time t (the step of the running track at or before t), or a hand at rest where it was put.
+    stateAt(t) {
+      const g = this.seg;
+      if (!g) {
+        const x = this.x ?? 0, y = this.y ?? 0;
+        return { t, s: { x, y, vx: 0, vy: 0, ex: x, ey: y, evx: 0, evy: 0, eax: 0, eay: 0, ax: x, ay: y, dx: 0, dy: 0, tx: 0, ty: 0, tvx: 0, tvy: 0 } };
+      }
+      const k = Math.max(0, Math.min(g.n - 1, Math.floor((t - g.t0) / g.dt)));
+      return { t: g.t0 + k * g.dt, s: { ...g.states[k] } };
+    },
+    // A movement of a real hand to (x, y), the movement itself taking about ms (see handTrack: an arm with weight, swung from
+    // the wrist and elbow, a little off on a fast long move and corrected, a tremor). It goes on from the state the hand is in
+    // (moving or not), so a new aim mid-way bends the path instead of stopping it. through: keep moving at the end (a point on
+    // a longer path). exact: no aiming error (the correction itself, a piece put down).
     glide(x, y, ms, { through = false, exact = false } = {}) {
-      const now = performance.now(), cur = this.at(now);
-      let x0 = cur.x, y0 = cur.y;
+      const now = performance.now(), base = this.stateAt(now), st = base.s;
       // start from where the pointer really is on screen (the browser's animation may run behind the clock in a busy or covered
       // window): never a jump
-      if (this.anim && this.el) {
-        try { const m = new DOMMatrix(getComputedStyle(this.el).transform); if (isFinite(m.m41) && isFinite(m.m42) && (m.m41 || m.m42)) { x0 = m.m41; y0 = m.m42; } } catch (e) { /* the clock's position */ }
+      if (this.anim && this.el && this.composited) {
+        try {
+          const m = new DOMMatrix(getComputedStyle(this.el).transform), p = this.at(now);
+          if (isFinite(m.m41) && isFinite(m.m42) && (m.m41 || m.m42) && Math.hypot(m.m41 - p.x, m.m42 - p.y) > 3) {
+            const ox = m.m41 - p.x, oy = m.m42 - p.y;
+            st.x += ox; st.y += oy; st.ex += ox; st.ey += oy; st.ax += ox; st.ay += oy;
+          }
+        } catch (e) { /* the clock's position */ }
       }
-      const dx = x - x0, dy = y - y0, dist = Math.hypot(dx, dy);
-      ms = Math.max(30, ms);
-      const size = this.pieceSize || 60;
-      const mood = this.mood || 'calm';
-      if (!exact && !through && dist > size * 1.3 && Math.random() < (mood === 'pressure' ? 0.6 : mood === 'rush' ? 0.45 : 0.32)) {
-        // the first, quick movement lands off; the correction follows without a stop
-        const k = Math.random() < 0.6 ? 1 + 0.04 + 0.07 * Math.random() : 1 - 0.03 - 0.05 * Math.random();
-        const side = (Math.random() - 0.5) * 0.08 * dist;
-        const ax = x0 + dx * k - (dy / dist) * side, ay = y0 + dy * k + (dx / dist) * side;
-        const first = Math.round(ms * 0.82);
-        this.glide(ax, ay, first, { exact: true });
-        const fix = Math.round((70 + 70 * Math.random()) * handScale() * (mood === 'pressure' ? 0.7 : 1));
-        this.later(() => this.glide(x, y, fix, { exact: true }), Math.max(0, first - 25));
-        return;
-      }
-      const bend = dist < 4 ? 0 : Math.min(36, dist * (0.02 + 0.12 * Math.random())) * (Math.random() < 0.5 ? 1 : -1);
-      const ux = dist ? dx / dist : 0, uy = dist ? dy / dist : 0;
-      const v1 = through ? { x: ux * dist / ms * 0.9, y: uy * dist / ms * 0.9 } : { x: 0, y: 0 };
-      this.seg = { t0: now, ms, x0, y0, x1: x, y1: y, vx0: cur.vx, vy0: cur.vy, vx1: v1.x, vy1: v1.y, nx: -uy * bend, ny: ux * bend };
+      this.arm = this.arm || handArm();
+      this.seg = handTrack(st, base.t, { x, y, ms: Math.max(30, ms), through, exact, mood: this.mood || 'calm', size: this.pieceSize || 60, arm: this.arm });
       this.x = x; this.y = y;
       this.composited = this.paint();
       this.el.classList.remove('rest');
       this.run();
     },
-    // Where the hand is at time t on its movement (Hermite curve: positions and speeds at both ends, so movements join
-    // smoothly), and how fast it is going.
+    // Resting: the same physics with nothing aimed at, only the slow wander and the tremor of a hand lying on a mouse.
+    rest() {
+      const now = performance.now(), base = this.stateAt(now);
+      this.arm = this.arm || handArm();
+      this.seg = handTrack(base.s, base.t, { rest: true, mood: this.mood || 'calm', size: this.pieceSize || 60, arm: this.arm });
+      this.composited = this.paint();
+    },
+    // Where the hand is at time t on its track, and how fast it is going (px per ms).
     at(t) {
       const g = this.seg;
       if (!g) return { x: this.x ?? 0, y: this.y ?? 0, vx: 0, vy: 0 };
-      const u = Math.min(1, Math.max(0, (t - g.t0) / g.ms));
-      if (u >= 1) return { x: g.x1, y: g.y1, vx: g.vx1, vy: g.vy1 };
-      const u2 = u * u, u3 = u2 * u, T = g.ms;
-      const h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
-      const b = 16 * u2 * (1 - u) * (1 - u);                            // the curve, nothing at either end
-      const d00 = 6 * u2 - 6 * u, d10 = 3 * u2 - 4 * u + 1, d01 = -6 * u2 + 6 * u, d11 = 3 * u2 - 2 * u;
-      const db = 32 * u * (1 - u) * (1 - 2 * u);
-      return {
-        x: h00 * g.x0 + h10 * T * g.vx0 + h01 * g.x1 + h11 * T * g.vx1 + b * g.nx,
-        y: h00 * g.y0 + h10 * T * g.vy0 + h01 * g.y1 + h11 * T * g.vy1 + b * g.ny,
-        vx: (d00 * g.x0 + d10 * T * g.vx0 + d01 * g.x1 + d11 * T * g.vx1 + db * g.nx) / T,
-        vy: (d00 * g.y0 + d10 * T * g.vy0 + d01 * g.y1 + d11 * T * g.vy1 + db * g.ny) / T
-      };
+      if (g.n < 2) return { x: g.xs[0], y: g.ys[0], vx: 0, vy: 0 };
+      const f = Math.max(0, Math.min(g.n - 1, (t - g.t0) / g.dt)), k = Math.min(g.n - 2, Math.floor(f)), w = f - k;
+      const mix = a => a[k] + (a[k + 1] - a[k]) * w;
+      return { x: mix(g.xs), y: mix(g.ys), vx: mix(g.vxs), vy: mix(g.vys) };
     },
-    // One clock for every movement: each frame draws where the hand is, with the small tremor a hand on a mouse always has
-    // (stronger when hurried) and, resting, a slow drift of a few pixels, so the pointer is never frozen.
+    // One clock: without the animation API it draws each frame; with it the browser moves the hand and this only keeps the
+    // hand shape (open over a piece) and, when a track runs out, starts the next stretch of rest.
     run() {
       if (this.running) return;
       this.running = true;
-      this.phase = this.phase || [0, 1, 2, 3, 4, 5].map(() => Math.random() * 6.28);
       const step = () => {
         if (!this.el || !this.el.isConnected) { this.running = false; return; }
-        const t = performance.now(), p = this.at(t), ph = this.phase;
-        const moving = this.seg && t - this.seg.t0 < this.seg.ms;
-        const amp = this.mood === 'pressure' ? 1.3 : 0.7, rest = moving ? 0 : Math.min(1, (t - ((this.seg && this.seg.t0 + this.seg.ms) || 0)) / 900);
-        const tx = amp * (0.6 * Math.sin(t * 0.011 + ph[0]) + 0.3 * Math.sin(t * 0.027 + ph[1]) + 0.1 * Math.sin(t * 0.063 + ph[2]))
-          + rest * 2.6 * Math.sin(t * 0.0009 + ph[3]);
-        const ty = amp * (0.6 * Math.sin(t * 0.013 + ph[4]) + 0.3 * Math.sin(t * 0.023 + ph[5]) + 0.1 * Math.sin(t * 0.071 + ph[0]))
-          + rest * 2.2 * Math.sin(t * 0.0011 + ph[1]);
-        const arrived = !this.seg || t >= this.seg.t0 + this.seg.ms;
+        const t = performance.now();
         if (this.el.classList.contains('on')) {
-          if (!this.composited) this.draw(p.x + tx, p.y + ty);
-          else {
-            // the browser moves it; here only the hand shape (open over a piece) and, at rest, the slow drift of a resting hand
-            if (this.vanilla && t - (this.overAt || 0) > 70) { this.overAt = t; this.el.classList.toggle('over', this.overPiece(p.x, p.y)); }
-            if (arrived && this.seg && t - this.seg.t0 - this.seg.ms > 900) this.el.classList.add('rest');
-          }
+          if (!this.seg || t > this.seg.t0 + this.seg.ms - 150) this.rest();
+          const p = this.at(t);
+          if (!this.composited) this.draw(p.x, p.y);
+          else if (this.vanilla && t - (this.overAt || 0) > 70) { this.overAt = t; this.el.classList.toggle('over', this.overPiece(p.x, p.y)); }
         }
         // the next frame; a window that is covered or hidden gets no animation frames, so a timer stands in when none comes
-        // (positions come from the time anyway, so either way it is where it should be)
         let done = false;
         const go = () => { if (done) return; done = true; clearTimeout(this.tmo); step(); };
         this.frame = requestAnimationFrame(go);

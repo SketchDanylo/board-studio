@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Board Studio for chess.com
 // @namespace    https://sketchdanylo.github.io/chess
-// @version      6.73.1
+// @version      6.74.0
 // @description  Soft spring-animated arrows, two-color square marks, red "can be taken" move dots, ghost pieces and a restyled sidebar, with a Styles panel.
 // @match        https://www.chess.com/*
 // @match        https://chess.com/*
@@ -6005,8 +6005,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // So the clock is run out here instead, on any move: it is our turn, their clock does not move while we sit.
     // Not in one frozen sit (that looks like the page hung): a long think on every move, about a third of what is left (at least
     // 3 s), so the clock runs down over a few moves; only the last few seconds go in one.
-    if (clutchRace(mode, clock, oppClock)) return clock < 5 ? Math.round(clock * 1000 + 800) : Math.round(Math.min(clock * 1000 + 800, Math.max(3000, clock * 1000 * (0.28 + 0.12 * unitHash(fen + 'race')))));
-    if (mode === 'lose' && way !== 'time') return 0;
+    if (clutchRace(mode, clock, oppClock)) return oppClock < 3 ? Math.round(clock * 1000 + 800) : 0;
+    if (mode === 'lose') return 0;
     const full = +String(fen).split(' ')[5] || 1;
     let forced = false;
     try { forced = new BoardStudioRules.Chess(fen).moves().length === 1; } catch (e) { /* none */ }
@@ -6014,18 +6014,14 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (mode === 'draw') {
       // Every move waits a breath (up to a couple of seconds, a small share of the clock, a different amount each time), so the
       // opponent is never rushed; now and then it spends much more of its own time when it has plenty.
-      const breath = clock >= 6 ? Math.round(Math.min(clock * 0.06, 1.6) * 1000 * (0.5 + unitHash(fen + 'breath'))) : 0;
+      const breath = clock >= 25 ? Math.round(Math.min(clock * 0.06, 1.6) * 1000 * (0.5 + unitHash(fen + 'breath'))) : 0;
       let give = 0;
-      if (oppClock !== null && oppClock !== undefined && clock >= 12 && clock > oppClock + 4 && unitHash(fen + 'give') < 0.6) {
-        const spare = Math.min(clock - Math.max(oppClock + 3, 12), clock * 0.4);
+      if (oppClock !== null && oppClock !== undefined && clock >= 25 && clock > oppClock + 4 && unitHash(fen + 'give') < 0.6) {
+        const spare = Math.min(clock - Math.max(oppClock + 3, 20), clock * 0.4);
         give = spare >= 1.5 ? Math.round(spare * 1000 * (0.6 + 0.4 * unitHash(fen + 'giveamt'))) : 0;
       }
       return Math.max(breath, give);
     }
-    // Losing on time: no long sits (a person losing on time does not stop for half the clock on one move). The clock is run
-    // down by thinking a little too long on every move (see clutchPaceMs, slow); only at the very end, with a few seconds
-    // left, does it freeze and the flag falls.
-    if (clock < 5) return Math.round(clock * 1000 + 800);
     return 0;
   }
 
@@ -6041,7 +6037,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // Gobble premoves at once with up to a minute on the clock
     if (premove && gobble && clock < 60) return 0;
     // a premove goes at once with little time left; a fast blitz player (Witty Alieeeen) premoves freely up to half a minute
-    if (premove && clock < (witty ? 30 : 15)) return 0;
+    if (premove && clock < (witty ? 30 : 25)) return 0;
     // taking back in an exchange is done at once, premoved or not (nobody stops to think about a recapture)
     if (recapture) return 0;
     const full = +String(fen).split(' ')[5] || 1;
@@ -6053,11 +6049,11 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     kind *= 1 + 0.35 * Math.max(0, Math.min(3, crit || 0));
     const rating = 0.8 + 0.35 * Math.max(0, Math.min(1, (elo - 600) / 1700));
     // a sacrifice found is weighed for a long while, and the moves that cash it in are not rushed either (if the clock allows)
-    const roomy = clock >= 10;
+    const roomy = clock >= 25;
     if (roomy && brilliant) kind = Math.max(kind, 1) * 2.6;
     else if (roomy && follow) kind = Math.max(kind, 1) * 1.8;
     // losing on time: every move takes a little too long, so the clock drains like that of a player who overthinks
-    if (slow) kind = Math.max(kind, 0.5) * 1.7;
+    if (slow && clock >= 25) kind = Math.max(kind, 0.5) * 1.7;
     // Witty Alieeeen plays his ordinary moves quickly (the long thinks are for the sacrifices)
     if (witty && !brilliant && !follow) kind *= 0.75;
     // a won game is played with a rush: quicker, sure of itself
@@ -6070,7 +6066,8 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // above, so the clock is used as before. Opening moves out of book still go quicker than middlegame ones.
     const c = Math.max(0, Math.min(3, crit || 0));
     const gEnd = gobble && gobbleEndgame(fen);
-    const pInstinct = settled || gEnd || rush ? 0.5 : c ? 0.18 : 0.32, pDeep = settled || gEnd || rush ? 0 : 0.06 + 0.05 * c;
+    const scramble = !clutchUntimed() && clock < 25;
+    const pInstinct = settled || gEnd || rush || scramble ? 0.5 : c ? 0.18 : 0.32, pDeep = settled || gEnd || rush || scramble ? 0 : 0.06 + 0.05 * c;
     const roll = random(), u = Math.min(0.999, Math.max(0.001, random())), z = 4.91 * (u ** 0.14 - (1 - u) ** 0.14);   // a normal draw (Tukey's approximation)
     let shape = Math.exp(0.6 * z - 0.18);                                    // log-normal, median 0.84
     if (roll < pInstinct) shape *= 0.22 + 0.25 * random();                   // seen at a glance
@@ -6081,9 +6078,12 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // with no clock (No Limit) a person plays briskly: most moves a few seconds
     if (clutchUntimed()) ms *= 0.6;
     // a real move takes a moment of looking, however obvious (not a premove, a book move or a forced one)
-    if (clock >= 10 && kind >= 0.5) ms = Math.max(ms, 300 + 500 * random());
-    if (clock < 5) ms *= 0.3;
-    else if (clock < 15) ms *= 0.6;          // the clock getting short: everything quicker
+    if (clock >= 25 && kind >= 0.5) ms = Math.max(ms, 300 + 500 * random());
+    // the clock getting short: everything quicker, and in real time trouble the hand just plays (no thinking pauses at all)
+    if (clock < 5) ms *= 0.15;
+    else if (clock < 15) ms *= 0.3;
+    else if (clock < 25) ms *= 0.6;
+    if (scramble) ms = Math.min(ms, clock < 8 ? 250 : clock < 15 ? 600 : 1400);
     const cap = roomy && (brilliant || follow) && clock >= 20 ? 0.2 : slow ? 0.18 : 0.12;
     // no clock (No Limit): never more than 17 s; with a clock, a long think is bounded by the clock alone (a share of it, at most 90 s)
     return Math.round(Math.min(ms, clock * 1000 * cap, clutchUntimed() ? 17000 : 90000));
@@ -6159,7 +6159,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     if (s.human) {
       // Never more than a small share of what is left on the clock (and a flash when it is nearly gone).
       // (the hand takes its share of the move's time: about half a second)
-      const budgetMs = Math.max(clock > 5 ? 450 : 80, clutchMoveMs(clock, fen) - 200);
+      const budgetMs = Math.max(clock >= 20 ? 450 : clock > 5 ? 200 : 80, clutchMoveMs(clock, fen) - 200);
       // Where the eval bar stands now, and how well they just played: our own estimate of the position last time against a
       // quick look now. (At any number of pieces: everything is played around the eval.)
       let evalNow = null, quickLook = null, ideaLines = null;
@@ -6178,7 +6178,6 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
       // finish it), the loss is brought about on the clock instead.
       if (clutch.mode === 'lose' && clutch.way !== 'time') {
         clutch.sunk = clutch.lastValue !== null && clutch.lastValue !== undefined && clutch.lastValue < -500 ? (clutch.sunk || 0) + 1 : 0;
-        if (clutch.sunk >= 10) { clutch.way = 'time'; setClutchMode('lose', 'time'); }
       }
       return wittyWiden(fen, result, s, clock);
     }
@@ -6968,7 +6967,7 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     // (the ends of the Elo slider decide the outcome themselves: 0 loses, 3501 wins)
     const throwing = elo <= ELO_THROW, maxed = elo >= ELO_MAX;
     const odds = throwing ? 'throw' : maxed ? 'max' : base.win + '/' + base.draw;
-    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = throwing ? 'lose' : maxed ? 'win' : clutchRollMode(base); clutch.odds = odds; clutch.way = !throwing && clutch.mode === 'lose' && !clutchUntimed() && Math.random() < 0.4 ? 'time' : 'board'; }
+    if (!clutch.mode || clutch.odds !== odds) { clutch.mode = throwing ? 'lose' : maxed ? 'win' : clutchRollMode(base); clutch.odds = odds; clutch.way = 'board'; }
     // no clock in this game (No Limit): there is no losing on time, it is done on the board
     if (clutch.way === 'time' && clutchUntimed()) clutch.way = 'board';
     s.mode = clutch.mode; s.throw = throwing; s.max = maxed;
@@ -6980,6 +6979,9 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     clutch.acting = clutchMayPlay();
     const oppClock = readClock('opp');
     if (clutchRace(clutch.mode, clock, oppClock) && clutch.way !== 'time') { clutch.way = 'time'; setClutchMode('lose', 'time'); }
+    // The race (their clock nearly out while we lose): no sitting on the clock. Quick bad moves and premoves, and with under
+    // 10 s on theirs, the worst moves at once, so they mate before their flag falls (only with under 3 s does ours run out).
+    if (clutch.mode === 'lose' && clutch.racing && oppClock !== null && oppClock < 10 && oppClock >= 3) s.throw = true;
     const turn = fen.split(' ')[1], key = repKey(fen);
     const mayPlay = clutchMayPlay();
     const act = (step, premove, note, instant, extra = {}) => {
@@ -7111,10 +7113,10 @@ var BoardStudioRules=(()=>{var ie=Object.defineProperty;var ss=Object.getOwnProp
     const refresh = entry => {
       // The answers to the three likeliest replies are enough to name a premove; waiting for all of them was why they were rare.
       if (!book.complete && book.total && book.entries.size >= Math.min(3, book.total)) book.complete = true;
-      // Time trouble (under 10 s of our own): every move is premoved, whatever the outcome; the answer to their likeliest reply,
+      // Time trouble (under 15 s of our own): every move is premoved, whatever the outcome; the answer to their likeliest reply,
       // which the book works out for the outcome Clutch plays for (so a win premoves good moves, a loss poorer ones).
-      const scramble = clock < 10 && !clutchUntimed();
-      const racing = clutchRace(s.mode, clock, readClock('opp')) && !scramble;
+      const scramble = clock < 15 && !clutchUntimed();
+      const racing = false;   // (the race is played on quick moves too, premoves included)
       let certain = racing ? null : clutchPremove(book.entries, book.topReply, book.complete, s.mode !== 'draw', s.mode !== 'draw' || !!s.gobble);
       if (!certain && scramble && !racing) {
         const lead = [...book.entries.values()].find(e => e.reply === book.topReply) || [...book.entries.values()][0];

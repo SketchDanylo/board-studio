@@ -233,24 +233,21 @@ test('the panel bar glows in the colour of the result Clutch rolled, and stops w
   } finally { f.close(); }
 });
 
-test('playing to lose on the clock: no long sits, every move a little too long, out of time at the end', () => {
+test('time trouble: no sitting on the clock in any outcome, moves go quickly (premoves at once)', () => {
   const f = setup();
   try {
-    const burn = f.api.clutchBurnMs, pace = f.api.clutchPaceMs, half = () => 0.5;
+    const burn = f.api.clutchBurnMs, pace = f.api.clutchPaceMs, half = () => 0.5, slowRoll = () => 0.999;
     const quiet = { uci: 'g1f3', check: false, capture: false, promotion: null };
-    const fens = Array.from({ length: 40 }, (_, i) => `rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - ${i} ${10 + i}`);
-    assert.ok(fens.every(fen => burn('lose', 'time', quiet, fen, 30) === 0), 'no move is sat on for a share of the clock');
-    // the drain: each move a little longer than at the normal pace, never a big share of the clock
-    const normal = pace(fens[5], quiet, 30, 800, {}, half), slow = pace(fens[5], quiet, 30, 800, { slow: true }, half);
-    assert.ok(slow > normal * 1.5 && slow < normal * 2, `a little too long: ${slow} vs ${normal} ms`);
-    assert.ok(slow <= 30 * 1000 * 0.18, 'never more than a small share of the clock');
-    // over a game the clock does drain (and runs out in the end)
-    let clock = 60, moves = 0;
-    while (clock >= 5 && moves < 80) { clock -= pace(fens[Math.min(39, moves)], quiet, clock, 800, { slow: true }, half) / 1000; moves++; }
-    assert.ok(moves < 80, `down to the last seconds after ${moves} moves`);
-    assert.ok(burn('lose', 'time', quiet, fens[30], 3) > 3000, 'nearly out of time: it stays put until the flag falls');
-    assert.equal(burn('lose', 'board', quiet, fens[30], 3), 0, 'losing on the board never holds');
-    assert.equal(burn('win', 'time', quiet, fens[30], 3), 0, 'nor does winning');
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 30';
+    for (const mode of ['win', 'draw', 'lose']) for (const way of ['board', 'time']) for (const clock of [24, 14, 6, 3])
+      assert.equal(burn(mode, way, quiet, fen, clock, clock + 5), 0, `${mode}/${way} at ${clock} s: never held on purpose`);
+    // even the slowest roll (a long think, the clock to spare) stays short in time trouble
+    for (const [clock, most] of [[24, 1400], [14, 600], [6, 250], [3, 250]]) {
+      const ms = pace(fen, quiet, clock, 1800, { crit: 3, slow: true }, slowRoll);
+      assert.ok(ms <= most, `${clock} s left: ${ms} ms at most ${most}`);
+    }
+    assert.equal(pace(fen, quiet, 20, 1500, { premove: true }, half), 0, 'a premove goes at once under 25 s');
+    assert.ok(pace(fen, quiet, 60, 1500, {}, half) >= 300, 'with time to spare a move still takes a moment');
   } finally { f.close(); }
 });
 
@@ -1005,25 +1002,18 @@ test('a simple mate is delivered when drawing, a complex one (a sacrifice) is no
   } finally { f.close(); }
 });
 
-test('playing to lose with their clock nearly out: our clock is run out over a few long thinks (never one frozen sit), instead of letting them flag', () => {
+test('playing to lose with their clock nearly out: no long sits, only a last freeze when their flag is about to fall', () => {
   const f = setup();
   try {
     const burn = f.api.clutchBurnMs;
     const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 20';
     const quiet = { uci: 'g1f3', check: false, capture: false, promotion: null };
     f.api.clutch.racing = false;
-    const hold = burn('lose', 'board', quiet, fen, 40, 8);
-    assert.ok(hold >= 11000 && hold <= 16000, `they have 8 s, we have 40: a long think, a third or so of ours (${hold} ms), not all of it`);
-    assert.ok(burn('lose', 'board', { ...quiet, capture: true }, fen, 40, 8) >= 11000, 'even a capture waits');
-    // over the next moves the clock goes down to nothing: a few holds, the last few seconds in one
-    let clock = 40, moves = 0;
-    while (clock > 0 && moves < 20) { clock -= burn('lose', 'board', quiet, fen.replace(/ 20$/, ' ' + (20 + moves)), clock, 8) / 1000; moves++; }
-    assert.ok(clock <= 0 && moves >= 3 && moves <= 10, `out of time after ${moves} moves`);
-    assert.ok(burn('lose', 'board', quiet, fen, 4, 2) >= 4800, 'the last seconds: the flag falls');
+    assert.equal(burn('lose', 'board', quiet, fen, 40, 8), 0, 'they have 8 s, we have 40: quick bad moves, no sitting');
+    assert.ok(burn('lose', 'board', quiet, fen, 40, 2) >= 40000, 'their flag is about to fall (2 s): ours runs out first');
     f.api.clutch.racing = false;
-    assert.equal(burn('lose', 'board', quiet, fen, 40, 30), 0, 'they have plenty: the board decides');
-    assert.equal(burn('lose', 'board', quiet, fen, 10, 15), 0, 'they have more than us: no race, ours is lower already');
-    assert.equal(burn('win', null, quiet, fen, 40, 8), 0, 'only a loss does it');
+    assert.equal(burn('lose', 'board', quiet, fen, 10, 15), 0, 'they have more than us: no race');
+    assert.equal(burn('win', null, quiet, fen, 40, 2), 0, 'only a loss does it');
     assert.equal(f.api.clutchRace('lose', 40, 8), true); assert.equal(f.api.clutchRace('draw', 40, 8), false);
   } finally { f.close(); }
 });
